@@ -469,13 +469,30 @@ async function buildPptxBlob(
       else if (el.type === 'image') {
         // Resolve placeholder src → actual image data
         let resolvedSrc = el.src;
+        let isPlaceholderNotReady = false;
         if (isMediaPlaceholder(el.src)) {
           const task = useMediaGenerationStore.getState().tasks[el.src];
           if (task?.status === 'done' && task.objectUrl) {
             resolvedSrc = task.objectUrl;
           } else {
-            continue; // Media not ready, skip
+            isPlaceholderNotReady = true;
           }
+        }
+
+        if (isPlaceholderNotReady) {
+          // Add placeholder text instead of image
+          const placeholderText = 'Image Placeholder';
+          pptxSlide.addText(placeholderText, {
+            x: el.left / ratioPx2Inch,
+            y: el.top / ratioPx2Inch,
+            w: el.width / ratioPx2Inch,
+            h: el.height / ratioPx2Inch,
+            fontSize: 12,
+            color: '666666',
+            align: 'center',
+            valign: 'middle',
+          });
+          continue;
         }
 
         // Fetch and convert to base64 for embedding in PPTX

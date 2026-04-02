@@ -16,7 +16,7 @@ Based on the user's free-form requirement text, automatically infer course detai
 
 ## Design Principles
 
-### MAIC Platform Technical Constraints
+### Allen Girls Adventure Platform Technical Constraints
 
 - **Scene Types**: `slide` (presentation), `quiz` (assessment), `interactive` (interactive visualization), and `pbl` (project-based learning) are supported
 - **Slide Scene**: Static PPT pages supporting text, images, charts, formulas, etc.
@@ -94,6 +94,7 @@ When a slide scene needs an image or video but no suitable PDF image exists, mar
 - **Image IDs**: use `"gen_img_1"`, `"gen_img_2"`, etc. — IDs are **globally unique across the entire course**, NOT reset per scene
 - **Video IDs**: use `"gen_vid_1"`, `"gen_vid_2"`, etc. — same global numbering rule
 - The prompt should describe the desired media clearly and specifically
+- All images should be generated in Kawaii style (cute, adorable, cartoon-like illustrations)
 - **Language in images**: If the image contains text, labels, or annotations, the prompt MUST explicitly specify that all text in the image should be in the course language (e.g., "all labels in Chinese" for zh-CN courses, "all labels in English" for en-US courses). For purely visual images without text, language does not matter.
 - Only request media generation when it genuinely enhances the content — not every slide needs an image or video
 - Video generation is slow (1-2 minutes each), so only request videos when motion genuinely enhances understanding

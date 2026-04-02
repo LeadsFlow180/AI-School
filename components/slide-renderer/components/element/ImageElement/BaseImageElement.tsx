@@ -10,7 +10,7 @@ import { useMediaGenerationStore, isMediaPlaceholder } from '@/lib/store/media-g
 import { useSettingsStore } from '@/lib/store/settings';
 import { useMediaStageId } from '@/lib/contexts/media-stage-context';
 import { retryMediaTask } from '@/lib/media/media-orchestrator';
-import { RotateCcw, Paintbrush, ShieldAlert, ImageOff } from 'lucide-react';
+import { RotateCcw, Paintbrush, ShieldAlert, ImageOff, ImageIcon } from 'lucide-react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 
 export interface BaseImageElementProps {
@@ -42,6 +42,23 @@ export function BaseImageElement({ elementInfo }: BaseImageElementProps) {
   const imageGenerationEnabled = useSettingsStore((s) => s.imageGenerationEnabled);
   // Resolve actual src: use objectUrl from store if available, otherwise original src
   const resolvedSrc = task?.status === 'done' && task.objectUrl ? task.objectUrl : elementInfo.src;
+  // Check if resolvedSrc is a real image URL (not a placeholder)
+  const isRealImageUrl = resolvedSrc && (
+    resolvedSrc.startsWith('http') ||
+    resolvedSrc.startsWith('https') ||
+    resolvedSrc.startsWith('data:') ||
+    resolvedSrc.startsWith('blob:') ||
+    resolvedSrc.startsWith('/') ||
+    resolvedSrc.includes('.jpg') ||
+    resolvedSrc.includes('.jpeg') ||
+    resolvedSrc.includes('.png') ||
+    resolvedSrc.includes('.gif') ||
+    resolvedSrc.includes('.webp') ||
+    resolvedSrc.includes('.svg')
+  );
+  // Also treat unresolved image ID references as placeholders
+  // Only if it's exactly an image ID (img_123) and not already a real image URL
+  const isImageIdRef = /^img_\d+$/i.test(elementInfo.src) && !isRealImageUrl;
   const showDisabled = isPlaceholder && !task && !imageGenerationEnabled;
   const showSkeleton =
     isPlaceholder &&
@@ -124,7 +141,7 @@ export function BaseImageElement({ elementInfo }: BaseImageElementProps) {
                   </button>
                 )}
               </div>
-            ) : resolvedSrc ? (
+            ) : isRealImageUrl ? (
               <>
                 <img
                   src={resolvedSrc}
@@ -147,6 +164,17 @@ export function BaseImageElement({ elementInfo }: BaseImageElementProps) {
                   />
                 )}
               </>
+            ) : isPlaceholder || isImageIdRef ? (
+              <div className="w-full h-full bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-800 dark:to-gray-700 flex items-center justify-center border-2 border-dashed border-gray-300 dark:border-gray-600">
+                <div className="flex flex-col items-center gap-2 text-center">
+                  <div className="w-12 h-12 rounded-lg bg-gray-200 dark:bg-gray-600 flex items-center justify-center">
+                    <ImageIcon className="w-6 h-6 text-gray-400 dark:text-gray-500" />
+                  </div>
+                  <div className="text-[10px] font-medium text-gray-500 dark:text-gray-400">
+                    Image
+                  </div>
+                </div>
+              </div>
             ) : null}
           </div>
         </div>

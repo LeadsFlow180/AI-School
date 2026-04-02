@@ -169,6 +169,8 @@ export async function POST(req: NextRequest) {
         '**IMPORTANT: Do NOT include any video mediaGenerations (type: "video") in the outlines. Video generation is disabled. Image generation is allowed.**';
     }
 
+    log.info(`Scene outlines generation: imageEnabled=${imageGenerationEnabled}, videoEnabled=${videoGenerationEnabled}, policy="${mediaGenerationPolicy.slice(0, 50)}..."`);
+
     // Build teacher context from agents (if available)
     const teacherContext = formatTeacherPersonaForPrompt(agents);
 

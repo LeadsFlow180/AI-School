@@ -642,7 +642,7 @@ describe('fetchServerProviders — Image stale selection', () => {
     const store = await getStore();
 
     // First ever fetchServerProviders — server has seedream
-    // Default state: imageProviderId='seedream', imageGenerationEnabled=false, autoConfigApplied=false
+    // Default state: imageProviderId='seedream', imageGenerationEnabled=true, autoConfigApplied=false
     mockServerResponse({ image: { seedream: {} } });
     await store.getState().fetchServerProviders();
 

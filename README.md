@@ -1,9 +1,9 @@
 <!-- <p align="center">
-  <img src="assets/logo-horizontal.png" alt="OpenMAIC" width="420"/>
+  <img src="/newlogo.png" alt="OpenMAIC" width="420"/>
 </p> -->
 
 <p align="center">
-  <img src="assets/banner.png" alt="OpenMAIC Banner" width="680"/>
+  <img src="assets/banner.png" alt="Allen Girls Adventure Banner" width="680"/>
 </p>
 
 <p align="center">

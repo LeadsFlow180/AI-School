@@ -145,7 +145,28 @@ export async function generateSceneOutlinesFromRequirements(
     }));
 
     // Replace sequential gen_img_N/gen_vid_N with globally unique IDs
-    const result = uniquifyMediaElementIds(enriched);
+    let result = uniquifyMediaElementIds(enriched);
+
+    // Ensure all slide outlines have at least one image mediaGeneration
+    if (options?.imageGenerationEnabled !== false) {
+      result = result.map((outline) => {
+        if (outline.type === 'slide' && (!outline.mediaGenerations || outline.mediaGenerations.length === 0)) {
+          // Add a default image generation for slides without media
+          const elementId = `gen_img_${nanoid(8)}`;
+          const mediaGeneration = {
+            type: 'image' as const,
+            prompt: `Visual representation of: ${outline.title} - ${outline.description}`,
+            elementId,
+            aspectRatio: '16:9' as const,
+          };
+          return {
+            ...outline,
+            mediaGenerations: [mediaGeneration],
+          };
+        }
+        return outline;
+      });
+    }
 
     callbacks?.onProgress?.({
       currentStage: 1,

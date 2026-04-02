@@ -14,12 +14,14 @@ const log = createLogger('ServerProviders');
 
 export async function GET() {
   try {
+    const imageProviders = getServerImageProviders();
+    console.log('Server image providers from API:', Object.keys(imageProviders));
     return apiSuccess({
       providers: getServerProviders(),
       tts: getServerTTSProviders(),
       asr: getServerASRProviders(),
       pdf: getServerPDFProviders(),
-      image: getServerImageProviders(),
+      image: imageProviders,
       video: getServerVideoProviders(),
       webSearch: getServerWebSearchProviders(),
     });

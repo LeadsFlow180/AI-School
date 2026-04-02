@@ -258,12 +258,14 @@ function resolveImageIds(
 
         // If src is an image ID reference, replace with actual URL
         if (isImageIdReference(src)) {
-          if (!imageMapping || !imageMapping[src]) {
-            log.warn(`No mapping for image ID: ${src}, removing element`);
-            return null; // Remove invalid image elements
+          if (imageMapping && imageMapping[src]) {
+            log.debug(`Resolved image ID "${src}" to base64 URL`);
+            return { ...el, src: imageMapping[src] };
+          } else {
+            // Keep placeholder image IDs - frontend will handle default/placeholder display
+            log.debug(`Keeping placeholder image ID "${src}" - no mapping available`);
+            return el;
           }
-          log.debug(`Resolved image ID "${src}" to base64 URL`);
-          return { ...el, src: imageMapping[src] };
         }
 
         // Generated image reference — keep as placeholder for async backfill
@@ -470,7 +472,7 @@ async function generateSlideContent(
   const lang = outline.language || 'zh-CN';
 
   // Build assigned images description for the prompt
-  let assignedImagesText = '无可用图片，禁止插入任何 image 元素';
+  let assignedImagesText = '可用图片资源：使用 img_1, img_2 等占位符ID创建图像元素（系统将自动处理图像替换）';
   let visionImages: Array<{ id: string; src: string }> | undefined;
 
   if (assignedImages && assignedImages.length > 0) {

@@ -291,7 +291,7 @@ const getDefaultImageConfig = () => ({
   imageProviderId: 'seedream' as ImageProviderId,
   imageModelId: 'doubao-seedream-5-0-260128',
   imageProvidersConfig: {
-    seedream: { apiKey: '', baseUrl: '', enabled: false },
+    seedream: { apiKey: '', baseUrl: '', enabled: true },
     'qwen-image': { apiKey: '', baseUrl: '', enabled: false },
     'nano-banana': { apiKey: '', baseUrl: '', enabled: false },
     'grok-image': { apiKey: '', baseUrl: '', enabled: false },
@@ -544,7 +544,7 @@ export const useSettingsStore = create<SettingsState>()(
         ...defaultVideoConfig,
 
         // Media generation toggles (off by default)
-        imageGenerationEnabled: false,
+        imageGenerationEnabled: true,
         videoGenerationEnabled: false,
 
         // Audio feature toggles (on by default)
@@ -690,11 +690,7 @@ export const useSettingsStore = create<SettingsState>()(
 
         // Media generation toggle actions
         setImageGenerationEnabled: (enabled) => {
-          if (enabled) {
-            const cfg = get().imageProvidersConfig;
-            const hasUsable = Object.values(cfg).some((c) => c.isServerConfigured || c.apiKey);
-            if (!hasUsable) return;
-          }
+          // For images, allow enabling even without configured providers (fallbacks exist)
           set({ imageGenerationEnabled: enabled });
         },
         setVideoGenerationEnabled: (enabled) => {
@@ -861,6 +857,7 @@ export const useSettingsStore = create<SettingsState>()(
                   };
                 }
               }
+              console.log('Server image providers:', Object.keys(data.image));
 
               // Merge Video providers
               const newVideoConfig = { ...state.videoProvidersConfig };
@@ -1006,8 +1003,9 @@ export const useSettingsStore = create<SettingsState>()(
                   ? DEFAULT_TTS_VOICES[validTTSProvider as TTSProviderId] || 'default'
                   : state.ttsVoice;
 
-              // Auto-disable image/video generation when no provider is usable
-              const shouldDisableImage = !validImageProvider && state.imageGenerationEnabled;
+              // Auto-disable image/video generation when no provider is usable AND no fallback available
+              // For images, we have fallback to Lorem Picsum, so don't disable even without API keys
+              const shouldDisableImage = false; // Never auto-disable image generation due to fallbacks
               const shouldDisableVideo = !validVideoProvider && state.videoGenerationEnabled;
 
               // === Auto-select / auto-enable (only on first run) ===
@@ -1132,7 +1130,7 @@ export const useSettingsStore = create<SettingsState>()(
                 ...(validVideoModel !== state.videoModelId && {
                   videoModelId: validVideoModel,
                 }),
-                ...(shouldDisableImage && { imageGenerationEnabled: false }),
+                // Image generation never auto-disabled due to fallback capability
                 ...(shouldDisableVideo && { videoGenerationEnabled: false }),
                 // First-run auto-select overrides validation (autoConfigApplied guard).
                 // On first sync, auto-select picks the best provider. On subsequent syncs,
@@ -1170,7 +1168,7 @@ export const useSettingsStore = create<SettingsState>()(
     },
     {
       name: 'settings-storage',
-      version: 2,
+      version: 3,
       // Migrate persisted state
       migrate: (persistedState: unknown, version: number) => {
         const state = persistedState as Partial<SettingsState>;
@@ -1233,9 +1231,8 @@ export const useSettingsStore = create<SettingsState>()(
         }
 
         // Add default media generation toggles if missing
-        if (state.imageGenerationEnabled === undefined) {
-          state.imageGenerationEnabled = false;
-        }
+        state.imageGenerationEnabled = true;
+        console.log('Migrating settings, setting imageGenerationEnabled to true');
         if (state.videoGenerationEnabled === undefined) {
           state.videoGenerationEnabled = false;
         }

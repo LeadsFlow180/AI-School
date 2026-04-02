@@ -39,7 +39,11 @@ export async function generateMediaForOutlines(
   // Collect all media requests
   const allRequests: MediaGenerationRequest[] = [];
   for (const outline of outlines) {
-    if (!outline.mediaGenerations) continue;
+    if (!outline.mediaGenerations) {
+      log.debug(`Outline "${outline.title}" has no mediaGenerations`);
+      continue;
+    }
+    log.debug(`Outline "${outline.title}" has ${outline.mediaGenerations.length} mediaGenerations`);
     for (const mg of outline.mediaGenerations) {
       // Filter by enabled flags
       if (mg.type === 'image' && !settings.imageGenerationEnabled) continue;
@@ -50,6 +54,8 @@ export async function generateMediaForOutlines(
       allRequests.push(mg);
     }
   }
+
+  log.info(`Found ${allRequests.length} media generation requests for stage ${stageId}`);
 
   if (allRequests.length === 0) return;
 
@@ -109,6 +115,8 @@ async function generateSingleMedia(
   const store = useMediaGenerationStore.getState();
   store.markGenerating(req.elementId);
 
+  console.log(`Trying to generate ${req.type} for ${req.elementId} with prompt: ${req.prompt}`);
+
   try {
     let resultUrl: string;
     let posterUrl: string | undefined;
@@ -156,6 +164,11 @@ async function generateSingleMedia(
     if (abortSignal?.aborted) return;
     const message = err instanceof Error ? err.message : String(err);
     const errorCode = err instanceof MediaApiError ? err.errorCode : undefined;
+    console.log(
+      `Error generating ${req.type} for ${req.elementId}:`,
+      message,
+      errorCode ? `(${errorCode})` : '',
+    );
     log.error(`Failed ${req.elementId}:`, message);
     useMediaGenerationStore.getState().markFailed(req.elementId, message, errorCode);
 

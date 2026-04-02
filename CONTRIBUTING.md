@@ -1,6 +1,6 @@
-# Contributing to OpenMAIC
+# Contributing to Allen Girls Adventure
 
-Thank you for your interest in contributing to OpenMAIC! This guide will help you get started and ensure a smooth collaboration.
+Thank you for your interest in contributing to Allen Girls Adventure! This guide will help you get started and ensure a smooth collaboration.
 
 ## How to Contribute
 

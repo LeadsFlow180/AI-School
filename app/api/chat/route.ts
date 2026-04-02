@@ -78,8 +78,7 @@ export async function POST(req: NextRequest) {
     );
 
     // Check for RAG request
-    const enableRAG = (body as any).enableRAG || false;
-    let ragContext = '';
+    const enableRAG = body.enableRAG || false;
 
     if (enableRAG) {
       try {

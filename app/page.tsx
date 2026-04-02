@@ -18,6 +18,7 @@ import {
   Monitor,
   BotOff,
   ChevronUp,
+  Database,
 } from 'lucide-react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { createLogger } from '@/lib/logger';
@@ -50,6 +51,7 @@ import { SpeechButton } from '@/components/audio/speech-button';
 const log = createLogger('Home');
 
 const WEB_SEARCH_STORAGE_KEY = 'webSearchEnabled';
+const RAG_STORAGE_KEY = 'ragEnabled';
 const LANGUAGE_STORAGE_KEY = 'generationLanguage';
 const RECENT_OPEN_STORAGE_KEY = 'recentClassroomsOpen';
 
@@ -58,6 +60,7 @@ interface FormState {
   requirement: string;
   language: 'zh-CN' | 'en-US';
   webSearch: boolean;
+  enableRAG: boolean;
 }
 
 const initialFormState: FormState = {
@@ -65,6 +68,7 @@ const initialFormState: FormState = {
   requirement: '',
   language: 'zh-CN',
   webSearch: false,
+  enableRAG: false,
 };
 
 function HomePage() {
@@ -96,9 +100,11 @@ function HomePage() {
     }
     try {
       const savedWebSearch = localStorage.getItem(WEB_SEARCH_STORAGE_KEY);
+      const savedRAG = localStorage.getItem(RAG_STORAGE_KEY);
       const savedLanguage = localStorage.getItem(LANGUAGE_STORAGE_KEY);
       const updates: Partial<FormState> = {};
       if (savedWebSearch === 'true') updates.webSearch = true;
+      if (savedRAG === 'true') updates.enableRAG = true;
       if (savedLanguage === 'zh-CN' || savedLanguage === 'en-US') {
         updates.language = savedLanguage;
       } else {
@@ -190,6 +196,7 @@ function HomePage() {
     setForm((prev) => ({ ...prev, [field]: value }));
     try {
       if (field === 'webSearch') localStorage.setItem(WEB_SEARCH_STORAGE_KEY, String(value));
+      if (field === 'enableRAG') localStorage.setItem(RAG_STORAGE_KEY, String(value));
       if (field === 'language') localStorage.setItem(LANGUAGE_STORAGE_KEY, String(value));
       if (field === 'requirement') updateRequirementCache(value as string);
     } catch {
@@ -254,6 +261,7 @@ function HomePage() {
         userNickname: userProfile.nickname || undefined,
         userBio: userProfile.bio || undefined,
         webSearch: form.webSearch || undefined,
+        enableRAG: form.enableRAG || undefined,
       };
 
       let pdfStorageKey: string | undefined;
@@ -526,6 +534,25 @@ function HomePage() {
               onKeyDown={handleKeyDown}
               rows={4}
             />
+
+            {/* Toolbar row */}
+            <div className="px-3 pb-1 flex items-center justify-between">
+              <button
+                onClick={() => router.push('/rag')}
+                className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <Database className="size-3.5" />
+                Manage RAG Docs
+              </button>
+              <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={form.enableRAG}
+                  onChange={(e) => updateForm('enableRAG', e.target.checked)}
+                />
+                Enable RAG
+              </label>
+            </div>
 
             {/* Toolbar row */}
             <div className="px-3 pb-3 flex items-end gap-2">

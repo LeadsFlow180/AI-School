@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Upload, FileText, Trash2, Loader2 } from 'lucide-react';
@@ -26,7 +26,7 @@ export function RAGManager() {
       } else {
         toast.error('Failed to load documents');
       }
-    } catch (error) {
+    } catch (_error) {
       toast.error('Error loading documents');
     } finally {
       setIsLoading(false);
@@ -53,14 +53,13 @@ export function RAGManager() {
       });
 
       if (response.ok) {
-        const data = await response.json();
         toast.success(`PDF "${file.name}" processed successfully`);
         loadDocuments(); // Refresh the list
       } else {
         const error = await response.json();
         toast.error(error.message || 'Failed to process PDF');
       }
-    } catch (error) {
+    } catch (_error) {
       toast.error('Error uploading PDF');
     } finally {
       setIsUploading(false);
@@ -85,15 +84,15 @@ export function RAGManager() {
       } else {
         toast.error('Failed to delete document');
       }
-    } catch (error) {
+    } catch (_error) {
       toast.error('Error deleting document');
     }
   };
 
   // Load documents on component mount
-  useState(() => {
-    loadDocuments();
-  });
+  useEffect(() => {
+    void loadDocuments();
+  }, []);
 
   return (
     <div className="space-y-6">

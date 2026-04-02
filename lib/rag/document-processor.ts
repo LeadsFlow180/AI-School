@@ -4,7 +4,7 @@
  */
 
 import { parsePDF } from '@/lib/pdf/pdf-providers';
-import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
+import { splitTextIntoChunks } from './chunk-text';
 import type { RAGDocument, DocumentChunk, RAGConfig } from './types';
 import { getEmbeddingService } from './embedding-service';
 import { getVectorStore } from './vector-store';
@@ -103,32 +103,30 @@ export class DocumentProcessor {
     fileName: string,
     pageCount: number,
   ): Promise<Omit<DocumentChunk, 'embedding'>[]> {
-    const splitter = new RecursiveCharacterTextSplitter({
-      chunkSize: this.config.chunkSize,
-      chunkOverlap: this.config.chunkOverlap,
-      separators: ['\n\n', '\n', ' ', ''],
-    });
-
-    const documents = await splitter.createDocuments([text]);
+    const parts = splitTextIntoChunks(
+      text,
+      this.config.chunkSize,
+      this.config.chunkOverlap,
+    );
 
     const chunks: Omit<DocumentChunk, 'embedding'>[] = [];
     let chunkIndex = 0;
 
-    for (const doc of documents) {
+    for (const content of parts) {
       // Estimate page number based on chunk position
       const estimatedPage = Math.min(
-        Math.floor((chunkIndex * pageCount) / documents.length) + 1,
+        Math.floor((chunkIndex * pageCount) / parts.length) + 1,
         pageCount,
       );
 
       chunks.push({
         id: `${fileName}_${chunkIndex}`,
-        content: doc.pageContent,
+        content,
         metadata: {
           fileName,
           pageNumber: estimatedPage,
           chunkIndex,
-          totalChunks: documents.length,
+          totalChunks: parts.length,
           fileSize: 0, // Will be set later
           mimeType: 'application/pdf',
         },

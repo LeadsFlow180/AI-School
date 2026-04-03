@@ -24,8 +24,24 @@ import { type SvgPoints, toPoints, getSvgPathRange } from '@/lib/export/svg-path
 import { svg2Base64 } from '@/lib/export/svg2base64';
 import { latexToOmml } from '@/lib/export/latex-to-omml';
 import { createLogger } from '@/lib/logger';
+import { db } from '@/lib/utils/database';
 
 const log = createLogger('ExportPPTX');
+
+// # Reason: Stage titles are often full generation prompts; Windows Explorer fails on long paths (~260)
+// and reports the ZIP as "invalid" when the download filename is hundreds of characters.
+const MAX_EXPORT_BASENAME_CHARS = 100;
+const MAX_INTERACTIVE_TITLE_CHARS = 80;
+
+function sanitizeExportBasename(raw: string | undefined, fallback: string): string {
+  const s = (raw ?? '')
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_EXPORT_BASENAME_CHARS)
+    .replace(/[.\s_]+$/g, '');
+  return s.length > 0 ? s : fallback;
+}
 
 const DEFAULT_FONT_SIZE = 16;
 const DEFAULT_FONT_FAMILY = 'Microsoft YaHei';
@@ -359,6 +375,91 @@ function buildSpeakerNotes(scene: Scene): string {
   return parts.join('\n');
 }
 
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+/** Resolve TTS binary for export (same sources as in-app playback: URL first, then IndexedDB). */
+async function resolveSpeechActionAudio(
+  action: SpeechAction,
+): Promise<{ data: string; extn: string } | null> {
+  try {
+    if (action.audioUrl) {
+      const resp = await fetch(action.audioUrl);
+      if (!resp.ok) return null;
+      const blob = await resp.blob();
+      const ct = resp.headers.get('content-type') || '';
+      let extn = 'mp3';
+      if (ct.includes('wav')) extn = 'wav';
+      else if (ct.includes('ogg')) extn = 'ogg';
+      else if (ct.includes('mp4') || ct.includes('mpeg')) extn = 'mp3';
+      const data = await blobToDataUrl(blob);
+      return { data, extn };
+    }
+    if (action.audioId) {
+      const rec = await db.audioFiles.get(action.audioId);
+      if (!rec?.blob) return null;
+      const fmt = (rec.format || 'mp3').toLowerCase().replace(/^\./, '');
+      const extn = /^[a-z0-9]+$/.test(fmt) ? fmt : 'mp3';
+      const data = await blobToDataUrl(rec.blob);
+      return { data, extn };
+    }
+  } catch (e) {
+    log.warn('resolveSpeechActionAudio failed:', e);
+  }
+  return null;
+}
+
+/** Embed narration clips from speech actions as slide audio (PowerPoint speaker can play from slide). */
+async function embedSpeechNarrationInSlide(
+  pptxSlide: pptxgen.Slide,
+  scene: Scene | undefined,
+  viewportSize: number,
+  viewportRatio: number,
+  ratioPx2Inch: number,
+): Promise<void> {
+  if (!scene?.actions?.length) return;
+
+  const slideW = viewportSize / ratioPx2Inch;
+  const slideH = (viewportSize * viewportRatio) / ratioPx2Inch;
+  const boxW = 0.4;
+  const boxH = 0.4;
+  const margin = 0.12;
+  let stack = 0;
+
+  for (const action of scene.actions) {
+    if (action.type !== 'speech') continue;
+    const speech = action as SpeechAction;
+    if (!speech.text?.trim()) continue;
+
+    const resolved = await resolveSpeechActionAudio(speech);
+    if (!resolved) continue;
+
+    const y = slideH - margin - boxH - stack * (boxH + 0.06);
+    stack += 1;
+    if (y < margin) break;
+
+    try {
+      pptxSlide.addMedia({
+        type: 'audio',
+        x: slideW - margin - boxW,
+        y,
+        w: boxW,
+        h: boxH,
+        data: resolved.data,
+        extn: resolved.extn,
+      });
+    } catch (e) {
+      log.warn('addMedia speech narration failed:', e);
+    }
+  }
+}
+
 async function buildPptxBlob(
   slides: Slide[],
   slideScenes: Scene[],
@@ -421,8 +522,7 @@ async function buildPptxBlob(
       }
     }
 
-    if (!slide.elements) continue;
-
+    if (slide.elements) {
     // ── Elements ──
     for (const el of slide.elements) {
       // ── TEXT ──
@@ -1076,6 +1176,16 @@ async function buildPptxBlob(
         }
       }
     }
+    }
+
+    // ── Narration: TTS from speech actions (IndexedDB / audioUrl, same as in-app playback) ──
+    await embedSpeechNarrationInSlide(
+      pptxSlide,
+      scene,
+      viewportSize,
+      viewportRatio,
+      ratioPx2Inch,
+    );
   }
 
   return (await pptx.write({ outputType: 'blob' })) as Blob;
@@ -1123,7 +1233,7 @@ export function useExportPPTX() {
   // ── Export PPTX only ──
   const exportPPTX = useCallback(() => {
     withExportGuard(async () => {
-      const fileName = stage?.name || 'slides';
+      const fileName = sanitizeExportBasename(stage?.name, 'slides');
       const blob = await buildPptxBlob(
         slides,
         slideScenes,
@@ -1152,7 +1262,7 @@ export function useExportPPTX() {
     withExportGuard(async () => {
       const JSZip = (await import('jszip')).default;
       const zip = new JSZip();
-      const fileName = stage?.name || 'slides';
+      const fileName = sanitizeExportBasename(stage?.name, 'slides');
 
       // 1. Generate PPTX
       const pptxBlob = await buildPptxBlob(
@@ -1170,7 +1280,10 @@ export function useExportPPTX() {
       for (const scene of scenes) {
         if (scene.content.type === 'interactive' && scene.content.html) {
           interactiveIndex++;
-          const safeName = scene.title.replace(/[\\/:*?"<>|]/g, '_');
+          const safeName = sanitizeExportBasename(scene.title, `page_${interactiveIndex}`).slice(
+            0,
+            MAX_INTERACTIVE_TITLE_CHARS,
+          );
           const htmlFileName = `interactive/${String(interactiveIndex).padStart(2, '0')}_${safeName}.html`;
           zip.file(htmlFileName, scene.content.html);
         }

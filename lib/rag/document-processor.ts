@@ -54,9 +54,17 @@ export class DocumentProcessor {
     // Split into chunks
     const chunks = await this.chunkText(fullText, file.name, parseResult.metadata?.pageCount || 1);
 
+    console.log(
+      `📝 RAG Chunking: Created ${chunks.length} chunks from "${file.name}" (${fullText.length} characters)`,
+    );
+
     // Generate embeddings
     const embeddingService = await getEmbeddingService(this.config.embeddingModel, apiKey);
     const chunksWithEmbeddings = await embeddingService.processChunks(chunks);
+
+    console.log(
+      `🧠 RAG Embeddings: Generated embeddings for ${chunksWithEmbeddings.length} chunks`,
+    );
 
     // Create document object
     const document: RAGDocument = {
@@ -103,11 +111,7 @@ export class DocumentProcessor {
     fileName: string,
     pageCount: number,
   ): Promise<Omit<DocumentChunk, 'embedding'>[]> {
-    const parts = splitTextIntoChunks(
-      text,
-      this.config.chunkSize,
-      this.config.chunkOverlap,
-    );
+    const parts = splitTextIntoChunks(text, this.config.chunkSize, this.config.chunkOverlap);
 
     const chunks: Omit<DocumentChunk, 'embedding'>[] = [];
     let chunkIndex = 0;

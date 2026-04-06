@@ -18,7 +18,7 @@ export class RAGService {
       chunkSize: 1000,
       chunkOverlap: 200,
       maxRetrievedChunks: 5,
-      similarityThreshold: 0.7,
+      similarityThreshold: 0.5, // Balanced threshold - selective but not too restrictive for relevant content
       embeddingModel: 'openai',
       vectorDB: 'chroma',
       ...config,
@@ -35,6 +35,22 @@ export class RAGService {
 
     // Search for relevant documents
     const retrievedChunks = await this.processor.searchDocuments(query, apiKey);
+
+    // Log retrieved chunks
+    if (retrievedChunks.length > 0) {
+      console.log(`📚 RAG Retrieved ${retrievedChunks.length} chunks for query: "${query}"`);
+      retrievedChunks.forEach((chunk, index) => {
+        console.log(
+          `  ${index + 1}. ${chunk.metadata.fileName} (page ${chunk.metadata.pageNumber})`,
+        );
+        console.log(
+          `     "${chunk.content.substring(0, 150)}${chunk.content.length > 150 ? '...' : ''}"`,
+        );
+      });
+      console.log('');
+    } else {
+      console.log(`📚 RAG: No chunks retrieved for query: "${query}"`);
+    }
 
     // Determine if query is PDF-related
     const isPDFRelated = retrievedChunks.length > 0;

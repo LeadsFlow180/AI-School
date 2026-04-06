@@ -93,7 +93,7 @@ export async function POST(req: NextRequest) {
                 content: buildVisionUserContent(userPrompt, images),
               },
             ],
-            maxOutputTokens: modelInfo?.outputWindow,
+            maxOutputTokens: Math.max(modelInfo?.outputWindow || 0, 8192), // Ensure at least 8192 tokens
           },
           'scene-content',
         );
@@ -104,7 +104,7 @@ export async function POST(req: NextRequest) {
           model: languageModel,
           system: systemPrompt,
           prompt: userPrompt,
-          maxOutputTokens: modelInfo?.outputWindow,
+          maxOutputTokens: Math.max(modelInfo?.outputWindow || 0, 8192), // Ensure at least 8192 tokens
         },
         'scene-content',
       );

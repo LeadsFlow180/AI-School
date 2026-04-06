@@ -16,8 +16,26 @@ export async function GET() {
     const ragService = getRAGService();
     const documents = await ragService.getAllDocuments();
 
+    // Get detailed chunk information for debugging
+    const vectorStore = await import('@/lib/rag/vector-store').then((m) => m.getVectorStore());
+    const allChunks = await vectorStore.getAllChunks();
+
     return apiSuccess({
       documents: documents.map((fileName) => ({ fileName })),
+      totalChunks: allChunks.length,
+      chunksByDocument: allChunks.reduce(
+        (acc, chunk) => {
+          const fileName = chunk.metadata.fileName;
+          if (!acc[fileName]) acc[fileName] = [];
+          acc[fileName].push({
+            id: chunk.id,
+            content: chunk.content.substring(0, 200) + '...', // First 200 chars
+            pageNumber: chunk.metadata.pageNumber,
+          });
+          return acc;
+        },
+        {} as Record<string, any[]>,
+      ),
     });
   } catch (error) {
     log.error('Error listing RAG documents:', error);

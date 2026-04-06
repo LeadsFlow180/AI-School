@@ -36,8 +36,14 @@ export async function POST(req: NextRequest) {
 
     log.info(`Processing RAG query: ${query.substring(0, 100)}...`);
 
+    console.log(`🔎 RAG Query API: "${query.trim()}"`);
+
     const ragService = getRAGService();
     const result = await ragService.query(query.trim(), apiKey);
+
+    console.log(
+      `✅ RAG Query completed: ${result.retrievedChunks.length} chunks, isPDFRelated: ${result.isPDFRelated}`,
+    );
 
     return apiSuccess({
       query: result.query,

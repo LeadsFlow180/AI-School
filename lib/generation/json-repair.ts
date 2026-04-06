@@ -88,6 +88,36 @@ export function parseJsonResponse<T>(response: string): T | null {
     return result;
   }
 
+  // Strategy 4: Try to fix incomplete JSON by adding closing brackets/braces
+  const trimmed = response.trim();
+  if (
+    (trimmed.startsWith('{') && !trimmed.endsWith('}')) ||
+    (trimmed.startsWith('[') && !trimmed.endsWith(']'))
+  ) {
+    let fixedResponse = trimmed;
+    if (trimmed.startsWith('{') && !trimmed.endsWith('}')) {
+      const openBraces = (fixedResponse.match(/{/g) || []).length;
+      const closeBraces = (fixedResponse.match(/}/g) || []).length;
+      if (openBraces > closeBraces) {
+        fixedResponse += '}'.repeat(openBraces - closeBraces);
+        log.debug('Attempting to fix incomplete JSON object by adding closing braces');
+      }
+    } else if (trimmed.startsWith('[') && !trimmed.endsWith(']')) {
+      const openBrackets = (fixedResponse.match(/\[/g) || []).length;
+      const closeBrackets = (fixedResponse.match(/\]/g) || []).length;
+      if (openBrackets > closeBrackets) {
+        fixedResponse += ']'.repeat(openBrackets - closeBrackets);
+        log.debug('Attempting to fix incomplete JSON array by adding closing brackets');
+      }
+    }
+
+    const fixedResult = tryParseJson<T>(fixedResponse);
+    if (fixedResult !== null) {
+      log.debug('Successfully parsed fixed incomplete JSON');
+      return fixedResult;
+    }
+  }
+
   log.error('Failed to parse JSON from response');
   log.error('Raw response (first 500 chars):', response.substring(0, 500));
 
@@ -131,18 +161,50 @@ export function tryParseJson<T>(jsonStr: string): T | null {
     // Fix 3: Try to fix truncated JSON arrays/objects
     const trimmed = fixed.trim();
     if (trimmed.startsWith('[') && !trimmed.endsWith(']')) {
-      const lastCompleteObj = fixed.lastIndexOf('}');
-      if (lastCompleteObj > 0) {
-        fixed = fixed.substring(0, lastCompleteObj + 1) + ']';
-        log.warn('Fixed truncated JSON array');
+      // Count braces to see if we can reasonably close it
+      const openBrackets = (fixed.match(/\[/g) || []).length;
+      const closeBrackets = (fixed.match(/\]/g) || []).length;
+      if (openBrackets > closeBrackets) {
+        // Try to find the last complete object in the array
+        const lastCompleteObj = fixed.lastIndexOf('}');
+        if (lastCompleteObj > 0) {
+          // Check if there's a comma before the truncation
+          const afterLastObj = fixed.substring(lastCompleteObj + 1).trim();
+          if (afterLastObj.startsWith(',')) {
+            // Remove the trailing comma
+            fixed = fixed.substring(0, lastCompleteObj + 1) + ']';
+          } else {
+            fixed = fixed.substring(0, lastCompleteObj + 1) + ']';
+          }
+          log.warn('Fixed truncated JSON array by closing at last complete object');
+        } else {
+          // Just close the array
+          fixed += ']';
+          log.warn('Fixed truncated JSON array by adding closing bracket');
+        }
       }
     } else if (trimmed.startsWith('{') && !trimmed.endsWith('}')) {
-      // Try to close incomplete object
+      // Try to close incomplete object by counting braces
       const openBraces = (fixed.match(/{/g) || []).length;
       const closeBraces = (fixed.match(/}/g) || []).length;
       if (openBraces > closeBraces) {
-        fixed += '}'.repeat(openBraces - closeBraces);
-        log.warn('Fixed truncated JSON object');
+        // Find the last complete key-value pair
+        const lastColon = fixed.lastIndexOf(':');
+        if (lastColon > 0) {
+          const afterColon = fixed.substring(lastColon + 1).trim();
+          if (afterColon.startsWith('"') && !afterColon.includes('"', 1)) {
+            // Incomplete string value - close it
+            const lastQuote = fixed.lastIndexOf('"');
+            fixed = fixed.substring(0, lastQuote + 1) + '}';
+            log.warn('Fixed truncated JSON object by closing incomplete string value');
+          } else {
+            fixed += '}';
+            log.warn('Fixed truncated JSON object by adding closing brace');
+          }
+        } else {
+          fixed += '}';
+          log.warn('Fixed truncated JSON object by adding closing brace');
+        }
       }
     }
 

@@ -1,30 +1,77 @@
 /**
- * Vector Store Implementation using in-memory storage
- * For production, replace with a proper vector database like Pinecone, Weaviate, or Chroma
+ * Vector Store Implementation using file-based persistence
+ * Stores data in a JSON file for persistence across server restarts
  */
 
 import type { DocumentChunk, RAGDocument } from './types';
 import { createLogger } from '@/lib/logger';
+import * as fs from 'fs';
+import * as path from 'path';
 
 const log = createLogger('VectorStore');
 
+interface StoredChunk {
+  id: string;
+  content: string;
+  metadata: any;
+  embedding: number[];
+}
+
 export class VectorStore {
-  private memoryStore: Map<string, { document: string; metadata: any; embedding: number[] }> =
-    new Map();
+  private memoryStore: Map<string, StoredChunk> = new Map();
+  private storagePath: string;
+
+  constructor(storagePath: string = './data/vector-store.json') {
+    this.storagePath = path.resolve(storagePath);
+  }
 
   async initialize(): Promise<void> {
-    log.info('Initialized in-memory vector store');
+    // Ensure directory exists
+    const dir = path.dirname(this.storagePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    // Load existing data
+    await this.loadFromDisk();
+    log.info(`Initialized vector store with ${this.memoryStore.size} chunks`);
+  }
+
+  private async loadFromDisk(): Promise<void> {
+    try {
+      if (fs.existsSync(this.storagePath)) {
+        const data = fs.readFileSync(this.storagePath, 'utf-8');
+        const chunks: StoredChunk[] = JSON.parse(data);
+        chunks.forEach((chunk) => {
+          this.memoryStore.set(chunk.id, chunk);
+        });
+        log.info(`Loaded ${chunks.length} chunks from disk`);
+      }
+    } catch (error) {
+      log.error('Error loading vector store from disk:', error);
+    }
+  }
+
+  private async saveToDisk(): Promise<void> {
+    try {
+      const chunks = Array.from(this.memoryStore.values());
+      fs.writeFileSync(this.storagePath, JSON.stringify(chunks, null, 2));
+    } catch (error) {
+      log.error('Error saving vector store to disk:', error);
+    }
   }
 
   async addDocuments(chunks: DocumentChunk[]): Promise<void> {
     chunks.forEach((chunk) => {
       this.memoryStore.set(chunk.id, {
-        document: chunk.content,
+        id: chunk.id,
+        content: chunk.content,
         metadata: chunk.metadata,
         embedding: chunk.embedding,
       });
     });
 
+    await this.saveToDisk();
     log.info(`Added ${chunks.length} document chunks to vector store`);
   }
 
@@ -34,17 +81,44 @@ export class VectorStore {
     threshold: number = 0.7,
   ): Promise<DocumentChunk[]> {
     const chunks: DocumentChunk[] = [];
-    for (const [id, data] of this.memoryStore.entries()) {
+    const allSimilarities: Array<{
+      id: string;
+      similarity: number;
+      content: string;
+      fileName: string;
+    }> = [];
+
+    for (const data of this.memoryStore.values()) {
       const similarity = this.cosineSimilarity(queryEmbedding, data.embedding);
+      allSimilarities.push({
+        id: data.id,
+        similarity,
+        content: data.content.substring(0, 100),
+        fileName: data.metadata.fileName,
+      });
+
+      log.debug(`Chunk ${data.id} similarity: ${similarity} (threshold: ${threshold})`);
       if (similarity >= threshold) {
         chunks.push({
-          id,
-          content: data.document,
+          id: data.id,
+          content: data.content,
           metadata: data.metadata,
           embedding: data.embedding,
         });
       }
     }
+
+    // Log all similarities for debugging
+    console.log(`📊 RAG Similarity Scores (all ${allSimilarities.length} chunks):`);
+    allSimilarities
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, 10) // Show top 10
+      .forEach((item, index) => {
+        console.log(
+          `  ${index + 1}. ${item.id} (${item.fileName}): ${item.similarity.toFixed(4)} - "${item.content}..."`,
+        );
+      });
+    console.log('');
 
     // Sort by similarity and limit results
     chunks.sort(
@@ -53,7 +127,28 @@ export class VectorStore {
         this.cosineSimilarity(queryEmbedding, a.embedding),
     );
     const result = chunks.slice(0, limit);
-    log.info(`Found ${result.length} relevant chunks for query`);
+
+    // Log matched chunks for debugging
+    if (result.length > 0) {
+      console.log(`🔍 RAG Search Results (${result.length} chunks found):`);
+      result.forEach((chunk, index) => {
+        const similarity = this.cosineSimilarity(queryEmbedding, chunk.embedding);
+        console.log(`  ${index + 1}. Chunk ${chunk.id} (similarity: ${similarity.toFixed(4)})`);
+        console.log(`     File: ${chunk.metadata.fileName}, Page: ${chunk.metadata.pageNumber}`);
+        console.log(
+          `     Content: ${chunk.content.substring(0, 200)}${chunk.content.length > 200 ? '...' : ''}`,
+        );
+        console.log('');
+      });
+    } else {
+      console.log(
+        `❌ RAG Search: No chunks found above threshold ${threshold} (checked ${this.memoryStore.size} total chunks) - try lowering threshold or rephrasing query`,
+      );
+    }
+
+    log.info(
+      `Found ${result.length} relevant chunks for query (checked ${this.memoryStore.size} total chunks)`,
+    );
     return result;
   }
 
@@ -82,6 +177,7 @@ export class VectorStore {
       }
     }
     keysToDelete.forEach((key) => this.memoryStore.delete(key));
+    await this.saveToDisk();
     log.info(`Deleted ${keysToDelete.length} chunks for document: ${fileName}`);
   }
 
@@ -93,9 +189,17 @@ export class VectorStore {
     return Array.from(fileNames);
   }
 
-  async clear(): Promise<void> {
-    this.memoryStore.clear();
-    log.info('Cleared all documents from vector store');
+  async getAllChunks(): Promise<DocumentChunk[]> {
+    const chunks: DocumentChunk[] = [];
+    for (const data of this.memoryStore.values()) {
+      chunks.push({
+        id: data.id,
+        content: data.content,
+        metadata: data.metadata,
+        embedding: data.embedding,
+      });
+    }
+    return chunks;
   }
 }
 

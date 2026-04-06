@@ -55,8 +55,16 @@ export async function POST(req: NextRequest) {
 
     log.info(`Processing PDF for RAG: ${pdfFile.name} (${pdfFile.size} bytes)`);
 
+    console.log(
+      `📄 RAG PDF Ingestion: Starting processing of "${pdfFile.name}" (${pdfFile.size} bytes)`,
+    );
+
     const ragService = getRAGService();
     const document = await ragService.ingestPDF(pdfFile, effectiveApiKey);
+
+    console.log(
+      `✅ RAG PDF Ingestion: Completed processing of "${pdfFile.name}" - ${document.chunks.length} chunks created`,
+    );
 
     return apiSuccess({
       document: {

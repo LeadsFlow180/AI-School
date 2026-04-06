@@ -51,6 +51,12 @@ export class DocumentProcessor {
     const fullText = this.extractTextFromParsedPDF(parseResult);
     log.info(`Extracted ${fullText.length} characters from PDF`);
 
+    if (!fullText.trim()) {
+      throw new Error(
+        'No text could be extracted from this PDF. It may be image-only, encrypted, or empty.',
+      );
+    }
+
     // Split into chunks
     const chunks = await this.chunkText(fullText, file.name, parseResult.metadata?.pageCount || 1);
 

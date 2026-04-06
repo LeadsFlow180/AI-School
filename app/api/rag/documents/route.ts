@@ -11,6 +11,8 @@ import { apiError, apiSuccess } from '@/lib/server/api-response';
 
 const log = createLogger('RAG Documents');
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   try {
     const ragService = getRAGService();
@@ -37,6 +39,8 @@ export async function GET() {
         {} as Record<string, any[]>,
       ),
     });
+    res.headers.set('Cache-Control', 'no-store, must-revalidate');
+    return res;
   } catch (error) {
     log.error('Error listing RAG documents:', error);
     return apiError(

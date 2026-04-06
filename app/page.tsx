@@ -19,6 +19,7 @@ import {
   BotOff,
   ChevronUp,
   Database,
+  UserRound,
 } from 'lucide-react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { createLogger } from '@/lib/logger';
@@ -442,6 +443,20 @@ function HomePage() {
 
         <div className="w-[1px] h-4 bg-gray-200 dark:bg-gray-700" />
 
+        {/* Creator profile — visible control (onboarding) */}
+        <button
+          type="button"
+          onClick={() => router.push('/onboarding')}
+          title={t('home.creatorProfile')}
+          aria-label={t('home.creatorProfile')}
+          className="flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs font-semibold text-gray-600 dark:text-gray-300 transition-all hover:bg-white dark:hover:bg-gray-700 hover:text-primary dark:hover:text-violet-400 hover:shadow-sm"
+        >
+          <UserRound className="size-4 shrink-0" />
+          <span className="max-[380px]:hidden">{t('home.creatorProfile')}</span>
+        </button>
+
+        <div className="w-[1px] h-4 bg-gray-200 dark:bg-gray-700" />
+
         {/* Settings Button */}
         <div className="relative">
           <button
@@ -536,14 +551,29 @@ function HomePage() {
             />
 
             {/* Toolbar row */}
-            <div className="px-3 pb-1 flex items-center justify-between">
-              <button
-                onClick={() => router.push('/rag')}
-                className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-              >
-                <Database className="size-3.5" />
-                Manage RAG Docs
-              </button>
+            <div className="px-3 pb-1 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 gap-1.5 border-border/80 bg-background/50 text-xs font-medium shadow-none hover:bg-accent"
+                  onClick={() => router.push('/onboarding')}
+                >
+                  <UserRound className="size-3.5" />
+                  {t('home.creatorProfile')}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 gap-1.5 border-border/80 bg-background/50 text-xs font-medium shadow-none hover:bg-accent"
+                  onClick={() => router.push('/rag')}
+                >
+                  <Database className="size-3.5" />
+                  {t('home.manageRagDocs')}
+                </Button>
+              </div>
               <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
                 <input
                   type="checkbox"

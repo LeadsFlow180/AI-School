@@ -19,10 +19,10 @@ export function RAGManager() {
   const loadDocuments = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch('/api/rag/documents');
+      const response = await fetch('/api/rag/documents', { cache: 'no-store' });
       if (response.ok) {
         const data = await response.json();
-        setDocuments(data.documents || []);
+        setDocuments(Array.isArray(data.documents) ? data.documents : []);
       } else {
         toast.error('Failed to load documents');
       }
@@ -53,11 +53,27 @@ export function RAGManager() {
       });
 
       if (response.ok) {
+        const data = await response.json();
+        const uploadedName = data.document?.fileName as string | undefined;
         toast.success(`PDF "${file.name}" processed successfully`);
-        loadDocuments(); // Refresh the list
+        await loadDocuments();
+        // If list is still empty (e.g. cached GET or another serverless instance), show the name we know was ingested.
+        if (uploadedName) {
+          setDocuments((prev) =>
+            prev.some((d) => d.fileName === uploadedName)
+              ? prev
+              : [...prev, { fileName: uploadedName }],
+          );
+        }
       } else {
-        const error = await response.json();
-        toast.error(error.message || 'Failed to process PDF');
+        const errBody = await response.json().catch(() => ({} as Record<string, unknown>));
+        const msg =
+          typeof errBody.error === 'string'
+            ? errBody.error
+            : typeof errBody.message === 'string'
+              ? errBody.message
+              : 'Failed to process PDF';
+        toast.error(msg);
       }
     } catch (_error) {
       toast.error('Error uploading PDF');
@@ -101,7 +117,8 @@ export function RAGManager() {
           <CardTitle>RAG Document Management</CardTitle>
           <CardDescription>
             Upload PDF documents to enable Retrieval-Augmented Generation (RAG) for more accurate
-            responses.
+            responses. PDFs need selectable text (not scanned images only). On a deployed server,
+            indexes are in memory until restarted—use local dev for persistent testing.
           </CardDescription>
         </CardHeader>
         <CardContent>

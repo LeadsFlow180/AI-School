@@ -9,17 +9,27 @@ const log = createLogger('Generation');
 export function parseJsonResponse<T>(response: string): T | null {
   // Strategy 1: Try to extract JSON from markdown code blocks (may have multiple)
   const codeBlockMatches = response.matchAll(/```(?:json)?\s*([\s\S]*?)```/g);
+  let matchCount = 0;
   for (const match of codeBlockMatches) {
+    matchCount++;
     const extracted = match[1].trim();
+    log.debug(`Code block match ${matchCount}: extracted length ${extracted.length}`);
+    log.debug(`Extracted starts with: "${extracted.substring(0, 50)}"`);
+    log.debug(`Extracted ends with: "${extracted.slice(-50)}"`);
     // Only try if it looks like JSON (starts with { or [)
     if (extracted.startsWith('{') || extracted.startsWith('[')) {
       const result = tryParseJson<T>(extracted);
       if (result !== null) {
         log.debug('Successfully parsed JSON from code block');
         return result;
+      } else {
+        log.debug('Failed to parse extracted JSON from code block');
       }
+    } else {
+      log.debug('Extracted content does not start with { or [, skipping');
     }
   }
+  log.debug(`Total code block matches found: ${matchCount}`);
 
   // Strategy 2: Try to find JSON structure directly in response (no code block)
   // Look for array or object start
@@ -131,7 +141,8 @@ export function tryParseJson<T>(jsonStr: string): T | null {
   // Attempt 1: Try parsing as-is
   try {
     return JSON.parse(jsonStr) as T;
-  } catch {
+  } catch (error) {
+    log.debug('JSON parse attempt 1 failed:', error.message);
     // Continue to fix attempts
   }
 
@@ -215,9 +226,12 @@ export function tryParseJson<T>(jsonStr: string): T | null {
 
   // Attempt 3: Use jsonrepair to fix malformed JSON (e.g. unescaped quotes in Chinese text)
   try {
+    log.debug('Attempting jsonrepair on JSON string');
     const repaired = jsonrepair(jsonStr);
+    log.debug('jsonrepair succeeded, parsing result');
     return JSON.parse(repaired) as T;
-  } catch {
+  } catch (error) {
+    log.debug('jsonrepair attempt failed:', error.message);
     // Continue to next attempt
   }
 

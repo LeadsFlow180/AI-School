@@ -8,8 +8,15 @@ import { NextRequest } from 'next/server';
 import { getRAGService } from '@/lib/rag/rag-service';
 import { createLogger } from '@/lib/logger';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
+import { createClient } from '@supabase/supabase-js';
 
 const log = createLogger('RAG Documents');
+
+// Initialize Supabase client for storage
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabase =
+  supabaseUrl && supabaseServiceKey ? createClient(supabaseUrl, supabaseServiceKey) : null;
 
 export const dynamic = 'force-dynamic';
 
@@ -39,8 +46,6 @@ export async function GET() {
         {} as Record<string, any[]>,
       ),
     });
-    res.headers.set('Cache-Control', 'no-store, must-revalidate');
-    return res;
   } catch (error) {
     log.error('Error listing RAG documents:', error);
     return apiError(
@@ -60,8 +65,44 @@ export async function DELETE(req: NextRequest) {
       return apiError('MISSING_REQUIRED_FIELD', 400, 'fileName parameter is required');
     }
 
+    // First, get document information to check for storage path
+    let storagePath: string | null = null;
+    if (supabase) {
+      try {
+        // Try to find the document in vector store to get storage path
+        const vectorStore = await import('@/lib/rag/vector-store').then((m) => m.getVectorStore());
+        const allChunks = await vectorStore.getAllChunks();
+
+        // Find a chunk from this document to get storage path from metadata
+        const documentChunk = allChunks.find((chunk) => chunk.metadata.fileName === fileName);
+        if (documentChunk && documentChunk.metadata.storagePath) {
+          storagePath = documentChunk.metadata.storagePath;
+        }
+      } catch (error) {
+        log.warn('Could not retrieve storage path for document:', error);
+      }
+    }
+
+    // Delete from vector store
     const ragService = getRAGService();
     await ragService.deleteDocument(fileName);
+
+    // Delete from Supabase Storage if path exists
+    if (storagePath && supabase) {
+      try {
+        const { error } = await supabase.storage.from('rag-documents').remove([storagePath]);
+
+        if (error) {
+          log.warn('Failed to delete file from Supabase Storage:', error);
+          console.log(`⚠️  Failed to delete file from Supabase Storage: ${storagePath}`);
+        } else {
+          console.log(`🗑️  Deleted file from Supabase Storage: ${storagePath}`);
+        }
+      } catch (error) {
+        log.warn('Error deleting file from Supabase Storage:', error);
+        console.log(`⚠️  Error deleting file from Supabase Storage: ${error}`);
+      }
+    }
 
     return apiSuccess({
       message: `Document ${fileName} deleted successfully`,

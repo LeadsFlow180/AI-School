@@ -12,6 +12,7 @@ export interface DocumentChunk {
     totalChunks: number;
     fileSize: number;
     mimeType: string;
+    storagePath?: string; // Path to file in Supabase Storage
   };
   embedding: number[];
 }
@@ -25,6 +26,7 @@ export interface RAGDocument {
   chunks: DocumentChunk[];
   createdAt: Date;
   updatedAt: Date;
+  storagePath?: string; // Path to file in Supabase Storage
 }
 
 export interface RAGQuery {
@@ -48,7 +50,7 @@ export interface RAGConfig {
   maxRetrievedChunks: number;
   similarityThreshold: number;
   embeddingModel: 'openai' | 'local';
-  vectorDB: 'chroma' | 'memory';
+  vectorDB: 'chroma' | 'memory' | 'supabase' | 'file';
 }
 
 export interface IngestPDFRequest {

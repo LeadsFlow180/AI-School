@@ -1,12 +1,13 @@
 /**
- * Vector Store Implementation using file-based persistence
- * Stores data in a JSON file for persistence across server restarts
+ * Vector Store Factory
+ * Supports both file-based persistence and Supabase vector database
  */
 
-import type { DocumentChunk, RAGDocument } from './types';
+import type { DocumentChunk } from './types';
 import { createLogger } from '@/lib/logger';
 import * as fs from 'fs';
 import * as path from 'path';
+import { SupabaseVectorStore } from './supabase-vector-store';
 
 const log = createLogger('VectorStore');
 
@@ -17,7 +18,7 @@ interface StoredChunk {
   embedding: number[];
 }
 
-export class VectorStore {
+class FileBasedVectorStore {
   private memoryStore: Map<string, StoredChunk> = new Map();
   private storagePath: string;
 
@@ -34,7 +35,7 @@ export class VectorStore {
 
     // Load existing data
     await this.loadFromDisk();
-    log.info(`Initialized vector store with ${this.memoryStore.size} chunks`);
+    log.info(`Initialized file-based vector store with ${this.memoryStore.size} chunks`);
   }
 
   private async loadFromDisk(): Promise<void> {
@@ -72,7 +73,7 @@ export class VectorStore {
     });
 
     await this.saveToDisk();
-    log.info(`Added ${chunks.length} document chunks to vector store`);
+    log.info(`Added ${chunks.length} document chunks to file-based vector store`);
   }
 
   async search(
@@ -203,13 +204,65 @@ export class VectorStore {
   }
 }
 
-// Singleton instance
+// Common interface for all vector stores
+export interface VectorStore {
+  initialize(): Promise<void>;
+  addDocuments(chunks: DocumentChunk[]): Promise<void>;
+  search(queryEmbedding: number[], limit?: number, threshold?: number): Promise<DocumentChunk[]>;
+  deleteDocument(fileName: string): Promise<void>;
+  getAllDocuments(): Promise<string[]>;
+  getAllChunks(): Promise<DocumentChunk[]>;
+}
+
 let vectorStoreInstance: VectorStore | null = null;
 
-export async function getVectorStore(): Promise<VectorStore> {
-  if (!vectorStoreInstance) {
-    vectorStoreInstance = new VectorStore();
-    await vectorStoreInstance.initialize();
+export async function getVectorStore(vectorDB?: string): Promise<VectorStore> {
+  if (vectorStoreInstance) {
+    return vectorStoreInstance;
   }
+
+  // Determine which vector store to use
+  const dbType = vectorDB || process.env.VECTOR_DB || 'supabase';
+
+  console.log('🔍 VECTOR STORE DEBUG:');
+  console.log('  - vectorDB param:', vectorDB);
+  console.log('  - process.env.VECTOR_DB:', process.env.VECTOR_DB);
+  console.log('  - Final dbType:', dbType);
+  console.log('  - SUPABASE_URL:', process.env.SUPABASE_URL ? '✅ set' : '❌ not set');
+  console.log('  - SUPABASE_ANON_KEY:', process.env.SUPABASE_ANON_KEY ? '✅ set' : '❌ not set');
+
+  // Force Supabase-only mode for RAG documents
+  if (dbType !== 'supabase') {
+    console.log(
+      '⚠️  Non-Supabase vector DB requested, but RAG system requires Supabase. Forcing Supabase mode.',
+    );
+  }
+
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!supabaseUrl || !supabaseKey) {
+    const errorMsg =
+      '❌ Supabase credentials not found! RAG system requires Supabase for document storage.';
+    console.error(errorMsg);
+    throw new Error(
+      'Supabase configuration required for RAG documents. Please set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env.local',
+    );
+  }
+
+  try {
+    console.log('🔄 Initializing Supabase vector store for RAG documents...');
+    vectorStoreInstance = new SupabaseVectorStore(supabaseUrl, supabaseKey);
+    await vectorStoreInstance.initialize();
+    console.log('✅ Using Supabase vector store for RAG documents');
+  } catch (error) {
+    console.error('❌ Supabase initialization failed:', error.message);
+    console.error('💡 Make sure:');
+    console.error('   1. SUPABASE_SERVICE_ROLE_KEY is set in .env.local');
+    console.error('   2. document_chunks table exists in Supabase (run supabase-schema.sql)');
+    console.error('   3. pgvector extension is enabled in Supabase');
+    throw new Error(`Supabase vector store initialization failed: ${error.message}`);
+  }
+
   return vectorStoreInstance;
 }

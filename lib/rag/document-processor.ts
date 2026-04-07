@@ -19,7 +19,7 @@ const DEFAULT_CONFIG: RAGConfig = {
   maxRetrievedChunks: 5,
   similarityThreshold: 0.7,
   embeddingModel: 'openai',
-  vectorDB: 'chroma',
+  vectorDB: 'file', // Changed from 'chroma' to 'file' for clarity
 };
 
 export class DocumentProcessor {
@@ -29,7 +29,7 @@ export class DocumentProcessor {
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
-  async processPDF(file: File, apiKey?: string): Promise<RAGDocument> {
+  async processPDF(file: File, apiKey?: string, storagePath?: string): Promise<RAGDocument> {
     const startTime = Date.now();
 
     log.info(`Processing PDF: ${file.name} (${file.size} bytes)`);
@@ -58,7 +58,13 @@ export class DocumentProcessor {
     }
 
     // Split into chunks
-    const chunks = await this.chunkText(fullText, file.name, parseResult.metadata?.pageCount || 1);
+    const chunks = await this.chunkText(
+      fullText,
+      file.name,
+      parseResult.metadata?.pageCount || 1,
+      file.size,
+      storagePath,
+    );
 
     console.log(
       `📝 RAG Chunking: Created ${chunks.length} chunks from "${file.name}" (${fullText.length} characters)`,
@@ -85,7 +91,7 @@ export class DocumentProcessor {
     };
 
     // Store in vector database
-    const vectorStore = await getVectorStore();
+    const vectorStore = await getVectorStore(this.config.vectorDB);
     await vectorStore.addDocuments(chunksWithEmbeddings);
 
     const processingTime = Date.now() - startTime;
@@ -116,6 +122,8 @@ export class DocumentProcessor {
     text: string,
     fileName: string,
     pageCount: number,
+    fileSize: number,
+    storagePath?: string,
   ): Promise<Omit<DocumentChunk, 'embedding'>[]> {
     const parts = splitTextIntoChunks(text, this.config.chunkSize, this.config.chunkOverlap);
 
@@ -137,8 +145,9 @@ export class DocumentProcessor {
           pageNumber: estimatedPage,
           chunkIndex,
           totalChunks: parts.length,
-          fileSize: 0, // Will be set later
+          fileSize,
           mimeType: 'application/pdf',
+          ...(storagePath && { storagePath }),
         },
       });
 
@@ -154,7 +163,7 @@ export class DocumentProcessor {
     const queryEmbedding = await embeddingService.generateEmbedding(query);
 
     // Search vector store
-    const vectorStore = await getVectorStore();
+    const vectorStore = await getVectorStore(this.config.vectorDB);
     const results = await vectorStore.search(
       queryEmbedding,
       this.config.maxRetrievedChunks,
@@ -165,13 +174,13 @@ export class DocumentProcessor {
   }
 
   async deleteDocument(fileName: string): Promise<void> {
-    const vectorStore = await getVectorStore();
+    const vectorStore = await getVectorStore(this.config.vectorDB);
     await vectorStore.deleteDocument(fileName);
     log.info(`Deleted document: ${fileName}`);
   }
 
   async getAllDocuments(): Promise<string[]> {
-    const vectorStore = await getVectorStore();
+    const vectorStore = await getVectorStore(this.config.vectorDB);
     return await vectorStore.getAllDocuments();
   }
 }

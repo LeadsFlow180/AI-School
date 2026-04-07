@@ -267,6 +267,7 @@ const useStageStoreBase = create<StageState>()((set, get) => ({
         await syncClassroomToSupabase({ stage, scenes, chats });
       } catch (syncErr) {
         log.warn('Failed to sync classroom to Supabase:', syncErr);
+        console.warn('[ClassroomSync] Failed to sync classroom to Supabase:', syncErr);
       }
     } catch (error) {
       log.error('Failed to save to storage:', error);

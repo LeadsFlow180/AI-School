@@ -149,14 +149,26 @@ function HomePage() {
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isAdminUser, setIsAdminUser] = useState(false);
   const [authUserEmail, setAuthUserEmail] = useState('');
   const [profileCardOpen, setProfileCardOpen] = useState(false);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const verifyAdminStatus = async (accessToken: string) => {
+    const res = await fetch('/api/auth/admin-status', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+    if (!res.ok) return false;
+    const json = await res.json();
+    return !!json?.success && !!json?.isAdmin;
+  };
+
   // Close dropdowns when clicking outside
   useEffect(() => {
-    if (!languageOpen && !themeOpen) return;
+    if (!languageOpen && !themeOpen && !profileCardOpen) return;
     const handleClickOutside = (e: MouseEvent) => {
       if (toolbarRef.current && !toolbarRef.current.contains(e.target as Node)) {
         setLanguageOpen(false);
@@ -171,10 +183,23 @@ function HomePage() {
   const loadClassrooms = async () => {
     try {
       const supabase = getSupabaseClient();
-      if (isAuthenticated && supabase) {
+      if (isAuthenticated && isAdminUser && supabase) {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        const currentUserId = session?.user?.id;
+
+        if (!currentUserId) {
+          setClassrooms([]);
+          setThumbnails({});
+          console.info('[Recents] No active user session. Showing empty recents.');
+          return;
+        }
+
         const { data, error } = await supabase
           .from('classrooms')
-          .select('id, name, description, scenes_data, created_at, updated_at')
+          .select('id, user_id, name, description, scenes_data, created_at, updated_at')
+          .eq('user_id', currentUserId)
           .order('updated_at', { ascending: false });
 
         if (!error && data) {
@@ -209,13 +234,18 @@ function HomePage() {
 
           setClassrooms(list);
           setThumbnails(slideMap);
-          console.info(`[Recents] Loaded ${list.length} classrooms from Supabase.`);
+          console.info(
+            `[Recents] Loaded ${list.length} classrooms from Supabase for admin ${currentUserId}.`,
+          );
           return;
         }
 
         console.warn(
-          `[Recents] Supabase fetch failed (${error?.message ?? 'unknown error'}). Falling back to local IndexedDB.`,
+          `[Recents] Supabase fetch failed (${error?.message ?? 'unknown error'}). Showing empty recents for authenticated admin.`,
         );
+        setClassrooms([]);
+        setThumbnails({});
+        return;
       }
 
       const localList = await listStages();
@@ -249,22 +279,42 @@ function HomePage() {
     }
 
     let active = true;
-    supabase.auth.getSession().then(({ data }) => {
+    const syncAuthState = async () => {
+      const { data } = await supabase.auth.getSession();
       if (!active) return;
-      setIsAuthenticated(!!data.session);
+      const hasSession = !!data.session;
+      setIsAuthenticated(hasSession);
       setAuthUserEmail(data.session?.user.email ?? '');
+
+      if (!hasSession || !data.session?.user?.id) {
+        setIsAdminUser(false);
+        setAuthReady(true);
+        return;
+      }
+
+      const isAdmin = await verifyAdminStatus(data.session.access_token);
+      if (!active) return;
+      setIsAdminUser(isAdmin);
       setAuthReady(true);
-    });
+    };
+
+    void syncAuthState();
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
       setIsAuthenticated(!!session);
       setAuthUserEmail(session?.user.email ?? '');
-      setAuthReady(true);
-      if (!session) {
+      if (!session?.user?.id) {
+        setIsAdminUser(false);
+        setAuthReady(true);
         setProfileCardOpen(false);
+        return;
       }
+
+      const isAdmin = await verifyAdminStatus(session.access_token);
+      setIsAdminUser(isAdmin);
+      setAuthReady(true);
     });
 
     return () => {
@@ -349,6 +399,12 @@ function HomePage() {
   };
 
   const handleGenerate = async () => {
+    if (!isAuthenticated || !isAdminUser) {
+      toast.error('Admin login required to generate classrooms.');
+      router.push('/auth');
+      return;
+    }
+
     // Validate setup before proceeding
     if (!currentModelId) {
       showSetupToast(
@@ -432,13 +488,23 @@ function HomePage() {
     return date.toLocaleDateString();
   };
 
-  const canGenerate = !!form.requirement.trim();
+  const canGenerate = !!form.requirement.trim() && isAuthenticated && isAdminUser;
+  const showAuthenticatedUi = authReady && isAuthenticated;
   const goToCreatorProfile = () => {
-    if (!authReady || !isAuthenticated) {
-      router.push('/auth?next=/onboarding');
+    // Avoid false redirect during initial auth hydration after refresh.
+    // If we already have an authenticated state, allow opening the card immediately.
+    if (!authReady) {
+      if (isAuthenticated) {
+        setProfileCardOpen(true);
+      }
       return;
     }
-    setProfileCardOpen((prev) => !prev);
+
+    if (!isAuthenticated) {
+      router.push('/auth');
+      return;
+    }
+    setProfileCardOpen(true);
   };
 
   const handleLogout = async () => {
@@ -449,18 +515,44 @@ function HomePage() {
     }
 
     try {
-      const { error } = await supabase.auth.signOut();
+      setProfileCardOpen(false);
+      const { error } = await supabase.auth.signOut({ scope: 'global' });
       if (error) {
         throw error;
       }
       setIsAuthenticated(false);
+      setIsAdminUser(false);
       setAuthUserEmail('');
-      setProfileCardOpen(false);
       toast.success('Logged out successfully.');
-      router.push('/');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unable to log out.';
       toast.error(`Logout failed: ${message}`);
+    } finally {
+      // Force-clear auth caches so UI cannot remain in a stale logged-in state.
+      try {
+        const isSupabaseAuthKey = (key: string) =>
+          /^sb-.*-auth-token$/i.test(key) ||
+          /^sb-.*-code-verifier$/i.test(key) ||
+          key.toLowerCase().includes('supabase') ||
+          key.toLowerCase().includes('auth-token');
+
+        const localKeys = Object.keys(localStorage);
+        for (const key of localKeys) {
+          if (isSupabaseAuthKey(key)) {
+            localStorage.removeItem(key);
+          }
+        }
+
+        const sessionKeys = Object.keys(sessionStorage);
+        for (const key of sessionKeys) {
+          if (isSupabaseAuthKey(key)) {
+            sessionStorage.removeItem(key);
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+      window.location.replace('/auth');
     }
   };
 
@@ -586,7 +678,7 @@ function HomePage() {
 
         <div className="w-[1px] h-4 bg-gray-200 dark:bg-gray-700" />
 
-        {isAuthenticated ? (
+        {showAuthenticatedUi ? (
           <div className="relative">
             <button
               type="button"
@@ -606,16 +698,27 @@ function HomePage() {
                 <p className="mt-1 text-sm font-medium text-foreground break-all">
                   {authUserEmail || 'No email available'}
                 </p>
+                <p
+                  className={cn(
+                    'mt-2 text-xs font-medium',
+                    isAdminUser ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400',
+                  )}
+                >
+                  {isAdminUser ? 'Admin access enabled' : 'Logged in, but not in admin_users'}
+                </p>
                 <button
                   type="button"
-                  onClick={() => router.push('/onboarding?edit=1')}
+                  onClick={() => router.push('/')}
                   className="mt-3 w-full rounded-md border border-border/70 px-3 py-2 text-xs font-medium text-left hover:bg-accent transition-colors"
                 >
-                  Open Profile Info
+                  Go to Home
                 </button>
                 <button
                   type="button"
-                  onClick={handleLogout}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void handleLogout();
+                  }}
                   className="mt-2 w-full rounded-md bg-destructive/90 px-3 py-2 text-xs font-semibold text-destructive-foreground hover:opacity-90 transition-opacity inline-flex items-center justify-center gap-1.5"
                 >
                   <LogOut className="size-3.5" />
@@ -627,7 +730,8 @@ function HomePage() {
         ) : (
           <button
             type="button"
-            onClick={() => router.push('/auth?next=/onboarding')}
+            onClick={() => router.push('/auth')}
+            disabled={!authReady}
             className="flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs font-semibold text-gray-600 dark:text-gray-300 transition-all hover:bg-white dark:hover:bg-gray-700 hover:text-primary dark:hover:text-violet-400 hover:shadow-sm"
           >
             <UserRound className="size-4 shrink-0" />
@@ -722,12 +826,17 @@ function HomePage() {
             {/* Textarea */}
             <textarea
               ref={textareaRef}
-              placeholder={t('upload.requirementPlaceholder')}
+              placeholder={
+                isAuthenticated && isAdminUser
+                  ? t('upload.requirementPlaceholder')
+                  : 'Login as admin to enter prompt and generate classroom.'
+              }
               className="w-full resize-none border-0 bg-transparent px-4 pt-1 pb-2 text-[13px] leading-relaxed placeholder:text-muted-foreground/40 focus:outline-none min-h-[140px] max-h-[300px]"
               value={form.requirement}
               onChange={(e) => updateForm('requirement', e.target.value)}
               onKeyDown={handleKeyDown}
               rows={4}
+              disabled={!isAuthenticated || !isAdminUser}
             />
 
             {/* Toolbar row */}
@@ -741,7 +850,7 @@ function HomePage() {
                   onClick={goToCreatorProfile}
                 >
                   <UserRound className="size-3.5" />
-                  {isAuthenticated ? 'Profile Info' : 'Creator Profile'}
+                  {showAuthenticatedUi ? 'Profile Info' : 'Creator Profile'}
                 </Button>
                 <Button
                   type="button"

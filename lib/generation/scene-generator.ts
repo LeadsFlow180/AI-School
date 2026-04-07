@@ -472,7 +472,8 @@ async function generateSlideContent(
   const lang = outline.language || 'zh-CN';
 
   // Build assigned images description for the prompt
-  let assignedImagesText = '可用图片资源：使用 img_1, img_2 等占位符ID创建图像元素（系统将自动处理图像替换）';
+  let assignedImagesText =
+    '可用图片资源：使用 img_1, img_2 等占位符ID创建图像元素（系统将自动处理图像替换）';
   let visionImages: Array<{ id: string; src: string }> | undefined;
 
   if (assignedImages && assignedImages.length > 0) {
@@ -563,8 +564,10 @@ async function generateSlideContent(
   const response = await aiCall(prompts.system, prompts.user, visionImages);
   const generatedData = parseJsonResponse<GeneratedSlideData>(response);
 
-  if (!generatedData || !generatedData.elements || !Array.isArray(generatedData.elements)) {
+  if (!generatedData) {
     log.error(`Failed to parse AI response for: ${outline.title}`);
+    log.error(`Response length: ${response.length} characters`);
+    log.error(`Response ends with: "${response.slice(-100)}"`);
     return null;
   }
 

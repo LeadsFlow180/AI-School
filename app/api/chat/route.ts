@@ -19,6 +19,7 @@ import type { ThinkingConfig } from '@/lib/types/provider';
 import { apiError } from '@/lib/server/api-response';
 import { createLogger } from '@/lib/logger';
 import { resolveModel } from '@/lib/server/resolve-model';
+import { getRAGService } from '@/lib/rag/rag-service';
 const log = createLogger('Chat API');
 
 // Allow streaming responses up to 60 seconds
@@ -75,6 +76,43 @@ export async function POST(req: NextRequest) {
     log.info(
       `Agents: ${body.config.agentIds.join(', ')}, Messages: ${body.messages.length}, Turn: ${body.directorState?.turnCount ?? 0}`,
     );
+
+    // Check for RAG request
+    const enableRAG = body.enableRAG || false;
+
+    if (enableRAG) {
+      try {
+        // Get the last user message for RAG query
+        const lastUserMessageIndex = body.messages
+          .map((msg, index) => ({ msg, index }))
+          .reverse()
+          .find(({ msg }) => msg.role === 'user')?.index;
+        if (lastUserMessageIndex !== undefined) {
+          const lastMessage = body.messages[lastUserMessageIndex];
+          // Extract text content from message parts
+          const messageContent =
+            lastMessage.parts
+              ?.map((part) => (part.type === 'text' ? part.text : ''))
+              .join('')
+              .trim() || '';
+
+          const ragService = getRAGService();
+          const ragResult = await ragService.query(messageContent, resolvedApiKey);
+
+          if (ragResult.isPDFRelated && ragResult.context) {
+            // Append RAG context to the user message
+            const contextMessage = `\n\nRelevant information from documents:\n${ragResult.context}\n\nPlease use this information to answer the user's question.`;
+            body.messages[lastUserMessageIndex].parts = [
+              ...(body.messages[lastUserMessageIndex].parts || []),
+              { type: 'text', text: contextMessage },
+            ];
+            log.info(`Added RAG context: ${ragResult.retrievedChunks.length} chunks`);
+          }
+        }
+      } catch (error) {
+        log.warn('RAG processing failed, continuing without context:', error);
+      }
+    }
 
     // Use the native request signal for abort propagation
     const signal = req.signal;

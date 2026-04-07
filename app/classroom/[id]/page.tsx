@@ -12,6 +12,7 @@ import { useWhiteboardHistoryStore } from '@/lib/store/whiteboard-history';
 import { createLogger } from '@/lib/logger';
 import { MediaStageProvider } from '@/lib/contexts/media-stage-context';
 import { generateMediaForOutlines } from '@/lib/media/media-orchestrator';
+import { getSupabaseClient } from '@/lib/supabase/client';
 
 const log = createLogger('Classroom');
 
@@ -38,23 +39,52 @@ export default function ClassroomDetailPage() {
 
       // If IndexedDB had no data, try server-side storage (API-generated classrooms)
       if (!useStageStore.getState().stage) {
-        log.info('No IndexedDB data, trying server-side storage for:', classroomId);
+        log.info('No IndexedDB data, trying Supabase/server fallback for:', classroomId);
         try {
-          const res = await fetch(`/api/classroom?id=${encodeURIComponent(classroomId)}`);
-          if (res.ok) {
-            const json = await res.json();
-            if (json.success && json.classroom) {
-              const { stage, scenes } = json.classroom;
+          const supabase = getSupabaseClient();
+          let loadedFromSupabase = false;
+
+          if (supabase) {
+            const { data, error } = await supabase
+              .from('classrooms')
+              .select('stage_data, scenes_data')
+              .eq('id', classroomId)
+              .maybeSingle();
+
+            if (!error && data?.stage_data && Array.isArray(data.scenes_data)) {
+              const stage = data.stage_data;
+              const scenes = data.scenes_data;
               useStageStore.getState().setStage(stage);
               useStageStore.setState({
                 scenes,
                 currentSceneId: scenes[0]?.id ?? null,
               });
-              log.info('Loaded from server-side storage:', classroomId);
+              loadedFromSupabase = true;
+              log.info('Loaded classroom from Supabase:', classroomId);
+              console.info(`[Classroom] Loaded ${classroomId} from Supabase.`);
+            } else if (error) {
+              log.warn('Supabase classroom fetch failed:', error.message);
+            }
+          }
+
+          if (!loadedFromSupabase) {
+            const res = await fetch(`/api/classroom?id=${encodeURIComponent(classroomId)}`);
+            if (res.ok) {
+              const json = await res.json();
+              if (json.success && json.classroom) {
+                const { stage, scenes } = json.classroom;
+                useStageStore.getState().setStage(stage);
+                useStageStore.setState({
+                  scenes,
+                  currentSceneId: scenes[0]?.id ?? null,
+                });
+                log.info('Loaded from server-side storage:', classroomId);
+                console.info(`[Classroom] Loaded ${classroomId} from /api/classroom fallback.`);
+              }
             }
           }
         } catch (fetchErr) {
-          log.warn('Server-side storage fetch failed:', fetchErr);
+          log.warn('Supabase/server fallback fetch failed:', fetchErr);
         }
       }
 

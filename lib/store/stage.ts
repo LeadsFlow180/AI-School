@@ -4,6 +4,7 @@ import { createSelectors } from '@/lib/utils/create-selectors';
 import type { ChatSession } from '@/lib/types/chat';
 import type { SceneOutline } from '@/lib/types/generation';
 import { createLogger } from '@/lib/logger';
+import { syncClassroomToSupabase } from '@/lib/supabase/classroom-sync';
 
 const log = createLogger('StageStore');
 
@@ -262,6 +263,12 @@ const useStageStoreBase = create<StageState>()((set, get) => ({
         currentSceneId,
         chats,
       });
+      try {
+        await syncClassroomToSupabase({ stage, scenes, chats });
+      } catch (syncErr) {
+        log.warn('Failed to sync classroom to Supabase:', syncErr);
+        console.warn('[ClassroomSync] Failed to sync classroom to Supabase:', syncErr);
+      }
     } catch (error) {
       log.error('Failed to save to storage:', error);
     }

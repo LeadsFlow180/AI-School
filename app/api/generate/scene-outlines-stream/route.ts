@@ -33,6 +33,8 @@ import type {
 import { apiError } from '@/lib/server/api-response';
 import { createLogger } from '@/lib/logger';
 import { resolveModelFromHeaders } from '@/lib/server/resolve-model';
+import { resolveApiKey } from '@/lib/server/provider-config';
+import { getRAGService } from '@/lib/rag/rag-service';
 const log = createLogger('Outlines Stream');
 
 export const maxDuration = 300;
@@ -173,6 +175,28 @@ export async function POST(req: NextRequest) {
 
     // Build teacher context from agents (if available)
     const teacherContext = formatTeacherPersonaForPrompt(agents);
+    let resolvedResearchContext = researchContext || '';
+    if (requirements.enableRAG) {
+      try {
+        const ragApiKey = resolveApiKey('openai');
+        if (ragApiKey) {
+          const ragService = getRAGService();
+          const ragResult = await ragService.query(requirements.requirement, ragApiKey);
+          if (ragResult.isPDFRelated && ragResult.context) {
+            resolvedResearchContext = resolvedResearchContext
+              ? `${resolvedResearchContext}\n\n${ragResult.context}`
+              : ragResult.context;
+            log.info(`Added RAG context to outlines prompt: ${ragResult.retrievedChunks.length} chunks`);
+          } else {
+            log.info('RAG enabled but no relevant chunks were found');
+          }
+        } else {
+          log.warn('RAG enabled but OPENAI_API_KEY is not configured; skipping RAG context');
+        }
+      } catch (error) {
+        log.warn('Failed to load RAG context for outlines; continuing without it:', error);
+      }
+    }
 
     const prompts = buildPrompt(PROMPT_IDS.REQUIREMENTS_TO_OUTLINES, {
       requirement: requirements.requirement,
@@ -183,7 +207,8 @@ export async function POST(req: NextRequest) {
           ? '无'
           : 'None',
       availableImages: availableImagesText,
-      researchContext: researchContext || (requirements.language === 'zh-CN' ? '无' : 'None'),
+      researchContext:
+        resolvedResearchContext || (requirements.language === 'zh-CN' ? '无' : 'None'),
       mediaGenerationPolicy,
       teacherContext,
     });

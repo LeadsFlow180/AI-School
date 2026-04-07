@@ -8,6 +8,8 @@ export const commonZhCN = {
   home: {
     slogan: 'Generative Learning in Multi-Agent Interactive Classroom',
     greeting: '嗨，',
+    creatorProfile: '创作者资料',
+    manageRagDocs: '管理 RAG 文档',
   },
   toolbar: {
     languageHint: '课程将以此语言生成',
@@ -49,6 +51,8 @@ export const commonEnUS = {
   home: {
     slogan: 'Generative Learning in Multi-Agent Interactive Classroom',
     greeting: 'Hi, ',
+    creatorProfile: 'Creator profile',
+    manageRagDocs: 'Manage RAG docs',
   },
   toolbar: {
     languageHint: 'Course will be generated in this language',

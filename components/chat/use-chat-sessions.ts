@@ -436,6 +436,14 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
    *
    * Each iteration: POST /api/chat → process SSE → wait for buffer drain → check outcome.
    */
+  const getRAGEnabled = (): boolean => {
+    try {
+      return localStorage.getItem('ragEnabled') === 'true';
+    } catch {
+      return false;
+    }
+  };
+
   const runAgentLoop = useCallback(
     async (
       sessionId: string,
@@ -454,6 +462,7 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
         model?: string;
         providerType?: string;
         requiresApiKey?: boolean;
+        enableRAG?: boolean;
       },
       controller: AbortController,
       sessionType: SessionType,
@@ -506,6 +515,7 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
             messages: currentMessages,
             storeState: freshStoreState,
             directorState,
+            enableRAG: requestTemplate.enableRAG ?? getRAGEnabled(),
           }),
           signal: controller.signal,
         });
@@ -876,6 +886,7 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
             model: mc.modelString,
             providerType: mc.providerType,
             requiresApiKey: mc.requiresApiKey,
+            enableRAG: getRAGEnabled(),
           },
           controller,
           session.type,
@@ -1088,6 +1099,7 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
             model: mc.modelString,
             providerType: mc.providerType,
             requiresApiKey: mc.requiresApiKey,
+            enableRAG: getRAGEnabled(),
           },
           controller,
           sessionType,
@@ -1231,6 +1243,7 @@ export function useChatSessions(options: UseChatSessionsOptions = {}) {
             model: mc.modelString,
             providerType: mc.providerType,
             requiresApiKey: mc.requiresApiKey,
+            enableRAG: getRAGEnabled(),
           },
           controller,
           'discussion',

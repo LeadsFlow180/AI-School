@@ -18,6 +18,9 @@ import {
   Monitor,
   BotOff,
   ChevronUp,
+  Database,
+  UserRound,
+  LogOut,
 } from 'lucide-react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { createLogger } from '@/lib/logger';
@@ -46,10 +49,12 @@ import { toast } from 'sonner';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useDraftCache } from '@/lib/hooks/use-draft-cache';
 import { SpeechButton } from '@/components/audio/speech-button';
+import { getSupabaseClient } from '@/lib/supabase/client';
 
 const log = createLogger('Home');
 
 const WEB_SEARCH_STORAGE_KEY = 'webSearchEnabled';
+const RAG_STORAGE_KEY = 'ragEnabled';
 const LANGUAGE_STORAGE_KEY = 'generationLanguage';
 const RECENT_OPEN_STORAGE_KEY = 'recentClassroomsOpen';
 
@@ -58,6 +63,16 @@ interface FormState {
   requirement: string;
   language: 'zh-CN' | 'en-US';
   webSearch: boolean;
+  enableRAG: boolean;
+}
+
+interface SupabaseClassroomRow {
+  id: string;
+  name: string;
+  description: string | null;
+  scenes_data: unknown;
+  created_at: string;
+  updated_at: string;
 }
 
 const initialFormState: FormState = {
@@ -65,6 +80,7 @@ const initialFormState: FormState = {
   requirement: '',
   language: 'zh-CN',
   webSearch: false,
+  enableRAG: false,
 };
 
 function HomePage() {
@@ -96,9 +112,11 @@ function HomePage() {
     }
     try {
       const savedWebSearch = localStorage.getItem(WEB_SEARCH_STORAGE_KEY);
+      const savedRAG = localStorage.getItem(RAG_STORAGE_KEY);
       const savedLanguage = localStorage.getItem(LANGUAGE_STORAGE_KEY);
       const updates: Partial<FormState> = {};
       if (savedWebSearch === 'true') updates.webSearch = true;
+      if (savedRAG === 'true') updates.enableRAG = true;
       if (savedLanguage === 'zh-CN' || savedLanguage === 'en-US') {
         updates.language = savedLanguage;
       } else {
@@ -129,29 +147,113 @@ function HomePage() {
   const [classrooms, setClassrooms] = useState<StageListItem[]>([]);
   const [thumbnails, setThumbnails] = useState<Record<string, Slide>>({});
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isAdminUser, setIsAdminUser] = useState(false);
+  const [authUserEmail, setAuthUserEmail] = useState('');
+  const [profileCardOpen, setProfileCardOpen] = useState(false);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const verifyAdminStatus = async (accessToken: string) => {
+    const res = await fetch('/api/auth/admin-status', {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+    if (!res.ok) return false;
+    const json = await res.json();
+    return !!json?.success && !!json?.isAdmin;
+  };
+
   // Close dropdowns when clicking outside
   useEffect(() => {
-    if (!languageOpen && !themeOpen) return;
+    if (!languageOpen && !themeOpen && !profileCardOpen) return;
     const handleClickOutside = (e: MouseEvent) => {
       if (toolbarRef.current && !toolbarRef.current.contains(e.target as Node)) {
         setLanguageOpen(false);
         setThemeOpen(false);
+        setProfileCardOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [languageOpen, themeOpen]);
+  }, [languageOpen, themeOpen, profileCardOpen]);
 
   const loadClassrooms = async () => {
     try {
-      const list = await listStages();
-      setClassrooms(list);
-      // Load first slide thumbnails
-      if (list.length > 0) {
-        const slides = await getFirstSlideByStages(list.map((c) => c.id));
+      const supabase = getSupabaseClient();
+      if (isAuthenticated && isAdminUser && supabase) {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        const currentUserId = session?.user?.id;
+
+        if (!currentUserId) {
+          setClassrooms([]);
+          setThumbnails({});
+          console.info('[Recents] No active user session. Showing empty recents.');
+          return;
+        }
+
+        const { data, error } = await supabase
+          .from('classrooms')
+          .select('id, user_id, name, description, scenes_data, created_at, updated_at')
+          .eq('user_id', currentUserId)
+          .order('updated_at', { ascending: false });
+
+        if (!error && data) {
+          const rows = data as SupabaseClassroomRow[];
+          const list: StageListItem[] = rows.map((row) => {
+            const scenes = Array.isArray(row.scenes_data) ? row.scenes_data : [];
+            return {
+              id: row.id,
+              name: row.name || 'Untitled Stage',
+              description: row.description ?? '',
+              sceneCount: scenes.length,
+              createdAt: Date.parse(row.created_at) || Date.now(),
+              updatedAt: Date.parse(row.updated_at) || Date.now(),
+            };
+          });
+
+          const slideMap: Record<string, Slide> = {};
+          for (const row of rows) {
+            const scenes = Array.isArray(row.scenes_data) ? row.scenes_data : [];
+            const firstSlideScene = scenes.find(
+              (scene): scene is { content?: { type?: string; canvas?: Slide } } =>
+                typeof scene === 'object' &&
+                scene !== null &&
+                typeof (scene as { content?: { type?: string } }).content?.type === 'string' &&
+                (scene as { content?: { type?: string } }).content?.type === 'slide',
+            );
+            const maybeCanvas = firstSlideScene?.content;
+            if (maybeCanvas?.type === 'slide' && maybeCanvas.canvas) {
+              slideMap[row.id] = maybeCanvas.canvas;
+            }
+          }
+
+          setClassrooms(list);
+          setThumbnails(slideMap);
+          console.info(
+            `[Recents] Loaded ${list.length} classrooms from Supabase for admin ${currentUserId}.`,
+          );
+          return;
+        }
+
+        console.warn(
+          `[Recents] Supabase fetch failed (${error?.message ?? 'unknown error'}). Showing empty recents for authenticated admin.`,
+        );
+        setClassrooms([]);
+        setThumbnails({});
+        return;
+      }
+
+      const localList = await listStages();
+      setClassrooms(localList);
+      console.info(`[Recents] Loaded ${localList.length} classrooms from local IndexedDB.`);
+      // Load first slide thumbnails from local DB
+      if (localList.length > 0) {
+        const slides = await getFirstSlideByStages(localList.map((c) => c.id));
         setThumbnails(slides);
       }
     } catch (err) {
@@ -166,9 +268,66 @@ function HomePage() {
     useMediaGenerationStore.getState().revokeObjectUrls();
     useMediaGenerationStore.setState({ tasks: {} });
 
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- Store hydration on mount
-    loadClassrooms();
   }, []);
+
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      setIsAuthenticated(false);
+      setAuthReady(true);
+      return;
+    }
+
+    let active = true;
+    const syncAuthState = async () => {
+      const { data } = await supabase.auth.getSession();
+      if (!active) return;
+      const hasSession = !!data.session;
+      setIsAuthenticated(hasSession);
+      setAuthUserEmail(data.session?.user.email ?? '');
+
+      if (!hasSession || !data.session?.user?.id) {
+        setIsAdminUser(false);
+        setAuthReady(true);
+        return;
+      }
+
+      const isAdmin = await verifyAdminStatus(data.session.access_token);
+      if (!active) return;
+      setIsAdminUser(isAdmin);
+      setAuthReady(true);
+    };
+
+    void syncAuthState();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      setIsAuthenticated(!!session);
+      setAuthUserEmail(session?.user.email ?? '');
+      if (!session?.user?.id) {
+        setIsAdminUser(false);
+        setAuthReady(true);
+        setProfileCardOpen(false);
+        return;
+      }
+
+      const isAdmin = await verifyAdminStatus(session.access_token);
+      setIsAdminUser(isAdmin);
+      setAuthReady(true);
+    });
+
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!authReady) return;
+    void loadClassrooms();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- load based on auth state only
+  }, [authReady, isAuthenticated]);
 
   const handleDelete = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -178,7 +337,18 @@ function HomePage() {
   const confirmDelete = async (id: string) => {
     setPendingDeleteId(null);
     try {
+      // Always clear local copy first.
       await deleteStageData(id);
+
+      // If logged in, also delete remote classroom row from Supabase.
+      const supabase = getSupabaseClient();
+      if (isAuthenticated && supabase) {
+        const { error: remoteDeleteError } = await supabase.from('classrooms').delete().eq('id', id);
+        if (remoteDeleteError) {
+          throw remoteDeleteError;
+        }
+      }
+
       await loadClassrooms();
     } catch (err) {
       log.error('Failed to delete classroom:', err);
@@ -190,6 +360,7 @@ function HomePage() {
     setForm((prev) => ({ ...prev, [field]: value }));
     try {
       if (field === 'webSearch') localStorage.setItem(WEB_SEARCH_STORAGE_KEY, String(value));
+      if (field === 'enableRAG') localStorage.setItem(RAG_STORAGE_KEY, String(value));
       if (field === 'language') localStorage.setItem(LANGUAGE_STORAGE_KEY, String(value));
       if (field === 'requirement') updateRequirementCache(value as string);
     } catch {
@@ -228,6 +399,12 @@ function HomePage() {
   };
 
   const handleGenerate = async () => {
+    if (!isAuthenticated || !isAdminUser) {
+      toast.error('Admin login required to generate classrooms.');
+      router.push('/auth');
+      return;
+    }
+
     // Validate setup before proceeding
     if (!currentModelId) {
       showSetupToast(
@@ -254,6 +431,7 @@ function HomePage() {
         userNickname: userProfile.nickname || undefined,
         userBio: userProfile.bio || undefined,
         webSearch: form.webSearch || undefined,
+        enableRAG: form.enableRAG || undefined,
       };
 
       let pdfStorageKey: string | undefined;
@@ -310,7 +488,73 @@ function HomePage() {
     return date.toLocaleDateString();
   };
 
-  const canGenerate = !!form.requirement.trim();
+  const canGenerate = !!form.requirement.trim() && isAuthenticated && isAdminUser;
+  const showAuthenticatedUi = authReady && isAuthenticated;
+  const goToCreatorProfile = () => {
+    // Avoid false redirect during initial auth hydration after refresh.
+    // If we already have an authenticated state, allow opening the card immediately.
+    if (!authReady) {
+      if (isAuthenticated) {
+        setProfileCardOpen(true);
+      }
+      return;
+    }
+
+    if (!isAuthenticated) {
+      router.push('/auth');
+      return;
+    }
+    setProfileCardOpen(true);
+  };
+
+  const handleLogout = async () => {
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      toast.error('Supabase is not configured.');
+      return;
+    }
+
+    try {
+      setProfileCardOpen(false);
+      const { error } = await supabase.auth.signOut({ scope: 'global' });
+      if (error) {
+        throw error;
+      }
+      setIsAuthenticated(false);
+      setIsAdminUser(false);
+      setAuthUserEmail('');
+      toast.success('Logged out successfully.');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to log out.';
+      toast.error(`Logout failed: ${message}`);
+    } finally {
+      // Force-clear auth caches so UI cannot remain in a stale logged-in state.
+      try {
+        const isSupabaseAuthKey = (key: string) =>
+          /^sb-.*-auth-token$/i.test(key) ||
+          /^sb-.*-code-verifier$/i.test(key) ||
+          key.toLowerCase().includes('supabase') ||
+          key.toLowerCase().includes('auth-token');
+
+        const localKeys = Object.keys(localStorage);
+        for (const key of localKeys) {
+          if (isSupabaseAuthKey(key)) {
+            localStorage.removeItem(key);
+          }
+        }
+
+        const sessionKeys = Object.keys(sessionStorage);
+        for (const key of sessionKeys) {
+          if (isSupabaseAuthKey(key)) {
+            sessionStorage.removeItem(key);
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+      window.location.replace('/auth');
+    }
+  };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -434,6 +678,69 @@ function HomePage() {
 
         <div className="w-[1px] h-4 bg-gray-200 dark:bg-gray-700" />
 
+        {showAuthenticatedUi ? (
+          <div className="relative">
+            <button
+              type="button"
+              onClick={goToCreatorProfile}
+              title="Profile Info"
+              aria-label="Profile Info"
+              className="flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs font-semibold text-gray-600 dark:text-gray-300 transition-all hover:bg-white dark:hover:bg-gray-700 hover:text-primary dark:hover:text-violet-400 hover:shadow-sm"
+            >
+              <UserRound className="size-4 shrink-0" />
+              <span className="max-[380px]:hidden">Profile Info</span>
+            </button>
+            {profileCardOpen && (
+              <div className="absolute top-full right-0 mt-2 w-64 rounded-xl border border-border/60 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md shadow-xl p-3 z-[60]">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Logged in user
+                </p>
+                <p className="mt-1 text-sm font-medium text-foreground break-all">
+                  {authUserEmail || 'No email available'}
+                </p>
+                <p
+                  className={cn(
+                    'mt-2 text-xs font-medium',
+                    isAdminUser ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400',
+                  )}
+                >
+                  {isAdminUser ? 'Admin access enabled' : 'Logged in, but not in admin_users'}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => router.push('/')}
+                  className="mt-3 w-full rounded-md border border-border/70 px-3 py-2 text-xs font-medium text-left hover:bg-accent transition-colors"
+                >
+                  Go to Home
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void handleLogout();
+                  }}
+                  className="mt-2 w-full rounded-md bg-destructive/90 px-3 py-2 text-xs font-semibold text-destructive-foreground hover:opacity-90 transition-opacity inline-flex items-center justify-center gap-1.5"
+                >
+                  <LogOut className="size-3.5" />
+                  Logout
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => router.push('/auth')}
+            disabled={!authReady}
+            className="flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs font-semibold text-gray-600 dark:text-gray-300 transition-all hover:bg-white dark:hover:bg-gray-700 hover:text-primary dark:hover:text-violet-400 hover:shadow-sm"
+          >
+            <UserRound className="size-4 shrink-0" />
+            <span className="max-[380px]:hidden">Creator Profile</span>
+          </button>
+        )}
+
+        <div className="w-[1px] h-4 bg-gray-200 dark:bg-gray-700" />
+
         {/* Settings Button */}
         <div className="relative">
           <button
@@ -519,13 +826,52 @@ function HomePage() {
             {/* Textarea */}
             <textarea
               ref={textareaRef}
-              placeholder={t('upload.requirementPlaceholder')}
+              placeholder={
+                isAuthenticated && isAdminUser
+                  ? t('upload.requirementPlaceholder')
+                  : 'Login as admin to enter prompt and generate classroom.'
+              }
               className="w-full resize-none border-0 bg-transparent px-4 pt-1 pb-2 text-[13px] leading-relaxed placeholder:text-muted-foreground/40 focus:outline-none min-h-[140px] max-h-[300px]"
               value={form.requirement}
               onChange={(e) => updateForm('requirement', e.target.value)}
               onKeyDown={handleKeyDown}
               rows={4}
+              disabled={!isAuthenticated || !isAdminUser}
             />
+
+            {/* Toolbar row */}
+            <div className="px-3 pb-1 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 gap-1.5 border-border/80 bg-background/50 text-xs font-medium shadow-none hover:bg-accent"
+                  onClick={goToCreatorProfile}
+                >
+                  <UserRound className="size-3.5" />
+                  {showAuthenticatedUi ? 'Profile Info' : 'Creator Profile'}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 gap-1.5 border-border/80 bg-background/50 text-xs font-medium shadow-none hover:bg-accent"
+                  onClick={() => router.push('/rag')}
+                >
+                  <Database className="size-3.5" />
+                  {t('home.manageRagDocs')}
+                </Button>
+              </div>
+              <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={form.enableRAG}
+                  onChange={(e) => updateForm('enableRAG', e.target.checked)}
+                />
+                Enable RAG
+              </label>
+            </div>
 
             {/* Toolbar row */}
             <div className="px-3 pb-3 flex items-end gap-2">

@@ -1,7 +1,8 @@
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
-  output: process.env.VERCEL ? undefined : 'standalone',
+  // Only use standalone output on Vercel, otherwise let Next.js decide
+  output: process.env.VERCEL ? 'standalone' : undefined,
   typescript: {
     ignoreBuildErrors: true,
   },

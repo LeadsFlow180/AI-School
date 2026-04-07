@@ -1,38 +1,8 @@
-'use client';
+import { AuthPageClient } from './auth-page-client';
 
-import { useEffect } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
-import { SupabaseAuthCard } from '@/components/auth/supabase-auth-card';
-import { getSupabaseClient } from '@/lib/supabase/client';
+// Force dynamic rendering to prevent static export issues
+export const dynamic = 'force-dynamic';
 
 export default function AuthPage() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-
-  const nextPath = searchParams.get('next') || '/';
-
-  useEffect(() => {
-    const supabase = getSupabaseClient();
-    if (!supabase) return;
-
-    let mounted = true;
-    supabase.auth.getSession().then(({ data }) => {
-      if (!mounted) return;
-      if (data.session) {
-        router.replace(nextPath);
-      }
-    });
-
-    return () => {
-      mounted = false;
-    };
-  }, [nextPath, router]);
-
-  return (
-    <div className="min-h-screen bg-[oklch(0.985_0.002_250)] dark:bg-[oklch(0.16_0.02_250)]">
-      <div className="mx-auto flex min-h-screen max-w-md items-center px-4 py-12">
-        <SupabaseAuthCard onAuthenticated={() => router.replace(nextPath)} />
-      </div>
-    </div>
-  );
+  return <AuthPageClient />;
 }

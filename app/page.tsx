@@ -20,6 +20,7 @@ import {
   ChevronUp,
   Database,
   UserRound,
+  LogOut,
 } from 'lucide-react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { createLogger } from '@/lib/logger';
@@ -48,6 +49,7 @@ import { toast } from 'sonner';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useDraftCache } from '@/lib/hooks/use-draft-cache';
 import { SpeechButton } from '@/components/audio/speech-button';
+import { getSupabaseClient } from '@/lib/supabase/client';
 
 const log = createLogger('Home');
 
@@ -62,6 +64,15 @@ interface FormState {
   language: 'zh-CN' | 'en-US';
   webSearch: boolean;
   enableRAG: boolean;
+}
+
+interface SupabaseClassroomRow {
+  id: string;
+  name: string;
+  description: string | null;
+  scenes_data: unknown;
+  created_at: string;
+  updated_at: string;
 }
 
 const initialFormState: FormState = {
@@ -136,6 +147,10 @@ function HomePage() {
   const [classrooms, setClassrooms] = useState<StageListItem[]>([]);
   const [thumbnails, setThumbnails] = useState<Record<string, Slide>>({});
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authUserEmail, setAuthUserEmail] = useState('');
+  const [profileCardOpen, setProfileCardOpen] = useState(false);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -146,19 +161,69 @@ function HomePage() {
       if (toolbarRef.current && !toolbarRef.current.contains(e.target as Node)) {
         setLanguageOpen(false);
         setThemeOpen(false);
+        setProfileCardOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [languageOpen, themeOpen]);
+  }, [languageOpen, themeOpen, profileCardOpen]);
 
   const loadClassrooms = async () => {
     try {
-      const list = await listStages();
-      setClassrooms(list);
-      // Load first slide thumbnails
-      if (list.length > 0) {
-        const slides = await getFirstSlideByStages(list.map((c) => c.id));
+      const supabase = getSupabaseClient();
+      if (isAuthenticated && supabase) {
+        const { data, error } = await supabase
+          .from('classrooms')
+          .select('id, name, description, scenes_data, created_at, updated_at')
+          .order('updated_at', { ascending: false });
+
+        if (!error && data) {
+          const rows = data as SupabaseClassroomRow[];
+          const list: StageListItem[] = rows.map((row) => {
+            const scenes = Array.isArray(row.scenes_data) ? row.scenes_data : [];
+            return {
+              id: row.id,
+              name: row.name || 'Untitled Stage',
+              description: row.description ?? '',
+              sceneCount: scenes.length,
+              createdAt: Date.parse(row.created_at) || Date.now(),
+              updatedAt: Date.parse(row.updated_at) || Date.now(),
+            };
+          });
+
+          const slideMap: Record<string, Slide> = {};
+          for (const row of rows) {
+            const scenes = Array.isArray(row.scenes_data) ? row.scenes_data : [];
+            const firstSlideScene = scenes.find(
+              (scene): scene is { content?: { type?: string; canvas?: Slide } } =>
+                typeof scene === 'object' &&
+                scene !== null &&
+                typeof (scene as { content?: { type?: string } }).content?.type === 'string' &&
+                (scene as { content?: { type?: string } }).content?.type === 'slide',
+            );
+            const maybeCanvas = firstSlideScene?.content;
+            if (maybeCanvas?.type === 'slide' && maybeCanvas.canvas) {
+              slideMap[row.id] = maybeCanvas.canvas;
+            }
+          }
+
+          setClassrooms(list);
+          setThumbnails(slideMap);
+          console.info(`[Recents] Loaded ${list.length} classrooms from Supabase.`);
+          return;
+        }
+
+        console.warn(
+          `[Recents] Supabase fetch failed (${error?.message ?? 'unknown error'}). Falling back to local IndexedDB.`,
+        );
+      }
+
+      const localList = await listStages();
+      setClassrooms(localList);
+      console.info(`[Recents] Loaded ${localList.length} classrooms from local IndexedDB.`);
+      // Load first slide thumbnails from local DB
+      if (localList.length > 0) {
+        const slides = await getFirstSlideByStages(localList.map((c) => c.id));
         setThumbnails(slides);
       }
     } catch (err) {
@@ -173,9 +238,46 @@ function HomePage() {
     useMediaGenerationStore.getState().revokeObjectUrls();
     useMediaGenerationStore.setState({ tasks: {} });
 
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- Store hydration on mount
-    loadClassrooms();
   }, []);
+
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      setIsAuthenticated(false);
+      setAuthReady(true);
+      return;
+    }
+
+    let active = true;
+    supabase.auth.getSession().then(({ data }) => {
+      if (!active) return;
+      setIsAuthenticated(!!data.session);
+      setAuthUserEmail(data.session?.user.email ?? '');
+      setAuthReady(true);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setIsAuthenticated(!!session);
+      setAuthUserEmail(session?.user.email ?? '');
+      setAuthReady(true);
+      if (!session) {
+        setProfileCardOpen(false);
+      }
+    });
+
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!authReady) return;
+    void loadClassrooms();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- load based on auth state only
+  }, [authReady, isAuthenticated]);
 
   const handleDelete = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -185,7 +287,18 @@ function HomePage() {
   const confirmDelete = async (id: string) => {
     setPendingDeleteId(null);
     try {
+      // Always clear local copy first.
       await deleteStageData(id);
+
+      // If logged in, also delete remote classroom row from Supabase.
+      const supabase = getSupabaseClient();
+      if (isAuthenticated && supabase) {
+        const { error: remoteDeleteError } = await supabase.from('classrooms').delete().eq('id', id);
+        if (remoteDeleteError) {
+          throw remoteDeleteError;
+        }
+      }
+
       await loadClassrooms();
     } catch (err) {
       log.error('Failed to delete classroom:', err);
@@ -320,6 +433,36 @@ function HomePage() {
   };
 
   const canGenerate = !!form.requirement.trim();
+  const goToCreatorProfile = () => {
+    if (!authReady || !isAuthenticated) {
+      router.push('/auth?next=/onboarding');
+      return;
+    }
+    setProfileCardOpen((prev) => !prev);
+  };
+
+  const handleLogout = async () => {
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      toast.error('Supabase is not configured.');
+      return;
+    }
+
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) {
+        throw error;
+      }
+      setIsAuthenticated(false);
+      setAuthUserEmail('');
+      setProfileCardOpen(false);
+      toast.success('Logged out successfully.');
+      router.push('/');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to log out.';
+      toast.error(`Logout failed: ${message}`);
+    }
+  };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -443,17 +586,54 @@ function HomePage() {
 
         <div className="w-[1px] h-4 bg-gray-200 dark:bg-gray-700" />
 
-        {/* Creator profile — visible control (onboarding) */}
-        <button
-          type="button"
-          onClick={() => router.push('/onboarding')}
-          title={t('home.creatorProfile')}
-          aria-label={t('home.creatorProfile')}
-          className="flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs font-semibold text-gray-600 dark:text-gray-300 transition-all hover:bg-white dark:hover:bg-gray-700 hover:text-primary dark:hover:text-violet-400 hover:shadow-sm"
-        >
-          <UserRound className="size-4 shrink-0" />
-          <span className="max-[380px]:hidden">{t('home.creatorProfile')}</span>
-        </button>
+        {isAuthenticated ? (
+          <div className="relative">
+            <button
+              type="button"
+              onClick={goToCreatorProfile}
+              title="Profile Info"
+              aria-label="Profile Info"
+              className="flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs font-semibold text-gray-600 dark:text-gray-300 transition-all hover:bg-white dark:hover:bg-gray-700 hover:text-primary dark:hover:text-violet-400 hover:shadow-sm"
+            >
+              <UserRound className="size-4 shrink-0" />
+              <span className="max-[380px]:hidden">Profile Info</span>
+            </button>
+            {profileCardOpen && (
+              <div className="absolute top-full right-0 mt-2 w-64 rounded-xl border border-border/60 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md shadow-xl p-3 z-[60]">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Logged in user
+                </p>
+                <p className="mt-1 text-sm font-medium text-foreground break-all">
+                  {authUserEmail || 'No email available'}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => router.push('/onboarding?edit=1')}
+                  className="mt-3 w-full rounded-md border border-border/70 px-3 py-2 text-xs font-medium text-left hover:bg-accent transition-colors"
+                >
+                  Open Profile Info
+                </button>
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="mt-2 w-full rounded-md bg-destructive/90 px-3 py-2 text-xs font-semibold text-destructive-foreground hover:opacity-90 transition-opacity inline-flex items-center justify-center gap-1.5"
+                >
+                  <LogOut className="size-3.5" />
+                  Logout
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => router.push('/auth?next=/onboarding')}
+            className="flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs font-semibold text-gray-600 dark:text-gray-300 transition-all hover:bg-white dark:hover:bg-gray-700 hover:text-primary dark:hover:text-violet-400 hover:shadow-sm"
+          >
+            <UserRound className="size-4 shrink-0" />
+            <span className="max-[380px]:hidden">Creator Profile</span>
+          </button>
+        )}
 
         <div className="w-[1px] h-4 bg-gray-200 dark:bg-gray-700" />
 
@@ -558,10 +738,10 @@ function HomePage() {
                   variant="outline"
                   size="sm"
                   className="h-8 gap-1.5 border-border/80 bg-background/50 text-xs font-medium shadow-none hover:bg-accent"
-                  onClick={() => router.push('/onboarding')}
+                  onClick={goToCreatorProfile}
                 >
                   <UserRound className="size-3.5" />
-                  {t('home.creatorProfile')}
+                  {isAuthenticated ? 'Profile Info' : 'Creator Profile'}
                 </Button>
                 <Button
                   type="button"

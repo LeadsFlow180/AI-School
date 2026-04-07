@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -13,6 +13,7 @@ import {
   Sparkles,
   UserRound,
 } from 'lucide-react';
+import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -28,6 +29,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useUserProfileStore } from '@/lib/store/user-profile';
+import { getSupabaseClient } from '@/lib/supabase/client';
 
 export const CREATOR_PROFILE_STORAGE_KEY = 'creator-profile';
 export const CREATOR_ONBOARDING_COMPLETE_KEY = 'creator-onboarding-complete';
@@ -72,11 +74,85 @@ const STEP_COUNT = 4;
 
 export function CreatorOnboarding() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const setNickname = useUserProfileStore((s) => s.setNickname);
   const setBio = useUserProfileStore((s) => s.setBio);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   const [step, setStep] = useState(1);
   const [form, setForm] = useState<CreatorProfileForm>(initialForm);
+  const forceEdit = searchParams.get('edit') === '1';
+
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      router.replace('/auth?next=/onboarding');
+      return;
+    }
+
+    let active = true;
+    supabase.auth.getSession().then(async ({ data }) => {
+      if (!active) return;
+      if (!data.session) {
+        router.replace('/auth?next=/onboarding');
+        return;
+      }
+      setUserId(data.session.user.id);
+
+      // Reason: Load persisted profile from Supabase first so onboarding reflects DB state.
+      const { data: profile, error } = await supabase
+        .from('creator_profiles')
+        .select('display_name, role, organization, audience, subjects, bio')
+        .eq('id', data.session.user.id)
+        .maybeSingle();
+
+      if (!active) return;
+
+      if (error) {
+        toast.error(`Failed to load profile from Supabase: ${error.message}`);
+      } else if (profile) {
+        const hasExistingProfile = !!(
+          profile.display_name ||
+          profile.role ||
+          profile.organization ||
+          profile.audience ||
+          profile.subjects ||
+          profile.bio
+        );
+
+        setForm((prev) => ({
+          ...prev,
+          displayName: profile.display_name ?? prev.displayName,
+          role: profile.role ?? prev.role,
+          organization: profile.organization ?? prev.organization,
+          audience: profile.audience ?? prev.audience,
+          subjects: profile.subjects ?? prev.subjects,
+          bio: profile.bio ?? prev.bio,
+        }));
+
+        if (hasExistingProfile) {
+          try {
+            localStorage.setItem(CREATOR_ONBOARDING_COMPLETE_KEY, 'true');
+          } catch {
+            /* ignore localStorage issues */
+          }
+
+          if (!forceEdit) {
+            router.replace('/');
+            return;
+          }
+        }
+      }
+
+      setAuthChecked(true);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [forceEdit, router]);
 
   useEffect(() => {
     try {
@@ -110,17 +186,50 @@ export function CreatorOnboarding() {
     return true;
   };
 
-  const finish = () => {
+  const finish = async () => {
+    const supabase = getSupabaseClient();
+    if (!supabase || !userId) {
+      toast.error('You must be logged in to save creator profile.');
+      return;
+    }
+
+    setSaving(true);
     try {
+      const { error } = await supabase.from('creator_profiles').upsert({
+        id: userId,
+        display_name: form.displayName.trim(),
+        role: form.role,
+        organization: form.organization.trim(),
+        audience: form.audience,
+        subjects: form.subjects.trim(),
+        bio: form.bio.trim(),
+      });
+
+      if (error) {
+        throw error;
+      }
+
       localStorage.setItem(CREATOR_PROFILE_STORAGE_KEY, JSON.stringify(form));
       localStorage.setItem(CREATOR_ONBOARDING_COMPLETE_KEY, 'true');
+      toast.success('Profile Saved');
     } catch {
-      /* storage unavailable */
+      toast.error('Failed to save creator profile to Supabase.');
+      setSaving(false);
+      return;
     }
     setNickname(form.displayName.trim());
     setBio(form.bio.trim());
+    setSaving(false);
     router.push('/');
   };
+
+  if (!authChecked) {
+    return (
+      <div className="min-h-screen flex items-center justify-center text-sm text-muted-foreground">
+        Checking authentication...
+      </div>
+    );
+  }
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-[oklch(0.985_0.002_250)] dark:bg-[oklch(0.16_0.02_250)]">
@@ -353,9 +462,10 @@ export function CreatorOnboarding() {
                     type="button"
                     className="w-full sm:w-auto sm:min-w-[180px]"
                     onClick={finish}
+                    disabled={saving}
                   >
                     <Sparkles className="mr-2 h-4 w-4" />
-                    Go to workspace
+                    {saving ? 'Saving...' : 'Go to workspace'}
                     <Check className="ml-2 h-4 w-4 opacity-80" />
                   </Button>
                 )}
@@ -365,7 +475,7 @@ export function CreatorOnboarding() {
         </Card>
 
         <p className="mt-8 text-center text-xs text-muted-foreground">
-          Data is stored on this device for now. Account sync and team profiles can be added later.
+          Your creator profile is synced with your Supabase account.
         </p>
       </div>
     </div>

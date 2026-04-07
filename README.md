@@ -100,6 +100,14 @@ GOOGLE_API_KEY=...
 GROK_API_KEY=xai-...
 ```
 
+If you want admin-only login via Supabase, also set:
+
+```env
+NEXT_PUBLIC_SUPABASE_URL=https://<project-ref>.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=<your-anon-key>
+SUPABASE_SERVICE_ROLE_KEY=<your-service-role-key>
+```
+
 You can also configure providers via `server-providers.yml`:
 
 ```yaml
@@ -123,6 +131,7 @@ pnpm dev
 ```
 
 Open **http://localhost:3000** and start learning!
+Open **http://localhost:3000/auth** to use Admin Login UI.
 
 ### 4. Build for Production
 

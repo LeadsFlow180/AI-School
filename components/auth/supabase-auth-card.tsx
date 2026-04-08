@@ -76,11 +76,11 @@ export function SupabaseAuthCard({ onAuthenticated }: SupabaseAuthCardProps) {
   };
 
   return (
-    <Card className="w-full border-border/80 shadow-md">
+    <Card className="w-full border-slate-200/80 bg-white/90 shadow-xl backdrop-blur-xl dark:border-slate-700/60 dark:bg-slate-900/85">
       <CardHeader>
-        <CardTitle className="text-xl font-semibold">Admin Login</CardTitle>
+        <CardTitle className="text-2xl font-semibold tracking-tight">Admin Login</CardTitle>
         <CardDescription>
-          Login with your admin account to continue.
+          Login with your admin email and password to access classroom controls.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -131,6 +131,10 @@ export function SupabaseAuthCard({ onAuthenticated }: SupabaseAuthCardProps) {
             )}
           </Button>
         </form>
+
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          Only accounts listed in `admin_users` can access this workspace.
+        </p>
       </CardContent>
     </Card>
   );

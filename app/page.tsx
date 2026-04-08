@@ -544,11 +544,11 @@ function HomePage() {
   };
 
   return (
-    <div className="min-h-[100dvh] w-full bg-gradient-to-b from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900 flex flex-col items-center p-4 pt-16 md:p-8 md:pt-16 overflow-x-hidden">
+    <div className="min-h-[100dvh] w-full bg-[linear-gradient(to_bottom,rgba(250,250,250,1),rgba(244,244,245,0.95))] dark:bg-[linear-gradient(to_bottom,rgba(9,9,11,1),rgba(15,23,42,0.95))] flex flex-col items-center p-4 pt-16 md:p-8 md:pt-16 overflow-x-hidden">
       {/* ═══ Top-right pill (unchanged) ═══ */}
       <div
         ref={toolbarRef}
-        className="fixed top-4 right-4 z-50 flex items-center gap-1 bg-white/60 dark:bg-gray-800/60 backdrop-blur-md px-2 py-1.5 rounded-full border border-gray-100/50 dark:border-gray-700/50 shadow-sm"
+        className="fixed top-4 right-4 z-50 flex items-center gap-1.5 bg-white/90 dark:bg-zinc-900/85 backdrop-blur-xl px-2.5 py-1.5 rounded-full border border-zinc-200/80 dark:border-zinc-700/60 shadow-sm"
       >
         {/* Language Selector */}
         <div className="relative">
@@ -760,10 +760,10 @@ function HomePage() {
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6, ease: 'easeOut' }}
-        className={cn(
-          'relative z-20 w-full max-w-[800px] flex flex-col items-center',
-          classrooms.length === 0 ? 'justify-center min-h-[calc(100dvh-8rem)]' : 'mt-[10vh]',
-        )}
+          className={cn(
+            'relative z-20 w-full max-w-[900px] flex flex-col items-center',
+            classrooms.length === 0 ? 'justify-center min-h-[calc(100dvh-8rem)]' : 'mt-[8vh]',
+          )}
       >
         {/* ── Logo ── */}
         <motion.img
@@ -781,11 +781,20 @@ function HomePage() {
         />
 
         {/* ── Slogan ── */}
+        <motion.h1
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.2 }}
+          className="text-center text-2xl md:text-3xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-2"
+        >
+          Create interactive classrooms in minutes
+        </motion.h1>
+
         <motion.p
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.25 }}
-          className="text-sm text-muted-foreground/60 mb-8"
+          className="text-sm md:text-[15px] text-muted-foreground/85 mb-8 text-center max-w-[680px]"
         >
           {t('home.slogan')}
         </motion.p>
@@ -797,7 +806,12 @@ function HomePage() {
           transition={{ delay: 0.35 }}
           className="w-full"
         >
-          <div className="w-full rounded-2xl border border-border/60 bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl shadow-xl shadow-black/[0.03] dark:shadow-black/20 transition-shadow focus-within:shadow-2xl focus-within:shadow-violet-500/[0.06]">
+          <div className="w-full rounded-3xl border border-zinc-200/80 dark:border-zinc-700/60 bg-white/95 dark:bg-zinc-900/90 backdrop-blur-xl shadow-md transition-shadow focus-within:shadow-lg">
+            <div className="px-4 pt-3">
+              <span className="inline-flex items-center rounded-full border border-zinc-300/80 dark:border-zinc-600/70 bg-zinc-100/90 dark:bg-zinc-800/70 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-zinc-700 dark:text-zinc-300">
+                AI Classroom Studio
+              </span>
+            </div>
             {/* ── Greeting + Profile + Agents ── */}
             <div className="relative z-20 flex items-start justify-between">
               <GreetingBar />
@@ -814,7 +828,7 @@ function HomePage() {
                   ? t('upload.requirementPlaceholder')
                   : 'Login as admin to enter prompt and generate classroom.'
               }
-              className="w-full resize-none border-0 bg-transparent px-4 pt-1 pb-2 text-[13px] leading-relaxed placeholder:text-muted-foreground/40 focus:outline-none min-h-[140px] max-h-[300px]"
+              className="w-full resize-none border-0 bg-transparent px-5 pt-2 pb-2 text-[14px] leading-relaxed placeholder:text-muted-foreground/50 focus:outline-none min-h-[150px] max-h-[320px]"
               value={form.requirement}
               onChange={(e) => updateForm('requirement', e.target.value)}
               onKeyDown={handleKeyDown}
@@ -829,7 +843,7 @@ function HomePage() {
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="h-8 gap-1.5 border-border/80 bg-background/50 text-xs font-medium shadow-none hover:bg-accent"
+                  className="h-8 gap-1.5 border-border/80 bg-background/70 text-xs font-medium shadow-none hover:bg-accent rounded-lg"
                   onClick={goToCreatorProfile}
                 >
                   <UserRound className="size-3.5" />
@@ -839,7 +853,7 @@ function HomePage() {
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="h-8 gap-1.5 border-border/80 bg-background/50 text-xs font-medium shadow-none hover:bg-accent"
+                  className="h-8 gap-1.5 border-border/80 bg-background/70 text-xs font-medium shadow-none hover:bg-accent rounded-lg"
                   onClick={() => router.push('/rag')}
                 >
                   <Database className="size-3.5" />
@@ -891,9 +905,9 @@ function HomePage() {
                 onClick={handleGenerate}
                 disabled={!canGenerate}
                 className={cn(
-                  'shrink-0 h-8 rounded-lg flex items-center justify-center gap-1.5 transition-all px-3',
+                  'shrink-0 h-10 rounded-xl flex items-center justify-center gap-1.5 transition-all px-4',
                   canGenerate
-                    ? 'bg-primary text-primary-foreground hover:opacity-90 shadow-sm cursor-pointer'
+                    ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 hover:opacity-95 shadow-sm cursor-pointer'
                     : 'bg-muted text-muted-foreground/40 cursor-not-allowed',
                 )}
               >

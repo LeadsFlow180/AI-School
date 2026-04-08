@@ -132,9 +132,6 @@ export function SupabaseAuthCard({ onAuthenticated }: SupabaseAuthCardProps) {
           </Button>
         </form>
 
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          Only accounts listed in `admin_users` can access this workspace.
-        </p>
       </CardContent>
     </Card>
   );

@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { SupabaseAuthCard } from '@/components/auth/supabase-auth-card';
-import { getSupabaseClient } from '@/lib/supabase/client';
+import { getSessionSafe, getSupabaseClient } from '@/lib/supabase/client';
 
 export function AuthPageClient() {
   const router = useRouter();
@@ -16,9 +16,9 @@ export function AuthPageClient() {
     if (!supabase) return;
 
     let mounted = true;
-    supabase.auth.getSession().then(({ data }) => {
+    void getSessionSafe(supabase).then((session) => {
       if (!mounted) return;
-      if (data.session) {
+      if (session) {
         router.replace(nextPath);
       }
     });

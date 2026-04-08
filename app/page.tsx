@@ -49,7 +49,7 @@ import { toast } from 'sonner';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useDraftCache } from '@/lib/hooks/use-draft-cache';
 import { SpeechButton } from '@/components/audio/speech-button';
-import { getSupabaseClient } from '@/lib/supabase/client';
+import { clearSupabaseAuthStorage, getSessionSafe, getSupabaseClient } from '@/lib/supabase/client';
 
 const log = createLogger('Home');
 
@@ -184,9 +184,7 @@ function HomePage() {
     try {
       const supabase = getSupabaseClient();
       if (isAuthenticated && isAdminUser && supabase) {
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
+        const session = await getSessionSafe(supabase);
         const currentUserId = session?.user?.id;
 
         if (!currentUserId) {
@@ -280,19 +278,19 @@ function HomePage() {
 
     let active = true;
     const syncAuthState = async () => {
-      const { data } = await supabase.auth.getSession();
+      const session = await getSessionSafe(supabase);
       if (!active) return;
-      const hasSession = !!data.session;
+      const hasSession = !!session;
       setIsAuthenticated(hasSession);
-      setAuthUserEmail(data.session?.user.email ?? '');
+      setAuthUserEmail(session?.user.email ?? '');
 
-      if (!hasSession || !data.session?.user?.id) {
+      if (!hasSession || !session?.user?.id) {
         setIsAdminUser(false);
         setAuthReady(true);
         return;
       }
 
-      const isAdmin = await verifyAdminStatus(data.session.access_token);
+      const isAdmin = await verifyAdminStatus(session.access_token);
       if (!active) return;
       setIsAdminUser(isAdmin);
       setAuthReady(true);
@@ -530,25 +528,7 @@ function HomePage() {
     } finally {
       // Force-clear auth caches so UI cannot remain in a stale logged-in state.
       try {
-        const isSupabaseAuthKey = (key: string) =>
-          /^sb-.*-auth-token$/i.test(key) ||
-          /^sb-.*-code-verifier$/i.test(key) ||
-          key.toLowerCase().includes('supabase') ||
-          key.toLowerCase().includes('auth-token');
-
-        const localKeys = Object.keys(localStorage);
-        for (const key of localKeys) {
-          if (isSupabaseAuthKey(key)) {
-            localStorage.removeItem(key);
-          }
-        }
-
-        const sessionKeys = Object.keys(sessionStorage);
-        for (const key of sessionKeys) {
-          if (isSupabaseAuthKey(key)) {
-            sessionStorage.removeItem(key);
-          }
-        }
+        clearSupabaseAuthStorage();
       } catch {
         /* ignore */
       }
@@ -739,9 +719,11 @@ function HomePage() {
           </button>
         )}
 
-        <div className="w-[1px] h-4 bg-gray-200 dark:bg-gray-700" />
+        {/* <div className="w-[1px] h-4 bg-gray-200 dark:bg-gray-700" /> */}
 
-        {/* Settings Button */}
+        {/* Settings button intentionally hidden for cleaner OSS home header.
+            Kept as commented code so it can be restored quickly later. */}
+        {/*
         <div className="relative">
           <button
             onClick={() => setSettingsOpen(true)}
@@ -750,6 +732,7 @@ function HomePage() {
             <Settings className="w-4 h-4 group-hover:rotate-90 transition-transform duration-500" />
           </button>
         </div>
+        */}
       </div>
       <SettingsDialog
         open={settingsOpen}

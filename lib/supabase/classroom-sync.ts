@@ -2,7 +2,7 @@
 
 import type { ChatSession } from '@/lib/types/chat';
 import type { Scene, Stage } from '@/lib/types/stage';
-import { getSupabaseClient } from '@/lib/supabase/client';
+import { getSessionSafe, getSupabaseClient } from '@/lib/supabase/client';
 
 const SESSION_RETRY_DELAYS_MS = [0, 150, 400];
 
@@ -16,9 +16,7 @@ async function resolveSessionUserId() {
     if (delay > 0) {
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
+    const session = await getSessionSafe(supabase);
     if (session?.user?.id) {
       return { supabase, userId: session.user.id };
     }

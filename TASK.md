@@ -11,6 +11,7 @@
 - [x] 2026-04-01 - Fetch Recents from Supabase when logged in with local IndexedDB fallback and source logging.
 - [x] 2026-04-01 - Restrict auth to admin-only login (remove signup UI) and add `admin_users` SQL grant query.
 - [x] 2026-04-01 - Add secure server API to create admin user directly with email/password (`/api/admin/create-admin-user`).
+- [x] 2026-04-09 - Fix `/api/learn/redirect` 400 errors by adding base64url decoding, validating current payload shape, and server-side signature verification.
 
 ## Discovered During Work
 

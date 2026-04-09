@@ -6,9 +6,6 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
   transpilePackages: ['mathml2omml', 'pptxgenjs'],
   serverExternalPackages: [],
   experimental: {

@@ -13,11 +13,13 @@ import { createLogger } from '@/lib/logger';
 import { MediaStageProvider } from '@/lib/contexts/media-stage-context';
 import { generateMediaForOutlines } from '@/lib/media/media-orchestrator';
 import { getSupabaseClient } from '@/lib/supabase/client';
+import { useSearchParams } from 'next/navigation';
 
 const log = createLogger('Classroom');
 
 export default function ClassroomDetailPage() {
   const params = useParams();
+  const searchParams = useSearchParams();
   const classroomId = params?.id as string;
 
   const { loadFromStorage } = useStageStore();
@@ -26,6 +28,7 @@ export default function ClassroomDetailPage() {
   const [error, setError] = useState<string | null>(null);
 
   const generationStartedRef = useRef(false);
+  const redirectSyncedRef = useRef(false);
 
   const { generateRemaining, retrySingleOutline, stop } = useSceneGenerator({
     onComplete: () => {
@@ -149,6 +152,39 @@ export default function ClassroomDetailPage() {
       stop();
     };
   }, [classroomId, loadClassroom, stop]);
+
+  useEffect(() => {
+    if (redirectSyncedRef.current) return;
+
+    const payload = searchParams.get('payload');
+    const sig = searchParams.get('sig');
+    if (!payload || !sig) return;
+
+    redirectSyncedRef.current = true;
+    void (async () => {
+      try {
+        const response = await fetch('/api/learn/redirect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ payload, sig }),
+        });
+        const bodyText = await response.text();
+        if (response.ok) {
+          log.info('[Classroom] learn redirect sync success', {
+            status: response.status,
+            body: bodyText || '(empty)',
+          });
+        } else {
+          log.warn('[Classroom] learn redirect sync failed', {
+            status: response.status,
+            body: bodyText || '(empty)',
+          });
+        }
+      } catch (syncErr) {
+        log.warn('[Classroom] learn redirect sync error', syncErr);
+      }
+    })();
+  }, [searchParams]);
 
   // Auto-resume generation for pending outlines
   useEffect(() => {

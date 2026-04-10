@@ -4,7 +4,7 @@ import { z } from 'zod';
 
 const payloadSchema = z.object({
   learnerId: z.string().uuid().nullable().optional(),
-  guestSessionId: z.string().uuid().optional(),
+  guestSessionId: z.string().uuid().nullable().optional(),
   language: z.string().optional(),
   sectionId: z.union([z.string(), z.number()]).optional(),
   unitIndex: z.number().optional(),

@@ -16,14 +16,15 @@ const payloadSchema = z.object({
   nonce: z.string().optional(),
   lessonContentId: z.union([z.string(), z.number()]).optional(),
   status: z.string().optional(),
-  details: z.record(z.any()).optional(),
-  quiz: z.record(z.any()).optional(),
+  details: z.record(z.string(), z.any()).optional(),
+  quiz: z.record(z.string(), z.any()).optional(),
   source: z.string(),
 });
 
 const bodySchema = z.object({
   payload: z.string(),
   sig: z.string(),
+  lessonContentId: z.union([z.string(), z.number()]).optional(),
 });
 
 function toBase64Url(text: string) {
@@ -49,6 +50,7 @@ export async function POST(request: Request) {
 
   const payloadEncoded = parsedBody.data.payload;
   const sig = parsedBody.data.sig;
+  const bodyLessonContentId = parsedBody.data.lessonContentId;
 
   const secret = process.env.AI_SCHOOL_REDIRECT_SECRET?.trim() || '';
   if (secret) {
@@ -83,10 +85,15 @@ export async function POST(request: Request) {
   // Send data to external API
   const mainSchoolUrl = process.env.Main_SCHOOL_SITE_URL?.trim() || '';
   if (mainSchoolUrl) {
-    const dataWithoutSig = data;
-    const bodyJson = JSON.stringify(dataWithoutSig);
+    const payloadToSend = {
+      ...data,
+      // Prefer explicit lesson id from classroom route (e.g. h7c-O3wmm-),
+      // then payload lessonContentId, then legacy dbUnitId fallback.
+      lessonContentId: bodyLessonContentId ?? data.lessonContentId ?? data.dbUnitId,
+    };
+    const bodyJson = JSON.stringify(payloadToSend);
     const newSig = createHmac('sha256', secret).update(toBase64Url(bodyJson)).digest('hex');
-    const bodyToSend = { ...data, sig: newSig };
+    const bodyToSend = { ...payloadToSend, sig: newSig };
     console.log('Sending payload to external API:', bodyToSend);
     try {
       const response = await fetch(mainSchoolUrl + '/api/learn/content', {

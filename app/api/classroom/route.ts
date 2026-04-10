@@ -7,6 +7,7 @@ import {
   persistClassroom,
   readClassroom,
 } from '@/lib/server/classroom-storage';
+import { getSupabaseAdminClient } from '@/lib/server/supabase-admin';
 
 export async function POST(request: NextRequest) {
   try {
@@ -53,7 +54,26 @@ export async function GET(request: NextRequest) {
       return apiError(API_ERROR_CODES.INVALID_REQUEST, 400, 'Invalid classroom id');
     }
 
-    const classroom = await readClassroom(id);
+    let classroom = await readClassroom(id);
+    if (!classroom) {
+      const supabaseAdmin = getSupabaseAdminClient();
+      if (supabaseAdmin) {
+        const { data, error } = await supabaseAdmin
+          .from('classrooms')
+          .select('id, stage_data, scenes_data, created_at')
+          .eq('id', id)
+          .maybeSingle();
+
+        if (!error && data?.stage_data && Array.isArray(data.scenes_data)) {
+          classroom = {
+            id: data.id,
+            stage: data.stage_data,
+            scenes: data.scenes_data,
+            createdAt: data.created_at ?? new Date().toISOString(),
+          };
+        }
+      }
+    }
     if (!classroom) {
       return apiError(API_ERROR_CODES.INVALID_REQUEST, 404, 'Classroom not found');
     }

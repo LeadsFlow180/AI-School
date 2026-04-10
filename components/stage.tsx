@@ -32,6 +32,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { AlertTriangle } from 'lucide-react';
 import { VisuallyHidden } from 'radix-ui';
+import { trackLearnContentEvent } from '@/lib/learn/content-tracker';
 
 /**
  * Stage Component
@@ -46,7 +47,7 @@ export function Stage({
   onRetryOutline?: (outlineId: string) => Promise<void>;
 }) {
   const { t } = useI18n();
-  const { mode, getCurrentScene, scenes, currentSceneId, setCurrentSceneId, generatingOutlines } =
+  const { mode, stage, getCurrentScene, scenes, currentSceneId, setCurrentSceneId, generatingOutlines } =
     useStageStore();
   const failedOutlines = useStageStore.use.failedOutlines();
 
@@ -682,6 +683,19 @@ export function Stage({
   );
 
   const isTopicActive = playbackView.isTopicActive;
+
+  useEffect(() => {
+    if (!stage?.id || !currentScene || !currentSceneId || currentSceneId === PENDING_SCENE_ID) return;
+    void trackLearnContentEvent({
+      status: 'slide_viewed',
+      classroomId: stage.id,
+      sceneId: currentSceneId,
+      details: {
+        sceneType: currentScene.type,
+        sceneTitle: currentScene.title,
+      },
+    });
+  }, [currentScene, currentSceneId, stage?.id]);
 
   /**
    * Gated scene switch — if a topic is active, show AlertDialog before switching.

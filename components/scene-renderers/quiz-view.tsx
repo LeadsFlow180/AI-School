@@ -17,6 +17,8 @@ import { cn } from '@/lib/utils';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { getCurrentModelConfig } from '@/lib/utils/model-config';
 import { createLogger } from '@/lib/logger';
+import { useMediaStageId } from '@/lib/contexts/media-stage-context';
+import { trackLearnContentEvent } from '@/lib/learn/content-tracker';
 
 const log = createLogger('QuizView');
 import type { QuizQuestion } from '@/lib/types/stage';
@@ -56,6 +58,11 @@ function toArray(v: string | string[] | undefined): string[] {
 
 function isShortAnswer(q: QuizQuestion): boolean {
   return q.type === 'short_answer' || (!q.hasAnswer && (!q.answer || q.answer.length === 0));
+}
+
+function normalizeAnswer(value: string | string[] | undefined): string[] {
+  if (!value) return [];
+  return Array.isArray(value) ? value : [value];
 }
 
 /** Grade choice questions locally. Returns results only for non-short-answer questions. */
@@ -687,6 +694,7 @@ function ScoreBanner({
 
 export function QuizView({ questions, sceneId }: QuizViewProps) {
   const { t, locale } = useI18n();
+  const classroomId = useMediaStageId();
   const [phase, setPhase] = useState<Phase>('not_started');
   const [answers, setAnswers] = useState<Record<string, string | string[]>>({});
   const [results, setResults] = useState<QuestionResult[]>([]);
@@ -736,9 +744,32 @@ export function QuizView({ questions, sceneId }: QuizViewProps) {
   );
 
   const handleSubmit = useCallback(() => {
+    if (classroomId) {
+      void trackLearnContentEvent({
+        status: 'quiz_filled',
+        classroomId,
+        sceneId,
+        details: {
+          answers,
+          questionCount: questions.length,
+        },
+        quiz: {
+          questions: questions.map((q) => ({
+            questionId: q.id,
+            type: q.type,
+            question: q.question,
+            options: q.options ?? [],
+            points: q.points ?? 1,
+            hasAnswer: q.hasAnswer ?? true,
+            correctAnswer: normalizeAnswer(q.answer),
+            userAnswer: normalizeAnswer(answers[q.id]),
+          })),
+        },
+      });
+    }
     setPhase('grading');
     clearAnswersCache();
-  }, [clearAnswersCache]);
+  }, [answers, classroomId, clearAnswersCache, questions.length, sceneId]);
 
   // When entering grading phase, grade choice questions locally + call API for short-answer
   useEffect(() => {
@@ -767,6 +798,59 @@ export function QuizView({ questions, sceneId }: QuizViewProps) {
       const ordered = questions.map((q) => allResultsMap.get(q.id)!).filter(Boolean);
 
       setResults(ordered);
+      if (classroomId) {
+        const score = ordered.reduce((sum, r) => sum + r.earned, 0);
+        const percentage = totalPoints > 0 ? Math.round((score / totalPoints) * 100) : 0;
+        const resultsMap = new Map<string, QuestionResult>(ordered.map((r) => [r.questionId, r]));
+        void trackLearnContentEvent({
+          status: 'quiz_marks',
+          classroomId,
+          sceneId,
+          details: {
+            score,
+            totalPoints,
+            percentage,
+            correctCount: ordered.filter((r) => r.status === 'correct').length,
+            incorrectCount: ordered.filter((r) => r.status === 'incorrect').length,
+            questionCount: questions.length,
+          },
+          quiz: {
+            answers,
+            questions: questions.map((q) => {
+              const result = resultsMap.get(q.id);
+              return {
+                questionId: q.id,
+                type: q.type,
+                question: q.question,
+                options: q.options ?? [],
+                points: q.points ?? 1,
+                hasAnswer: q.hasAnswer ?? true,
+                correctAnswer: normalizeAnswer(q.answer),
+                userAnswer: normalizeAnswer(answers[q.id]),
+                isCorrect: result?.correct ?? null,
+                status: result?.status ?? 'incorrect',
+                earned: result?.earned ?? 0,
+                aiComment: result?.aiComment ?? null,
+              };
+            }),
+            summary: {
+              score,
+              totalPoints,
+              percentage,
+              correctCount: ordered.filter((r) => r.status === 'correct').length,
+              incorrectCount: ordered.filter((r) => r.status === 'incorrect').length,
+              questionCount: questions.length,
+            },
+            results: ordered.map((r) => ({
+              questionId: r.questionId,
+              isCorrect: r.correct,
+              status: r.status,
+              earned: r.earned,
+              aiComment: r.aiComment ?? null,
+            })),
+          },
+        });
+      }
 
       setPhase('reviewing');
     })();
@@ -774,7 +858,7 @@ export function QuizView({ questions, sceneId }: QuizViewProps) {
     return () => {
       cancelled = true;
     };
-  }, [phase, questions, answers, locale]);
+  }, [answers, classroomId, locale, phase, questions, sceneId, totalPoints]);
 
   const handleRetry = useCallback(() => {
     setPhase('not_started');
@@ -807,7 +891,20 @@ export function QuizView({ questions, sceneId }: QuizViewProps) {
             <QuizCover
               questionCount={questions.length}
               totalPoints={totalPoints}
-              onStart={() => setPhase('answering')}
+              onStart={() => {
+                if (classroomId) {
+                  void trackLearnContentEvent({
+                    status: 'quiz_started',
+                    classroomId,
+                    sceneId,
+                    details: {
+                      questionCount: questions.length,
+                      totalPoints,
+                    },
+                  });
+                }
+                setPhase('answering');
+              }}
             />
           </motion.div>
         )}

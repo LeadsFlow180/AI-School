@@ -14,12 +14,15 @@ import { MediaStageProvider } from '@/lib/contexts/media-stage-context';
 import { generateMediaForOutlines } from '@/lib/media/media-orchestrator';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
+import { saveLearnContentContext } from '@/lib/learn/content-tracker';
 
 const log = createLogger('Classroom');
 
 export default function ClassroomDetailPage() {
   const params = useParams();
   const searchParams = useSearchParams();
+  const router = useRouter();
   const classroomId = params?.id as string;
 
   const { loadFromStorage } = useStageStore();
@@ -29,6 +32,27 @@ export default function ClassroomDetailPage() {
 
   const generationStartedRef = useRef(false);
   const redirectSyncedRef = useRef(false);
+
+  const getRawQueryValue = useCallback((key: string): string | null => {
+    if (typeof window === 'undefined') return null;
+    const query = window.location.search.startsWith('?')
+      ? window.location.search.slice(1)
+      : window.location.search;
+    if (!query) return null;
+
+    for (const segment of query.split('&')) {
+      if (!segment) continue;
+      const [rawKey, ...valueParts] = segment.split('=');
+      if (rawKey !== key) continue;
+      const rawValue = valueParts.join('=');
+      try {
+        return decodeURIComponent(rawValue);
+      } catch {
+        return rawValue;
+      }
+    }
+    return null;
+  }, []);
 
   const { generateRemaining, retrySingleOutline, stop } = useSceneGenerator({
     onComplete: () => {
@@ -134,6 +158,7 @@ export default function ClassroomDetailPage() {
     setLoading(true);
     setError(null);
     generationStartedRef.current = false;
+    redirectSyncedRef.current = false;
 
     // Clear previous classroom's media tasks to prevent cross-classroom contamination.
     // Placeholder IDs (gen_img_1, gen_vid_1) are NOT globally unique across stages,
@@ -156,17 +181,19 @@ export default function ClassroomDetailPage() {
   useEffect(() => {
     if (redirectSyncedRef.current) return;
 
-    const payload = searchParams.get('payload');
-    const sig = searchParams.get('sig');
+    // Reason: URLSearchParams converts "+" to spaces, which can corrupt HMAC-signed payloads.
+    const payload = getRawQueryValue('payload') ?? searchParams.get('payload');
+    const sig = getRawQueryValue('sig') ?? searchParams.get('sig');
     if (!payload || !sig) return;
 
     redirectSyncedRef.current = true;
     void (async () => {
       try {
+        saveLearnContentContext({ classroomId, payload, sig });
         const response = await fetch('/api/learn/redirect', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ payload, sig }),
+          body: JSON.stringify({ payload, sig, lessonContentId: classroomId }),
         });
         const bodyText = await response.text();
         if (response.ok) {
@@ -182,9 +209,11 @@ export default function ClassroomDetailPage() {
         }
       } catch (syncErr) {
         log.warn('[Classroom] learn redirect sync error', syncErr);
+      } finally {
+        router.replace(`/classroom/${encodeURIComponent(classroomId)}`);
       }
     })();
-  }, [searchParams]);
+  }, [classroomId, getRawQueryValue, router, searchParams]);
 
   // Auto-resume generation for pending outlines
   useEffect(() => {

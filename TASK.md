@@ -13,6 +13,10 @@
 - [x] 2026-04-01 - Add secure server API to create admin user directly with email/password (`/api/admin/create-admin-user`).
 - [x] 2026-04-09 - Fix `/api/learn/redirect` 400 errors by adding base64url decoding, validating current payload shape, and server-side signature verification.
 - [x] 2026-04-10 - Support signed lesson deep-link flow directly on `/classroom/[id]` by forwarding `payload`/`sig` to `/api/learn/redirect`.
+- [x] 2026-04-10 - Fix classroom preview regression for signed deep links by preserving raw query payloads and restoring clean `/classroom/[id]` URL after sync.
+- [x] 2026-04-10 - Make classroom viewing public by adding server-side Supabase admin fallback in `/api/classroom` GET when local storage is missing.
+- [x] 2026-04-10 - Send classroom interaction telemetry to `/api/learn/content` (slide viewed, quiz filled, quiz marks) using signed deep-link context.
+- [x] 2026-04-10 - Ensure exact `lessonContentId` is forwarded to `/api/learn/content` and attach cumulative progress (slides viewed + quiz progress) in interaction details.
 
 ## Discovered During Work
 

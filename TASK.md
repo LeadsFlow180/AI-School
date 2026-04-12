@@ -14,5 +14,6 @@
 
 ## Discovered During Work
 
+- [x] 2026-04-10 - Restore home generation prompt after visiting Manage RAG (`/rag`): fix draft hydration from `useDraftCache` and sync-save before navigation.
 - [ ] Replace in-memory vector store with persistent vector DB for production.
 - [ ] Add RAG source citation rendering in chat and generated lesson scenes.

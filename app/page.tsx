@@ -57,6 +57,7 @@ const WEB_SEARCH_STORAGE_KEY = 'webSearchEnabled';
 const RAG_STORAGE_KEY = 'ragEnabled';
 const LANGUAGE_STORAGE_KEY = 'generationLanguage';
 const RECENT_OPEN_STORAGE_KEY = 'recentClassroomsOpen';
+const REQUIREMENT_DRAFT_STORAGE_KEY = 'requirementDraft';
 
 interface FormState {
   pdfFile: File | null;
@@ -95,7 +96,7 @@ function HomePage() {
 
   // Draft cache for requirement text
   const { cachedValue: cachedRequirement, updateCache: updateRequirementCache } =
-    useDraftCache<string>({ key: 'requirementDraft' });
+    useDraftCache<string>({ key: REQUIREMENT_DRAFT_STORAGE_KEY });
 
   // Model setup state
   const currentModelId = useSettingsStore((s) => s.modelId);
@@ -132,14 +133,14 @@ function HomePage() {
   }, []);
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  // Restore requirement draft from cache (derived state pattern — no effect needed)
-  const [prevCachedRequirement, setPrevCachedRequirement] = useState(cachedRequirement);
-  if (cachedRequirement !== prevCachedRequirement) {
-    setPrevCachedRequirement(cachedRequirement);
-    if (cachedRequirement) {
-      setForm((prev) => ({ ...prev, requirement: cachedRequirement }));
-    }
-  }
+  // Restore requirement draft: useDraftCache reads localStorage into cachedRequirement on mount,
+  // but it never changes during the session, so we must merge into form here. The old "derived"
+  // sync skipped this when prev and cache matched on first render (e.g. after navigating back
+  // from /rag), which cleared the visible prompt.
+  useEffect(() => {
+    if (cachedRequirement === undefined) return;
+    setForm((prev) => ({ ...prev, requirement: cachedRequirement }));
+  }, [cachedRequirement]);
 
   const [languageOpen, setLanguageOpen] = useState(false);
   const [themeOpen, setThemeOpen] = useState(false);
@@ -854,7 +855,18 @@ function HomePage() {
                   variant="outline"
                   size="sm"
                   className="h-8 gap-1.5 border-border/80 bg-background/70 text-xs font-medium shadow-none hover:bg-accent rounded-lg"
-                  onClick={() => router.push('/rag')}
+                  onClick={() => {
+                    // Persist immediately so text is not lost if the debounced draft write has not run yet.
+                    try {
+                      localStorage.setItem(
+                        REQUIREMENT_DRAFT_STORAGE_KEY,
+                        JSON.stringify(form.requirement),
+                      );
+                    } catch {
+                      /* ignore */
+                    }
+                    router.push('/rag');
+                  }}
                 >
                   <Database className="size-3.5" />
                   {t('home.manageRagDocs')}

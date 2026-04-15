@@ -11,10 +11,12 @@ import type { Scene } from '@/lib/types/stage';
 import type { Action, SpeechAction } from '@/lib/types/action';
 import type { TTSProviderId } from '@/lib/audio/types';
 import { splitLongSpeechActions } from '@/lib/audio/tts-utils';
-import { generateMediaForOutlines } from '@/lib/media/media-orchestrator';
+import { generateMediaForOutlines, reconcileGeneratedImageSources } from '@/lib/media/media-orchestrator';
 import { createLogger } from '@/lib/logger';
 
 const log = createLogger('SceneGenerator');
+const MAX_STEP_RETRIES = 2;
+const RETRY_DELAY_MS = 1200;
 
 interface SceneContentResult {
   success: boolean;
@@ -28,6 +30,25 @@ interface SceneActionsResult {
   scene?: Scene;
   previousSpeeches?: string[];
   error?: string;
+}
+
+async function withRetry<T>(
+  label: string,
+  fn: () => Promise<T>,
+  retries: number = MAX_STEP_RETRIES,
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (attempt >= retries) break;
+      log.warn(`[Retry] ${label} failed (attempt ${attempt + 1}/${retries + 1}). Retrying...`, err);
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(`${label} failed`);
 }
 
 function getApiHeaders(): HeadersInit {
@@ -311,17 +332,19 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
 
           // Step 1: Generate content
           options.onPhaseChange?.('content', outline);
-          const contentResult = await fetchSceneContent(
-            {
-              outline,
-              allOutlines: outlines,
-              stageId: stage.id,
-              pdfImages: params.pdfImages,
-              imageMapping: params.imageMapping,
-              stageInfo: params.stageInfo,
-              agents: params.agents,
-            },
-            signal,
+          const contentResult = await withRetry(`scene-content:${outline.order}`, () =>
+            fetchSceneContent(
+              {
+                outline,
+                allOutlines: outlines,
+                stageId: stage.id,
+                pdfImages: params.pdfImages,
+                imageMapping: params.imageMapping,
+                stageInfo: params.stageInfo,
+                agents: params.agents,
+              },
+              signal,
+            ),
           );
 
           if (!contentResult.success || !contentResult.content) {
@@ -344,17 +367,19 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
 
           // Step 2: Generate actions + assemble scene
           options.onPhaseChange?.('actions', outline);
-          const actionsResult = await fetchSceneActions(
-            {
-              outline: contentResult.effectiveOutline || outline,
-              allOutlines: outlines,
-              content: contentResult.content,
-              stageId: stage.id,
-              agents: params.agents,
-              previousSpeeches,
-              userProfile: params.userProfile,
-            },
-            signal,
+          const actionsResult = await withRetry(`scene-actions:${outline.order}`, () =>
+            fetchSceneActions(
+              {
+                outline: contentResult.effectiveOutline || outline,
+                allOutlines: outlines,
+                content: contentResult.content,
+                stageId: stage.id,
+                agents: params.agents,
+                previousSpeeches,
+                userProfile: params.userProfile,
+              },
+              signal,
+            ),
           );
 
           if (actionsResult.success && actionsResult.scene) {
@@ -363,7 +388,9 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
 
             // TTS generation — failure means the whole scene fails
             if (settings.ttsEnabled && settings.ttsProviderId !== 'browser-native-tts') {
-              const ttsResult = await generateTTSForScene(scene, signal);
+              const ttsResult = await withRetry(`scene-tts:${outline.order}`, () =>
+                generateTTSForScene(scene, signal),
+              );
               if (!ttsResult.success) {
                 if (abortRef.current || store.getState().generationEpoch !== startEpoch) {
                   pausedByFailureOrAbort = true;
@@ -385,6 +412,7 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
 
             removeGeneratingOutline(outline.id);
             store.getState().addScene(scene);
+            void reconcileGeneratedImageSources(stage.id);
             options.onSceneGenerated?.(scene, outline.order);
             previousSpeeches = actionsResult.previousSpeeches || [];
           } else {
@@ -460,17 +488,19 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
 
       try {
         // Step 1: Content
-        const contentResult = await fetchSceneContent(
-          {
-            outline,
-            allOutlines: state.outlines,
-            stageId: state.stage.id,
-            pdfImages: params.pdfImages,
-            imageMapping: params.imageMapping,
-            stageInfo: params.stageInfo,
-            agents: params.agents,
-          },
-          signal,
+        const contentResult = await withRetry(`retry-scene-content:${outline.order}`, () =>
+          fetchSceneContent(
+            {
+              outline,
+              allOutlines: state.outlines,
+              stageId: state.stage.id,
+              pdfImages: params.pdfImages,
+              imageMapping: params.imageMapping,
+              stageInfo: params.stageInfo,
+              agents: params.agents,
+            },
+            signal,
+          ),
         );
 
         if (!contentResult.success || !contentResult.content) {
@@ -487,17 +517,19 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
               .map((a) => a.text)
           : [];
 
-        const actionsResult = await fetchSceneActions(
-          {
-            outline: contentResult.effectiveOutline || outline,
-            allOutlines: state.outlines,
-            content: contentResult.content,
-            stageId: state.stage.id,
-            agents: params.agents,
-            previousSpeeches,
-            userProfile: params.userProfile,
-          },
-          signal,
+        const actionsResult = await withRetry(`retry-scene-actions:${outline.order}`, () =>
+          fetchSceneActions(
+            {
+              outline: contentResult.effectiveOutline || outline,
+              allOutlines: state.outlines,
+              content: contentResult.content,
+              stageId: state.stage.id,
+              agents: params.agents,
+              previousSpeeches,
+              userProfile: params.userProfile,
+            },
+            signal,
+          ),
         );
 
         if (!actionsResult.success || !actionsResult.scene) {
@@ -508,7 +540,9 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
         // Step 3: TTS
         const settings = useSettingsStore.getState();
         if (settings.ttsEnabled && settings.ttsProviderId !== 'browser-native-tts') {
-          const ttsResult = await generateTTSForScene(actionsResult.scene, signal);
+          const ttsResult = await withRetry(`retry-scene-tts:${outline.order}`, () =>
+            generateTTSForScene(actionsResult.scene, signal),
+          );
           if (!ttsResult.success) {
             store.getState().addFailedOutline(outline);
             return;
@@ -517,6 +551,7 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
 
         removeGeneratingOutline();
         store.getState().addScene(actionsResult.scene);
+        void reconcileGeneratedImageSources(state.stage.id);
 
         // Resume remaining generation if there are pending outlines
         if (store.getState().generatingOutlines.length > 0 && lastParamsRef.current) {

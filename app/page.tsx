@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -478,6 +478,7 @@ function HomePage() {
   const [classrooms, setClassrooms] = useState<StageListItem[]>([]);
   const [thumbnails, setThumbnails] = useState<Record<string, Slide>>({});
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [isRecentsLoading, setIsRecentsLoading] = useState(false);
   const [authReady, setAuthReady] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isAdminUser, setIsAdminUser] = useState(false);
@@ -489,6 +490,7 @@ function HomePage() {
   const [gammaSelected, setGammaSelected] = useState(false);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const classroomsLoadSeqRef = useRef(0);
   const RECENTS_PER_PAGE = 8;
 
   const verifyAdminStatus = async (accessToken: string) => {
@@ -516,19 +518,29 @@ function HomePage() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [languageOpen, themeOpen, profileCardOpen]);
 
-  const loadClassrooms = async () => {
+  const loadClassrooms = useCallback(async () => {
+    const requestSeq = ++classroomsLoadSeqRef.current;
+    const isLatest = () => requestSeq === classroomsLoadSeqRef.current;
+    if (isLatest()) {
+      setIsRecentsLoading(true);
+    }
+    const applyClassrooms = (nextClassrooms: StageListItem[], nextThumbs: Record<string, Slide>) => {
+      if (!isLatest()) return;
+      setClassrooms(nextClassrooms);
+      setThumbnails(nextThumbs);
+    };
+
     try {
       const loadLocalFallback = async (reason: string) => {
         const localList = await listStages();
-        setClassrooms(localList);
         console.info(
           `[Recents] Using local IndexedDB fallback (${reason}). Loaded ${localList.length} classrooms.`,
         );
         if (localList.length > 0) {
           const slides = await getFirstSlideByStages(localList.map((c) => c.id));
-          setThumbnails(slides);
+          applyClassrooms(localList, slides);
         } else {
-          setThumbnails({});
+          applyClassrooms(localList, {});
         }
       };
 
@@ -578,8 +590,7 @@ function HomePage() {
             }
           }
 
-          setClassrooms(list);
-          setThumbnails(slideMap);
+          applyClassrooms(list, slideMap);
           console.info(
             `[Recents] Loaded ${list.length} classrooms from Supabase for admin ${currentUserId}.`,
           );
@@ -599,8 +610,23 @@ function HomePage() {
       await loadLocalFallback('unauthenticated or non-admin mode');
     } catch (err) {
       log.error('Failed to load classrooms:', err);
+      try {
+        const localList = await listStages();
+        if (localList.length > 0) {
+          const slides = await getFirstSlideByStages(localList.map((c) => c.id));
+          applyClassrooms(localList, slides);
+        } else {
+          applyClassrooms(localList, {});
+        }
+      } catch (fallbackErr) {
+        log.error('Failed to recover Recents from local IndexedDB fallback:', fallbackErr);
+      }
+    } finally {
+      if (isLatest()) {
+        setIsRecentsLoading(false);
+      }
     }
-  };
+  }, [isAuthenticated, isAdminUser]);
 
   useEffect(() => {
     // Clear stale media store to prevent cross-course thumbnail contamination.
@@ -667,8 +693,30 @@ function HomePage() {
   useEffect(() => {
     if (!authReady) return;
     void loadClassrooms();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- load based on auth state only
-  }, [authReady, isAuthenticated]);
+  }, [authReady, loadClassrooms]);
+
+  useEffect(() => {
+    if (!authReady) return;
+    const handleRefresh = () => {
+      void loadClassrooms();
+    };
+    const handlePageShow = () => {
+      void loadClassrooms();
+    };
+    const handleVisibility = () => {
+      if (!document.hidden) {
+        void loadClassrooms();
+      }
+    };
+    window.addEventListener('focus', handleRefresh);
+    window.addEventListener('pageshow', handlePageShow);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.removeEventListener('focus', handleRefresh);
+      window.removeEventListener('pageshow', handlePageShow);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [authReady, loadClassrooms]);
 
   useEffect(() => {
     setRecentPage(1);
@@ -1576,7 +1624,7 @@ function HomePage() {
       </motion.div>
 
       {/* ═══ Recent classrooms — collapsible ═══ */}
-      {classrooms.length > 0 && (
+      {(isRecentsLoading || classrooms.length > 0) && (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -1601,7 +1649,7 @@ function HomePage() {
               <Clock className="size-3.5 text-violet-500" />
               {t('classroom.recentClassrooms')}
               <span className="inline-flex items-center justify-center rounded-full bg-violet-600 px-1.5 py-0.5 text-[10px] tabular-nums text-white">
-                {classrooms.length}
+                {isRecentsLoading && classrooms.length === 0 ? '...' : classrooms.length}
               </span>
               <motion.div
                 animate={{ rotate: recentOpen ? 180 : 0 }}
@@ -1623,31 +1671,39 @@ function HomePage() {
                 transition={{ duration: 0.4, ease: [0.25, 0.1, 0.25, 1] }}
                 className="w-full overflow-hidden"
               >
-                <div className="pt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-5 gap-y-6">
-                  {pagedClassrooms.map((classroom, i) => (
-                    <motion.div
-                      key={classroom.id}
-                      initial={{ opacity: 0, y: 16 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{
-                        delay: i * 0.035,
-                        duration: 0.35,
-                        ease: 'easeOut',
-                      }}
-                    >
-                      <ClassroomCard
-                        classroom={classroom}
-                        slide={thumbnails[classroom.id]}
-                        formatDate={formatDate}
-                        onDelete={handleDelete}
-                        confirmingDelete={pendingDeleteId === classroom.id}
-                        onConfirmDelete={() => confirmDelete(classroom.id)}
-                        onCancelDelete={() => setPendingDeleteId(null)}
-                        onClick={() => router.push(`/classroom/${encodeURIComponent(classroom.id)}`)}
-                      />
-                    </motion.div>
-                  ))}
-                </div>
+                {isRecentsLoading && classrooms.length === 0 ? (
+                  <div className="pt-6 pb-3 flex items-center justify-center">
+                    <div className="rounded-xl border border-violet-200/70 bg-violet-50/70 px-4 py-2 text-sm font-medium text-violet-700 dark:border-violet-700/60 dark:bg-violet-900/30 dark:text-violet-200">
+                      Loading classrooms...
+                    </div>
+                  </div>
+                ) : (
+                  <div className="pt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-5 gap-y-6">
+                    {pagedClassrooms.map((classroom, i) => (
+                      <motion.div
+                        key={classroom.id}
+                        initial={{ opacity: 0, y: 16 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{
+                          delay: i * 0.035,
+                          duration: 0.35,
+                          ease: 'easeOut',
+                        }}
+                      >
+                        <ClassroomCard
+                          classroom={classroom}
+                          slide={thumbnails[classroom.id]}
+                          formatDate={formatDate}
+                          onDelete={handleDelete}
+                          confirmingDelete={pendingDeleteId === classroom.id}
+                          onConfirmDelete={() => confirmDelete(classroom.id)}
+                          onCancelDelete={() => setPendingDeleteId(null)}
+                          onClick={() => router.push(`/classroom/${encodeURIComponent(classroom.id)}`)}
+                        />
+                      </motion.div>
+                    ))}
+                  </div>
+                )}
                 {totalRecentPages > 1 && (
                   <div className="mt-5 flex items-center justify-center gap-3 pb-1">
                     <Button

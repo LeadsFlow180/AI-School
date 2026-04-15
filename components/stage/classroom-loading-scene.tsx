@@ -3,7 +3,7 @@
 import Image from 'next/image';
 import { motion } from 'motion/react';
 import { Loader2 } from 'lucide-react';
-import { useMemo } from 'react';
+import { useEffect, useState } from 'react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { cn } from '@/lib/utils';
 
@@ -297,6 +297,10 @@ function pickRandomSubset<T>(items: readonly T[], size: number): T[] {
   return copy.slice(0, Math.min(size, copy.length));
 }
 
+function pickStableSubset<T>(items: readonly T[], size: number): T[] {
+  return [...items].slice(0, Math.min(size, items.length));
+}
+
 const KIND_STYLES = {
   math: 'border-amber-200/75 bg-amber-50/86 text-amber-700 dark:border-amber-400/30 dark:bg-amber-500/14 dark:text-amber-200',
   physics:
@@ -313,10 +317,17 @@ const KIND_STYLES = {
  */
 export function ClassroomLoadingScene() {
   const { t } = useI18n();
-  // # Reason: Keep scene fresh by varying chips per load, while preserving
-  // a dense but readable composition every time.
-  const activeLearningSparks = useMemo(() => pickRandomSubset(LEARNING_SPARKS, 16), []);
-  const activeMiniSparks = useMemo(() => pickRandomSubset(MINI_SPARKS, 12), []);
+  const [activeLearningSparks, setActiveLearningSparks] = useState(() =>
+    pickStableSubset(LEARNING_SPARKS, 16),
+  );
+  const [activeMiniSparks, setActiveMiniSparks] = useState(() => pickStableSubset(MINI_SPARKS, 12));
+
+  useEffect(() => {
+    // # Reason: Keep SSR/CSR first render deterministic to avoid hydration mismatch,
+    // then randomize after mount so each load still feels fresh.
+    setActiveLearningSparks(pickRandomSubset(LEARNING_SPARKS, 16));
+    setActiveMiniSparks(pickRandomSubset(MINI_SPARKS, 12));
+  }, []);
 
   return (
     <div

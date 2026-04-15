@@ -413,6 +413,10 @@ export default function ClassroomDetailPage() {
 
       // Restore completed media generation tasks from IndexedDB
       await useMediaGenerationStore.getState().restoreFromDB(classroomId);
+      // Backfill any unresolved generated-image placeholders from media blobs
+      // so older classrooms can self-heal and persist all slide images.
+      const { reconcileGeneratedImageSources } = await import('@/lib/media/media-orchestrator');
+      await reconcileGeneratedImageSources(classroomId);
 
       // Backward compatibility: ensure Gamma classrooms use a robust render path
       // and always include speech actions for playback.

@@ -10,6 +10,7 @@ export const commonZhCN = {
     greeting: '嗨，',
     creatorProfile: '创作者资料',
     manageRagDocs: '管理 RAG 文档',
+    guidanceBook: '课堂导览',
   },
   toolbar: {
     languageHint: '课程将以此语言生成',
@@ -53,6 +54,7 @@ export const commonEnUS = {
     greeting: 'Hi, ',
     creatorProfile: 'Creator profile',
     manageRagDocs: 'Manage RAG docs',
+    guidanceBook: 'Guidance Book',
   },
   toolbar: {
     languageHint: 'Course will be generated in this language',

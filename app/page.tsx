@@ -5,8 +5,11 @@ import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   ArrowUp,
+  BookOpen,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Clock,
   Copy,
   ImagePlus,
@@ -50,6 +53,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useDraftCache } from '@/lib/hooks/use-draft-cache';
 import { SpeechButton } from '@/components/audio/speech-button';
 import { clearSupabaseAuthStorage, getSessionSafe, getSupabaseClient } from '@/lib/supabase/client';
+import { KidsGuideOverlay } from '@/components/stage/kids-guide-overlay';
+import { KidsParallaxBackground } from '@/components/stage/kids-parallax-background';
 
 const log = createLogger('Home');
 
@@ -153,8 +158,10 @@ function HomePage() {
   const [isAdminUser, setIsAdminUser] = useState(false);
   const [authUserEmail, setAuthUserEmail] = useState('');
   const [profileCardOpen, setProfileCardOpen] = useState(false);
+  const [recentPage, setRecentPage] = useState(1);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const RECENTS_PER_PAGE = 8;
 
   const verifyAdminStatus = async (accessToken: string) => {
     const res = await fetch('/api/auth/admin-status', {
@@ -183,15 +190,27 @@ function HomePage() {
 
   const loadClassrooms = async () => {
     try {
+      const loadLocalFallback = async (reason: string) => {
+        const localList = await listStages();
+        setClassrooms(localList);
+        console.info(
+          `[Recents] Using local IndexedDB fallback (${reason}). Loaded ${localList.length} classrooms.`,
+        );
+        if (localList.length > 0) {
+          const slides = await getFirstSlideByStages(localList.map((c) => c.id));
+          setThumbnails(slides);
+        } else {
+          setThumbnails({});
+        }
+      };
+
       const supabase = getSupabaseClient();
       if (isAuthenticated && isAdminUser && supabase) {
         const session = await getSessionSafe(supabase);
         const currentUserId = session?.user?.id;
 
         if (!currentUserId) {
-          setClassrooms([]);
-          setThumbnails({});
-          console.info('[Recents] No active user session. Showing empty recents.');
+          await loadLocalFallback('no active user session');
           return;
         }
 
@@ -236,25 +255,20 @@ function HomePage() {
           console.info(
             `[Recents] Loaded ${list.length} classrooms from Supabase for admin ${currentUserId}.`,
           );
+          if (list.length === 0) {
+            await loadLocalFallback('Supabase returned zero classrooms');
+          }
           return;
         }
 
         console.warn(
-          `[Recents] Supabase fetch failed (${error?.message ?? 'unknown error'}). Showing empty recents for authenticated admin.`,
+          `[Recents] Supabase fetch failed (${error?.message ?? 'unknown error'}). Falling back to local IndexedDB.`,
         );
-        setClassrooms([]);
-        setThumbnails({});
+        await loadLocalFallback(`Supabase fetch failed: ${error?.message ?? 'unknown error'}`);
         return;
       }
 
-      const localList = await listStages();
-      setClassrooms(localList);
-      console.info(`[Recents] Loaded ${localList.length} classrooms from local IndexedDB.`);
-      // Load first slide thumbnails from local DB
-      if (localList.length > 0) {
-        const slides = await getFirstSlideByStages(localList.map((c) => c.id));
-        setThumbnails(slides);
-      }
+      await loadLocalFallback('unauthenticated or non-admin mode');
     } catch (err) {
       log.error('Failed to load classrooms:', err);
     }
@@ -327,6 +341,10 @@ function HomePage() {
     void loadClassrooms();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- load based on auth state only
   }, [authReady, isAuthenticated]);
+
+  useEffect(() => {
+    setRecentPage(1);
+  }, [classrooms.length]);
 
   const handleDelete = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -489,6 +507,11 @@ function HomePage() {
 
   const canGenerate = !!form.requirement.trim() && isAuthenticated && isAdminUser;
   const showAuthenticatedUi = authReady && isAuthenticated;
+  const totalRecentPages = Math.max(1, Math.ceil(classrooms.length / RECENTS_PER_PAGE));
+  const pagedClassrooms = classrooms.slice(
+    (recentPage - 1) * RECENTS_PER_PAGE,
+    recentPage * RECENTS_PER_PAGE,
+  );
   const goToCreatorProfile = () => {
     // Avoid false redirect during initial auth hydration after refresh.
     // If we already have an authenticated state, allow opening the card immediately.
@@ -545,7 +568,7 @@ function HomePage() {
   };
 
   return (
-    <div className="min-h-[100dvh] w-full bg-[linear-gradient(to_bottom,rgba(250,250,250,1),rgba(244,244,245,0.95))] dark:bg-[linear-gradient(to_bottom,rgba(9,9,11,1),rgba(15,23,42,0.95))] flex flex-col items-center p-4 pt-16 md:p-8 md:pt-16 overflow-x-hidden">
+    <div className="relative min-h-[100dvh] w-full bg-[linear-gradient(to_bottom,rgba(250,250,250,1),rgba(244,244,245,0.95))] dark:bg-[linear-gradient(to_bottom,rgba(9,9,11,1),rgba(15,23,42,0.95))] flex flex-col items-center p-4 pt-16 md:p-8 md:pt-16 overflow-x-hidden">
       {/* ═══ Top-right pill (unchanged) ═══ */}
       <div
         ref={toolbarRef}
@@ -659,6 +682,17 @@ function HomePage() {
 
         <div className="w-[1px] h-4 bg-gray-200 dark:bg-gray-700" />
 
+        <button
+          type="button"
+          onClick={() => router.push('/classroom/Q_aCAqhuTq?tour=1')}
+          className="flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs font-semibold text-violet-700 bg-violet-50/75 border border-violet-200/80 transition-all hover:bg-violet-100 dark:text-violet-200 dark:bg-violet-900/30 dark:border-violet-700/70 dark:hover:bg-violet-800/40"
+        >
+          <BookOpen className="size-3.5 shrink-0" />
+          <span className="max-[380px]:hidden">{t('home.guidanceBook')}</span>
+        </button>
+
+        <div className="w-[1px] h-4 bg-gray-200 dark:bg-gray-700" />
+
         {showAuthenticatedUi ? (
           <div className="relative">
             <button
@@ -755,6 +789,8 @@ function HomePage() {
           style={{ animationDuration: '6s' }}
         />
       </div>
+      <KidsParallaxBackground />
+      <KidsGuideOverlay />
 
       {/* ═══ Hero section: title + input (centered, wider) ═══ */}
       <motion.div
@@ -951,7 +987,7 @@ function HomePage() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.5 }}
-          className="relative z-10 mt-10 w-full max-w-6xl flex flex-col items-center"
+          className="relative z-30 mt-10 w-full max-w-6xl flex flex-col items-center pointer-events-auto rounded-3xl border border-white/55 bg-white/65 px-5 py-5 shadow-[0_24px_50px_-32px_rgba(15,23,42,0.45)] backdrop-blur-xl dark:border-slate-700/70 dark:bg-slate-900/55"
         >
           {/* Trigger — divider-line with centered text */}
           <button
@@ -964,18 +1000,20 @@ function HomePage() {
                 /* ignore */
               }
             }}
-            className="group w-full flex items-center gap-4 py-2 cursor-pointer"
+            className="group w-full flex items-center gap-4 py-2.5 cursor-pointer"
           >
             <div className="flex-1 h-px bg-border/40 group-hover:bg-border/70 transition-colors" />
-            <span className="shrink-0 flex items-center gap-2 text-[13px] text-muted-foreground/60 group-hover:text-foreground/70 transition-colors select-none">
-              <Clock className="size-3.5" />
+            <span className="shrink-0 inline-flex items-center gap-2 rounded-full border border-violet-200/70 bg-violet-50/80 px-3 py-1.5 text-[13px] font-semibold text-violet-700 dark:border-violet-700/60 dark:bg-violet-900/30 dark:text-violet-200 transition-colors select-none">
+              <Clock className="size-3.5 text-violet-500" />
               {t('classroom.recentClassrooms')}
-              <span className="text-[11px] tabular-nums opacity-60">{classrooms.length}</span>
+              <span className="inline-flex items-center justify-center rounded-full bg-violet-600 px-1.5 py-0.5 text-[10px] tabular-nums text-white">
+                {classrooms.length}
+              </span>
               <motion.div
                 animate={{ rotate: recentOpen ? 180 : 0 }}
                 transition={{ duration: 0.3, ease: 'easeInOut' }}
               >
-                <ChevronDown className="size-3.5" />
+                <ChevronDown className="size-3.5 text-violet-500" />
               </motion.div>
             </span>
             <div className="flex-1 h-px bg-border/40 group-hover:bg-border/70 transition-colors" />
@@ -991,14 +1029,14 @@ function HomePage() {
                 transition={{ duration: 0.4, ease: [0.25, 0.1, 0.25, 1] }}
                 className="w-full overflow-hidden"
               >
-                <div className="pt-8 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-x-5 gap-y-8">
-                  {classrooms.map((classroom, i) => (
+                <div className="pt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-5 gap-y-6">
+                  {pagedClassrooms.map((classroom, i) => (
                     <motion.div
                       key={classroom.id}
                       initial={{ opacity: 0, y: 16 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{
-                        delay: i * 0.04,
+                        delay: i * 0.035,
                         duration: 0.35,
                         ease: 'easeOut',
                       }}
@@ -1011,11 +1049,40 @@ function HomePage() {
                         confirmingDelete={pendingDeleteId === classroom.id}
                         onConfirmDelete={() => confirmDelete(classroom.id)}
                         onCancelDelete={() => setPendingDeleteId(null)}
-                        onClick={() => router.push(`/classroom/${classroom.id}`)}
+                        onClick={() => router.push(`/classroom/${encodeURIComponent(classroom.id)}`)}
                       />
                     </motion.div>
                   ))}
                 </div>
+                {totalRecentPages > 1 && (
+                  <div className="mt-5 flex items-center justify-center gap-3 pb-1">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={recentPage === 1}
+                      onClick={() => setRecentPage((prev) => Math.max(1, prev - 1))}
+                      className="h-8 rounded-full px-3 text-xs"
+                    >
+                      <ChevronLeft className="mr-1 size-3.5" />
+                      Prev
+                    </Button>
+                    <span className="rounded-full border border-violet-200/70 bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700 dark:border-violet-700/60 dark:bg-violet-900/30 dark:text-violet-200">
+                      Page {recentPage} of {totalRecentPages}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={recentPage === totalRecentPages}
+                      onClick={() => setRecentPage((prev) => Math.min(totalRecentPages, prev + 1))}
+                      className="h-8 rounded-full px-3 text-xs"
+                    >
+                      Next
+                      <ChevronRight className="ml-1 size-3.5" />
+                    </Button>
+                  </div>
+                )}
               </motion.div>
             )}
           </AnimatePresence>
@@ -1355,11 +1422,14 @@ function ClassroomCard({
   }, []);
 
   return (
-    <div className="group cursor-pointer" onClick={confirmingDelete ? undefined : onClick}>
+    <div
+      className="group cursor-pointer rounded-2xl border border-white/70 bg-white/80 p-2 shadow-[0_12px_30px_-24px_rgba(15,23,42,0.85)] transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_18px_40px_-24px_rgba(59,130,246,0.45)] dark:border-slate-700/70 dark:bg-slate-900/70"
+      onClick={confirmingDelete ? undefined : onClick}
+    >
       {/* Thumbnail — large radius, no border, subtle bg */}
       <div
         ref={thumbRef}
-        className="relative w-full aspect-[16/9] rounded-2xl bg-slate-100 dark:bg-slate-800/80 overflow-hidden transition-transform duration-200 group-hover:scale-[1.02]"
+        className="relative w-full aspect-[16/9] rounded-xl bg-slate-100 dark:bg-slate-800/80 overflow-hidden transition-transform duration-300 group-hover:scale-[1.015]"
       >
         {slide && thumbWidth > 0 ? (
           <ThumbnailSlide
@@ -1434,13 +1504,13 @@ function ClassroomCard({
       </div>
 
       {/* Info — outside the thumbnail */}
-      <div className="mt-2.5 px-1 flex items-center gap-2">
-        <span className="shrink-0 inline-flex items-center rounded-full bg-violet-100 dark:bg-violet-900/30 px-2 py-0.5 text-[11px] font-medium text-violet-600 dark:text-violet-400">
+      <div className="mt-2.5 px-1">
+        <span className="mb-1.5 inline-flex items-center rounded-full border border-violet-200/70 bg-violet-50 px-2 py-0.5 text-[11px] font-semibold text-violet-700 dark:border-violet-700/60 dark:bg-violet-900/30 dark:text-violet-200">
           {classroom.sceneCount} {t('classroom.slides')} · {formatDate(classroom.updatedAt)}
         </span>
         <Tooltip>
           <TooltipTrigger asChild>
-            <p className="font-medium text-[15px] truncate text-foreground/90 min-w-0">
+            <p className="font-semibold text-[15px] truncate text-foreground/90 min-w-0">
               {classroom.name}
             </p>
           </TooltipTrigger>

@@ -5,7 +5,7 @@ import { ThemeProvider } from '@/lib/hooks/use-theme';
 import { useStageStore } from '@/lib/store';
 import { loadImageMapping } from '@/lib/utils/image-storage';
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useSceneGenerator } from '@/lib/hooks/use-scene-generator';
 import { useMediaGenerationStore } from '@/lib/store/media-generation';
 import { useWhiteboardHistoryStore } from '@/lib/store/whiteboard-history';
@@ -13,17 +13,24 @@ import { createLogger } from '@/lib/logger';
 import { MediaStageProvider } from '@/lib/contexts/media-stage-context';
 import { generateMediaForOutlines } from '@/lib/media/media-orchestrator';
 import { getSupabaseClient } from '@/lib/supabase/client';
+import { ClassroomLoadingScene } from '@/components/stage/classroom-loading-scene';
+import { ClassroomTourOverlay } from '@/components/stage/classroom-tour-overlay';
 
 const log = createLogger('Classroom');
+const MIN_LOADING_SCENE_MS = 3400;
 
 export default function ClassroomDetailPage() {
   const params = useParams();
-  const classroomId = params?.id as string;
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const rawParamId = params?.id;
+  const classroomId = Array.isArray(rawParamId) ? rawParamId[0] : rawParamId;
 
-  const { loadFromStorage } = useStageStore();
+  const { loadFromStorage, clearStore } = useStageStore();
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [tourOpen, setTourOpen] = useState(false);
 
   const generationStartedRef = useRef(false);
 
@@ -34,7 +41,12 @@ export default function ClassroomDetailPage() {
   });
 
   const loadClassroom = useCallback(async () => {
+    const loadingStartedAt = Date.now();
     try {
+      if (!classroomId) {
+        throw new Error('Missing classroom id in route');
+      }
+
       await loadFromStorage(classroomId);
 
       // If IndexedDB had no data, try server-side storage (API-generated classrooms)
@@ -88,6 +100,11 @@ export default function ClassroomDetailPage() {
         }
       }
 
+      const loadedStageId = useStageStore.getState().stage?.id;
+      if (loadedStageId !== classroomId) {
+        throw new Error(`Classroom "${classroomId}" was not found.`);
+      }
+
       // Restore completed media generation tasks from IndexedDB
       await useMediaGenerationStore.getState().restoreFromDB(classroomId);
       // Restore agents for this stage
@@ -121,16 +138,30 @@ export default function ClassroomDetailPage() {
       log.error('Failed to load classroom:', error);
       setError(error instanceof Error ? error.message : 'Failed to load classroom');
     } finally {
+      // Keep the cinematic loading scene on screen long enough for
+      // characters to finish their entrance before showing the classroom UI.
+      const elapsed = Date.now() - loadingStartedAt;
+      const remaining = Math.max(0, MIN_LOADING_SCENE_MS - elapsed);
+      if (remaining > 0) {
+        await new Promise((resolve) => setTimeout(resolve, remaining));
+      }
       setLoading(false);
     }
   }, [classroomId, loadFromStorage]);
 
   useEffect(() => {
+    if (!classroomId) {
+      setError('Missing classroom id in route');
+      setLoading(false);
+      return;
+    }
+
     // Reset loading state on course switch to unmount Stage during transition,
     // preventing stale data from syncing back to the new course
     setLoading(true);
     setError(null);
     generationStartedRef.current = false;
+    clearStore();
 
     // Clear previous classroom's media tasks to prevent cross-classroom contamination.
     // Placeholder IDs (gen_img_1, gen_vid_1) are NOT globally unique across stages,
@@ -148,7 +179,7 @@ export default function ClassroomDetailPage() {
     return () => {
       stop();
     };
-  }, [classroomId, loadClassroom, stop]);
+  }, [classroomId, clearStore, loadClassroom, stop]);
 
   // Auto-resume generation for pending outlines
   useEffect(() => {
@@ -198,19 +229,28 @@ export default function ClassroomDetailPage() {
     }
   }, [loading, error, generateRemaining]);
 
+  useEffect(() => {
+    if (loading || error || !classroomId) return;
+    const forceTour = searchParams?.get('tour') === '1';
+    setTourOpen(forceTour);
+  }, [loading, error, classroomId, searchParams]);
+
+  const handleFinishTour = useCallback(() => {
+    setTourOpen(false);
+    if (searchParams?.get('tour') === '1') {
+      router.replace(`/classroom/${encodeURIComponent(classroomId)}`);
+    }
+  }, [classroomId, router, searchParams]);
+
   return (
     <ThemeProvider>
       <MediaStageProvider value={classroomId}>
-        <div className="h-screen flex flex-col overflow-hidden">
+        <div className="h-screen flex flex-col overflow-hidden bg-slate-50 dark:bg-slate-950">
           {loading ? (
-            <div className="flex-1 flex items-center justify-center bg-gray-50 dark:bg-gray-900">
-              <div className="text-center text-muted-foreground">
-                <p>Loading classroom...</p>
-              </div>
-            </div>
+            <ClassroomLoadingScene />
           ) : error ? (
-            <div className="flex-1 flex items-center justify-center bg-gray-50 dark:bg-gray-900">
-              <div className="text-center">
+            <div className="flex-1 flex items-center justify-center">
+              <div className="text-center rounded-2xl border border-slate-200 bg-white px-8 py-6 shadow-sm">
                 <p className="text-destructive mb-4">Error: {error}</p>
                 <button
                   onClick={() => {
@@ -225,7 +265,13 @@ export default function ClassroomDetailPage() {
               </div>
             </div>
           ) : (
-            <Stage onRetryOutline={retrySingleOutline} />
+            <>
+              <Stage
+                onRetryOutline={retrySingleOutline}
+                onOpenGuidance={tourOpen ? undefined : () => setTourOpen(true)}
+              />
+              <ClassroomTourOverlay open={tourOpen} onFinish={handleFinishTour} />
+            </>
           )}
         </div>
       </MediaStageProvider>

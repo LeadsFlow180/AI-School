@@ -245,7 +245,7 @@ export const ChatArea = forwardRef<ChatAreaRef, ChatAreaProps>(
           transition: isDragging ? 'none' : 'width 0.3s ease',
         }}
         className={cn(
-          'bg-white/80 dark:bg-gray-900/80 backdrop-blur-xl border-l border-gray-100 dark:border-gray-800 shadow-[-2px_0_24px_rgba(0,0,0,0.02)] flex flex-col shrink-0 z-20 relative overflow-visible',
+          'bg-gradient-to-b from-white/90 via-white/80 to-white/75 dark:from-gray-900/88 dark:via-gray-900/82 dark:to-gray-900/76 backdrop-blur-xl border-l border-violet-100/70 dark:border-violet-900/35 shadow-[-8px_0_30px_rgba(76,29,149,0.08)] flex flex-col shrink-0 z-20 relative overflow-visible',
           className,
         )}
       >
@@ -266,8 +266,11 @@ export const ChatArea = forwardRef<ChatAreaRef, ChatAreaProps>(
             className="flex flex-col h-full gap-0"
           >
             {/* Tab header row */}
-            <div className="h-10 flex items-center gap-1 shrink-0 mt-3 mb-1 px-3">
-              <TabsList variant="line" className="h-full flex-1 w-0">
+            <div className="h-11 flex items-center gap-1.5 shrink-0 mt-3 mb-1.5 px-3">
+              <TabsList
+                variant="line"
+                className="h-full flex-1 w-0 rounded-xl border border-violet-100/80 bg-white/75 p-1 shadow-sm dark:border-violet-900/40 dark:bg-gray-900/65"
+              >
                 <TabsTrigger value="lecture" className="text-xs gap-1 flex-1">
                   <BookOpen className="w-3.5 h-3.5" />
                   {t('chat.tabs.lecture')}
@@ -302,13 +305,13 @@ export const ChatArea = forwardRef<ChatAreaRef, ChatAreaProps>(
 
             {/* Chat Tab */}
             <TabsContent value="chat" className="flex-1 overflow-hidden flex flex-col">
-              <div className="flex-1 overflow-y-auto overflow-x-hidden p-3 space-y-2 scrollbar-hide">
+              <div className="flex-1 overflow-y-auto overflow-x-hidden px-3 pb-3 pt-1 space-y-2 scrollbar-hide">
                 {chatSessions.length === 0 ? (
-                  <div className="h-full flex flex-col items-center justify-center text-center p-6 opacity-50">
-                    <div className="w-12 h-12 bg-gray-100 dark:bg-gray-800 rounded-full flex items-center justify-center mb-3 text-gray-300 dark:text-gray-600">
+                  <div className="h-full flex flex-col items-center justify-center text-center p-6 rounded-2xl border border-violet-100/70 bg-white/65 dark:border-violet-900/35 dark:bg-gray-900/45">
+                    <div className="w-12 h-12 bg-violet-50 dark:bg-violet-900/20 rounded-full flex items-center justify-center mb-3 text-violet-300 dark:text-violet-500">
                       <MessageSquare className="w-6 h-6" />
                     </div>
-                    <p className="text-xs font-medium text-gray-500 dark:text-gray-400">
+                    <p className="text-xs font-semibold text-gray-600 dark:text-gray-300">
                       {t('chat.noConversations')}
                     </p>
                     <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">

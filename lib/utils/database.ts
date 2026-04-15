@@ -145,7 +145,7 @@ export interface MediaFileRecord {
   poster?: Blob; // Video thumbnail blob
   prompt: string; // Original prompt (for retry)
   params: string; // JSON-serialized generation params
-  error?: string; // If set, this is a failed task (blob is empty placeholder)
+  error?: string; // If set, this is  a failed task (blob is empty placeholder)
   errorCode?: string; // Structured error code (e.g. 'CONTENT_SENSITIVE')
   ossKey?: string; // Full CDN URL for this media blob
   posterOssKey?: string; // Full CDN URL for the poster blob
@@ -393,7 +393,7 @@ export async function getScenesByStageId(stageId: string): Promise<SceneRecord[]
 
 /**
  * Delete a course and all its related data
- */
+ */ 
 export async function deleteStageWithRelatedData(stageId: string): Promise<void> {
   await db.transaction(
     'rw',

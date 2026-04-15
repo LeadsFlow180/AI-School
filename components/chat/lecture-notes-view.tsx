@@ -74,10 +74,10 @@ export function LectureNotesView({ notes, currentSceneId }: LectureNotesViewProp
             key={note.sceneId}
             data-scene-id={note.sceneId}
             className={cn(
-              'relative mb-3 last:mb-0 rounded-lg px-3 py-2.5 transition-colors duration-200',
+              'relative mb-3 last:mb-0 rounded-xl px-3 py-2.5 border transition-all duration-200',
               isCurrent
-                ? 'bg-purple-50/80 dark:bg-purple-950/25 ring-1 ring-purple-200/60 dark:ring-purple-700/30'
-                : 'bg-gray-50/50 dark:bg-gray-800/30',
+                ? 'bg-purple-50/90 dark:bg-purple-950/30 border-purple-200/70 dark:border-purple-700/35 shadow-[0_8px_22px_-16px_rgba(124,58,237,0.55)]'
+                : 'bg-white/70 dark:bg-gray-800/35 border-gray-200/65 dark:border-gray-700/40',
             )}
           >
             {/* Page label row */}
@@ -165,10 +165,7 @@ export function LectureNotesView({ notes, currentSceneId }: LectureNotesViewProp
                   }
                   const actions = row.kind === 'trailing' ? row.inlineActions : row.inlineActions;
                   return (
-                    <p
-                      key={i}
-                      className="text-[12px] leading-[1.8] text-gray-700 dark:text-gray-300"
-                    >
+                    <p key={i} className="text-[12px] leading-[1.8] text-gray-700 dark:text-gray-300">
                       {actions.map((a, j) => {
                         const cfg = ACTION_ICON_ONLY[a];
                         if (!cfg) return null;

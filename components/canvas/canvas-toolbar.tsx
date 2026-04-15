@@ -140,7 +140,8 @@ export function CanvasToolbar({
   const presentationLabel = isPresenting ? t('stage.exitFullscreen') : t('stage.fullscreen');
 
   return (
-    <div className={cn('flex items-center gap-2', className)}>
+    <TooltipProvider delayDuration={250}>
+      <div className={cn('flex items-center gap-2', className)}>
       {/* ── Left: sidebar toggle + page indicator ── */}
       <div className="flex items-center gap-1 shrink-0 pl-1">
         {onToggleSidebar && (
@@ -185,22 +186,36 @@ export function CanvasToolbar({
               onMouseEnter={handleVolumeEnter}
               onMouseLeave={handleVolumeLeave}
             >
-              <button
-                onClick={onToggleMute}
-                disabled={!ttsEnabled}
-                className={cn(
-                  ctrlBtn,
-                  'w-6 h-6',
-                  !ttsEnabled
-                    ? 'text-gray-300 dark:text-gray-600 cursor-not-allowed'
-                    : ttsMuted
-                      ? 'text-red-500 dark:text-red-400'
-                      : 'text-gray-500 dark:text-gray-400',
-                )}
-                aria-label={ttsMuted ? 'Unmute' : 'Mute'}
-              >
-                <VolumeIcon muted={!!ttsMuted} volume={ttsVolume} disabled={!ttsEnabled} />
-              </button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={onToggleMute}
+                    disabled={!ttsEnabled}
+                    className={cn(
+                      ctrlBtn,
+                      'w-6 h-6',
+                      !ttsEnabled
+                        ? 'text-gray-300 dark:text-gray-600 cursor-not-allowed'
+                        : ttsMuted
+                          ? 'text-red-500 dark:text-red-400'
+                          : 'text-gray-500 dark:text-gray-400',
+                    )}
+                    aria-label={
+                      !ttsEnabled
+                        ? t('roundtable.soundButtonLabel')
+                        : ttsMuted
+                          ? t('roundtable.soundUnmuteAria')
+                          : t('roundtable.soundMuteAria')
+                    }
+                  >
+                    <VolumeIcon muted={!!ttsMuted} volume={ttsVolume} disabled={!ttsEnabled} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-[220px] text-xs leading-snug">
+                  <span className="font-semibold">{t('roundtable.soundButtonLabel')}</span>
+                  <p className="text-muted-foreground mt-1">{t('roundtable.soundTooltip')}</p>
+                </TooltipContent>
+              </Tooltip>
 
               {/* Vertical volume slider (pops up above) */}
               <div
@@ -244,32 +259,33 @@ export function CanvasToolbar({
             </div>
           )}
 
-          {/* Speed */}
+          {/* Speed — one compact row; details in tooltip */}
           {onCycleSpeed && (
-            <TooltipProvider delayDuration={0}>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    onClick={onCycleSpeed}
-                    className={cn(
-                      'w-8 h-5 rounded flex items-center justify-center',
-                      'transition-all duration-150 outline-none cursor-pointer',
-                      'text-[11px] font-semibold tabular-nums leading-none',
-                      'active:scale-90',
-                      playbackSpeed !== 1
-                        ? 'text-violet-600 dark:text-violet-400 bg-violet-500/10 dark:bg-violet-400/10'
-                        : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200',
-                    )}
-                    aria-label="Playback speed"
-                  >
-                    {playbackSpeed === 1.5 ? '1.5x' : `${playbackSpeed}x`}
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" className="text-xs">
-                  {t('roundtable.speed')}
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  data-tour="speed"
+                  onClick={onCycleSpeed}
+                  className={cn(
+                    'flex h-6 items-center gap-0.5 rounded-md px-1.5',
+                    'transition-all duration-150 outline-none cursor-pointer active:scale-95',
+                    'text-[10px] font-bold tabular-nums leading-none',
+                    playbackSpeed !== 1
+                      ? 'text-violet-700 dark:text-violet-300 bg-violet-500/12 dark:bg-violet-400/12'
+                      : 'text-gray-500 dark:text-gray-400 hover:bg-gray-500/[0.08] dark:hover:bg-gray-400/[0.08]',
+                  )}
+                  aria-label={`${t('roundtable.speed')}: ${playbackSpeed === 1.5 ? '1.5x' : `${playbackSpeed}x`}`}
+                >
+                  <span className="text-[9px] font-semibold opacity-70">{t('roundtable.speed')}</span>
+                  <span>{playbackSpeed === 1.5 ? '1.5×' : `${playbackSpeed}×`}</span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-[240px] text-xs leading-snug">
+                <p className="font-semibold">{t('roundtable.speed')}</p>
+                <p className="text-muted-foreground mt-1">{t('roundtable.speedTooltip')}</p>
+              </TooltipContent>
+            </Tooltip>
           )}
 
           <CtrlDivider />
@@ -311,23 +327,34 @@ export function CanvasToolbar({
               {t('roundtable.stopDiscussion')}
             </button>
           ) : showPlayPause ? (
-            <button
-              onClick={onPlayPause}
-              className={cn(
-                ctrlBtn,
-                'w-7 h-6',
-                engineState === 'playing'
-                  ? 'text-violet-600 dark:text-violet-400'
-                  : 'text-gray-500 dark:text-gray-400',
-              )}
-              aria-label={engineState === 'playing' ? 'Pause' : 'Play'}
-            >
-              {engineState === 'playing' ? (
-                <Pause className="w-3.5 h-3.5" />
-              ) : (
-                <Play className="w-3.5 h-3.5 ml-px" />
-              )}
-            </button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  data-tour="play"
+                  onClick={onPlayPause}
+                  className={cn(
+                    ctrlBtn,
+                    'w-7 h-6',
+                    engineState === 'playing'
+                      ? 'text-violet-600 dark:text-violet-400'
+                      : 'text-gray-500 dark:text-gray-400',
+                  )}
+                  aria-label={
+                    engineState === 'playing' ? t('roundtable.pauseLesson') : t('roundtable.playLesson')
+                  }
+                >
+                  {engineState === 'playing' ? (
+                    <Pause className="w-3.5 h-3.5" />
+                  ) : (
+                    <Play className="w-3.5 h-3.5 ml-px" />
+                  )}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-[220px] text-xs leading-snug">
+                {engineState === 'playing' ? t('roundtable.pauseLesson') : t('roundtable.playLesson')}
+              </TooltipContent>
+            </Tooltip>
           ) : null}
 
           {/* Next scene */}
@@ -347,52 +374,79 @@ export function CanvasToolbar({
 
           <CtrlDivider />
 
-          {/* Auto-play */}
+          {/* Auto-read — icon + tiny on/off (one row) */}
           {onToggleAutoPlay && (
-            <TooltipProvider delayDuration={0}>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    onClick={onToggleAutoPlay}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={onToggleAutoPlay}
+                  className={cn(
+                    'relative flex h-6 items-center gap-1 rounded-md px-1',
+                    'transition-all duration-150 outline-none cursor-pointer active:scale-95',
+                    'hover:bg-gray-500/[0.08] dark:hover:bg-gray-400/[0.08]',
+                    autoPlayLecture
+                      ? 'text-violet-600 dark:text-violet-400 bg-violet-500/10 dark:bg-violet-400/10'
+                      : 'text-gray-500 dark:text-gray-400',
+                  )}
+                  aria-label={
+                    autoPlayLecture ? t('roundtable.autoPlayOff') : t('roundtable.autoPlay')
+                  }
+                >
+                  <Repeat className="w-3.5 h-3.5 shrink-0" />
+                  <span
                     className={cn(
-                      ctrlBtn,
-                      'w-8 h-6',
-                      autoPlayLecture
-                        ? 'text-violet-600 dark:text-violet-400'
-                        : 'text-gray-500 dark:text-gray-400',
+                      'text-[9px] font-bold tabular-nums leading-none',
+                      autoPlayLecture ? 'text-emerald-600 dark:text-emerald-400' : 'opacity-70',
                     )}
-                    aria-label="Auto-play"
                   >
-                    <Repeat className="w-3.5 h-3.5" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top" className="text-xs">
-                  {autoPlayLecture ? t('roundtable.autoPlayOff') : t('roundtable.autoPlay')}
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
+                    {autoPlayLecture ? t('roundtable.autoPlayButtonOn') : t('roundtable.autoPlayButtonOff')}
+                  </span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-[260px] text-xs leading-snug">
+                <p className="font-semibold">{t('roundtable.autoPlayButtonTitle')}</p>
+                <p className="text-muted-foreground mt-1">
+                  {autoPlayLecture ? t('roundtable.autoPlayTooltipOn') : t('roundtable.autoPlayTooltipOff')}
+                </p>
+              </TooltipContent>
+            </Tooltip>
           )}
 
-          {/* Whiteboard */}
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onWhiteboardClose();
-            }}
-            className={cn(
-              ctrlBtn,
-              'w-6 h-6',
-              whiteboardOpen
-                ? 'text-violet-600 dark:text-violet-400'
-                : 'text-gray-500 dark:text-gray-400',
-            )}
-            title={whiteboardOpen ? t('whiteboard.minimize') : t('whiteboard.open')}
-          >
-            <PencilLine className="w-3.5 h-3.5" />
-            {!whiteboardOpen && whiteboardElementCount > 0 && (
-              <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 bg-violet-500 dark:bg-violet-400 rounded-full" />
-            )}
-          </button>
+          {/* Whiteboard — icon only; meaning in tooltip */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                data-tour="whiteboard"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onWhiteboardClose();
+                }}
+                className={cn(
+                  ctrlBtn,
+                  'w-6 h-6 relative',
+                  whiteboardOpen
+                    ? 'text-violet-600 dark:text-violet-400'
+                    : 'text-gray-500 dark:text-gray-400',
+                )}
+                aria-label={whiteboardOpen ? t('whiteboard.minimize') : t('whiteboard.open')}
+              >
+                <PencilLine className="w-3.5 h-3.5" />
+                {!whiteboardOpen && whiteboardElementCount > 0 && (
+                  <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 bg-violet-500 dark:bg-violet-400 rounded-full" />
+                )}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="max-w-[260px] text-xs leading-snug">
+              <p className="font-semibold">
+                {whiteboardOpen ? t('whiteboard.boardShortClose') : t('whiteboard.boardShortOpen')}
+              </p>
+              <p className="text-muted-foreground mt-1">
+                {whiteboardOpen ? t('whiteboard.boardTooltipClose') : t('whiteboard.boardTooltipOpen')}
+              </p>
+            </TooltipContent>
+          </Tooltip>
         </div>
       </div>
 
@@ -436,5 +490,6 @@ export function CanvasToolbar({
         )}
       </div>
     </div>
+    </TooltipProvider>
   );
 }

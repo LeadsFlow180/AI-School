@@ -1,5 +1,6 @@
 import { ScanLine, Search, Bot, FileText, LayoutPanelLeft, Clapperboard } from 'lucide-react';
 import { useSettingsStore } from '@/lib/store/settings';
+import type { ProviderId } from '@/lib/ai/providers';
 import type {
   SceneOutline,
   UserRequirements,
@@ -25,6 +26,7 @@ export interface GenerationSessionState {
   // Web search context
   researchContext?: string;
   researchSources?: Array<{ title: string; url: string }>;
+  forceModel?: { providerId: ProviderId; modelId: string };
 }
 
 export type GenerationStep = {

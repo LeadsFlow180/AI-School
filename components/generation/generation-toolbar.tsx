@@ -37,6 +37,9 @@ export interface GenerationToolbarProps {
   pdfFile: File | null;
   onPdfFileChange: (file: File | null) => void;
   onPdfError: (error: string | null) => void;
+  onGammaPrompt: () => void;
+  gammaSelected: boolean;
+  canGenerate: boolean;
 }
 
 // ─── Component ───────────────────────────────────────────────
@@ -49,6 +52,9 @@ export function GenerationToolbar({
   pdfFile,
   onPdfFileChange,
   onPdfError,
+  onGammaPrompt,
+  gammaSelected,
+  canGenerate,
 }: GenerationToolbarProps) {
   const { t } = useI18n();
   const currentProviderId = useSettingsStore((s) => s.providerId);
@@ -143,6 +149,28 @@ export function GenerationToolbar({
           <TooltipContent>{t('toolbar.configureProviderHint')}</TooltipContent>
         </Tooltip>
       )}
+
+      {/* ── Gamma prompt button ── */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={onGammaPrompt}
+            disabled={!canGenerate}
+            className={cn(
+              gammaSelected ? pillActive : pillMuted,
+              gammaSelected &&
+                'border-violet-300/70 bg-violet-50/70 text-violet-700 dark:border-violet-700/70 dark:bg-violet-900/30 dark:text-violet-300',
+              !canGenerate && 'opacity-50 cursor-not-allowed',
+            )}
+          >
+            <Bot className="size-3.5" />
+            <span>Gamma AI</span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>
+          {gammaSelected ? 'Gamma selected for Enter Classroom' : 'Select Gamma mode'}
+        </TooltipContent>
+      </Tooltip>
 
       {/* ── Separator ── */}
       <div className="w-px h-4 bg-border/60 mx-1" />

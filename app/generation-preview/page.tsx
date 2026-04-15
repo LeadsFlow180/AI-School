@@ -28,6 +28,7 @@ import type { SceneOutline, PdfImage, ImageMapping } from '@/lib/types/generatio
 import { AgentRevealModal } from '@/components/agent/agent-reveal-modal';
 import { createLogger } from '@/lib/logger';
 import { type GenerationSessionState, ALL_STEPS, getActiveSteps } from './types';
+import type { ProviderId } from '@/lib/ai/providers';
 import { StepVisualizer } from './components/visualizers';
 
 const log = createLogger('GenerationPreview');
@@ -90,9 +91,28 @@ function GenerationPreviewContent() {
   }, []);
 
   // Get API credentials from localStorage
-  const getApiHeaders = () => {
-    const modelConfig = getCurrentModelConfig();
+  const getApiHeaders = (forcedModel?: { providerId: ProviderId; modelId: string }) => {
+    const defaultModelConfig = getCurrentModelConfig();
     const settings = useSettingsStore.getState();
+    const forcedProvider = forcedModel ? settings.providersConfig[forcedModel.providerId] : undefined;
+    const canUseForcedModel = Boolean(
+      forcedModel &&
+        forcedProvider &&
+        (!forcedProvider.requiresApiKey || forcedProvider.apiKey || forcedProvider.isServerConfigured),
+    );
+    const resolvedProviderId = canUseForcedModel
+      ? forcedModel!.providerId
+      : defaultModelConfig.providerId;
+    const resolvedModelId = canUseForcedModel ? forcedModel!.modelId : defaultModelConfig.modelId;
+    const resolvedProvider = settings.providersConfig[resolvedProviderId];
+    const modelConfig = {
+      modelString: `${resolvedProviderId}:${resolvedModelId}`,
+      apiKey: resolvedProvider?.apiKey || defaultModelConfig.apiKey,
+      baseUrl: resolvedProvider?.baseUrl || defaultModelConfig.baseUrl,
+      providerType:
+        resolvedProvider?.type || (resolvedProviderId === 'google' ? 'google' : defaultModelConfig.providerType),
+      requiresApiKey: resolvedProvider?.requiresApiKey ?? defaultModelConfig.requiresApiKey,
+    };
     const imageProviderConfig = settings.imageProvidersConfig?.[settings.imageProviderId];
     const videoProviderConfig = settings.videoProvidersConfig?.[settings.videoProviderId];
     return {
@@ -444,7 +464,7 @@ function GenerationPreviewContent() {
           // No outlines yet — agent generation uses only stage name + description
           const agentResp = await fetch('/api/generate/agent-profiles', {
             method: 'POST',
-            headers: getApiHeaders(),
+            headers: getApiHeaders(currentSession.forceModel),
             body: JSON.stringify({
               stageInfo: { name: stage.name, description: stage.description },
               language: currentSession.requirements.language || 'zh-CN',
@@ -533,7 +553,7 @@ function GenerationPreviewContent() {
 
           fetch('/api/generate/scene-outlines-stream', {
             method: 'POST',
-            headers: getApiHeaders(),
+            headers: getApiHeaders(currentSession.forceModel),
             body: JSON.stringify({
               requirements: currentSession.requirements,
               pdfText: currentSession.pdfText,
@@ -657,7 +677,7 @@ function GenerationPreviewContent() {
       // Step 2: Generate content (currentStepIndex is already 2)
       const contentResp = await fetch('/api/generate/scene-content', {
         method: 'POST',
-        headers: getApiHeaders(),
+        headers: getApiHeaders(currentSession.forceModel),
         body: JSON.stringify({
           outline: firstOutline,
           allOutlines: outlines,
@@ -686,7 +706,7 @@ function GenerationPreviewContent() {
 
       const actionsResp = await fetch('/api/generate/scene-actions', {
         method: 'POST',
-        headers: getApiHeaders(),
+        headers: getApiHeaders(currentSession.forceModel),
         body: JSON.stringify({
           outline: contentData.effectiveOutline || firstOutline,
           allOutlines: outlines,

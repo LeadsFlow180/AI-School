@@ -155,6 +155,9 @@ importers:
       partial-json:
         specifier: ^0.1.7
         version: 0.1.7
+      pdfjs-dist:
+        specifier: ^5.6.205
+        version: 5.6.205
       pptxgenjs:
         specifier: workspace:*
         version: link:packages/pptxgenjs
@@ -7204,6 +7207,9 @@ packages:
   node-int64@0.4.0:
     resolution: {integrity: sha512-O5lz91xSOeoXP6DulyHfllpq+Eg00MWitZIbtPfoSEvqIHdl5gfcY6hYzDWnj0qD5tz52PI08u9qUvSVeUBeHw==}
 
+  node-readable-to-web-readable-stream@0.4.2:
+    resolution: {integrity: sha512-/cMZNI34v//jUTrI+UIo4ieHAB5EZRY/+7OmXZgBxaWBMcW2tGdceIw06RFxWxrKZ5Jp3sI2i5TsRo+CBhtVLQ==}
+
   node-releases@2.0.36:
     resolution: {integrity: sha512-TdC8FSgHz8Mwtw9g5L4gR/Sh9XhSP/0DEkQxfEFXOpiul5IiHgHan2VhYYb6agDSfp4KuvltmGApc8HMgUrIkA==}
 
@@ -7526,6 +7532,10 @@ packages:
 
   pause-stream@0.0.11:
     resolution: {integrity: sha512-e3FBlXLmN/D1S+zHzanP4E/4Z60oFAa3O051qt1pxa7DEJWKAyil6upYVXCWadEnuoqa4Pkc9oUx9zsxYeRv8A==}
+
+  pdfjs-dist@5.6.205:
+    resolution: {integrity: sha512-tlUj+2IDa7G1SbvBNN74UHRLJybZDWYom+k6p5KIZl7huBvsA4APi6mKL+zCxd3tLjN5hOOEE9Tv7VdzO88pfg==}
+    engines: {node: '>=20.19.0 || >=22.13.0 || >=24'}
 
   phoenix@1.8.5:
     resolution: {integrity: sha512-Oj5nlRV/NKXkjBx8uMgCMmgMf1twd/B2qOcO30cHLH1PCGR8149o4T1lRIaqN4nq2KQJAeMqPiLdh1Asd0wQFg==}
@@ -17154,6 +17164,9 @@ snapshots:
 
   node-int64@0.4.0: {}
 
+  node-readable-to-web-readable-stream@0.4.2:
+    optional: true
+
   node-releases@2.0.36: {}
 
   normalize-path@2.1.1:
@@ -17509,6 +17522,11 @@ snapshots:
   pause-stream@0.0.11:
     dependencies:
       through: 2.3.8
+
+  pdfjs-dist@5.6.205:
+    optionalDependencies:
+      '@napi-rs/canvas': 0.1.96
+      node-readable-to-web-readable-stream: 0.4.2
 
   phoenix@1.8.5: {}
 

@@ -22,6 +22,9 @@ import { cn } from '@/lib/utils';
 import { ChatArea, type ChatAreaRef } from '@/components/chat/chat-area';
 import { agentsToParticipants, useAgentRegistry } from '@/lib/orchestration/registry/store';
 import type { AgentConfig } from '@/lib/orchestration/registry/types';
+import { KidsParallaxBackground } from '@/components/stage/kids-parallax-background';
+import { KidsGuideOverlay } from '@/components/stage/kids-guide-overlay';
+import { KidsSparkleOverlay } from '@/components/stage/kids-sparkle-overlay';
 import {
   AlertDialog,
   AlertDialogContent,
@@ -42,8 +45,10 @@ import { VisuallyHidden } from 'radix-ui';
  */
 export function Stage({
   onRetryOutline,
+  onOpenGuidance,
 }: {
   onRetryOutline?: (outlineId: string) => Promise<void>;
+  onOpenGuidance?: () => void;
 }) {
   const { t } = useI18n();
   const { mode, getCurrentScene, scenes, currentSceneId, setCurrentSceneId, generatingOutlines } =
@@ -213,6 +218,17 @@ export function Stage({
     // Fire new chat round — SSE events will drive thinking → agent_start → speech
     await chatAreaRef.current?.resumeActiveSession();
   }, []);
+
+  useEffect(() => {
+    const openSidebarForTour = () => setSidebarCollapsed(false);
+    const openChatForTour = () => setChatAreaCollapsed(false);
+    window.addEventListener('classroom-tour:open-sidebar', openSidebarForTour);
+    window.addEventListener('classroom-tour:open-chat', openChatForTour);
+    return () => {
+      window.removeEventListener('classroom-tour:open-sidebar', openSidebarForTour);
+      window.removeEventListener('classroom-tour:open-chat', openChatForTour);
+    };
+  }, [setSidebarCollapsed, setChatAreaCollapsed]);
 
   /** Reset all live/discussion state (shared by doSessionCleanup & onDiscussionEnd) */
   const resetLiveState = useCallback(() => {
@@ -948,26 +964,48 @@ export function Stage({
     <div
       ref={stageRef}
       className={cn(
-        'flex-1 flex overflow-hidden bg-gray-50 dark:bg-gray-900',
+        'relative flex-1 flex overflow-hidden bg-transparent',
         isPresenting && !controlsVisible && 'cursor-none',
       )}
     >
+      <KidsParallaxBackground />
+      <KidsSparkleOverlay />
+      {!isPresenting && (
+        <KidsGuideOverlay
+          isNotesChatOpen={!chatAreaCollapsed}
+          isSidebarOpen={!sidebarCollapsed}
+        />
+      )}
+
+
       {/* Scene Sidebar */}
-      <SceneSidebar
-        collapsed={sidebarCollapsed}
-        onCollapseChange={setSidebarCollapsed}
-        onSceneSelect={gatedSceneSwitch}
-        onRetryOutline={onRetryOutline}
-      />
+      <div className="relative z-20 h-full min-h-0" data-tour="sidebar">
+        <SceneSidebar
+          collapsed={sidebarCollapsed}
+          onCollapseChange={setSidebarCollapsed}
+          onSceneSelect={gatedSceneSwitch}
+          onRetryOutline={onRetryOutline}
+        />
+      </div>
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col overflow-hidden min-w-0 relative">
+      <div className="relative z-20 flex-1 flex flex-col overflow-hidden min-w-0">
         {/* Header */}
-        {!isPresenting && <Header currentSceneTitle={currentScene?.title || ''} />}
+        {!isPresenting && (
+          <div data-tour="header">
+            <Header currentSceneTitle={currentScene?.title || ''} onOpenGuidance={onOpenGuidance} />
+          </div>
+        )}
 
         {/* Canvas Area */}
         <div
-          className="overflow-hidden relative flex-1 min-h-0 isolate"
+          data-tour="canvas"
+          className={cn(
+            'overflow-hidden relative flex-1 min-h-0 isolate',
+            !isPresenting &&
+              'mx-0.5 mt-0.5 rounded-md border border-slate-200/80 bg-white shadow-[0_2px_8px_-6px_rgba(15,23,42,0.18)]',
+            isPresenting && 'rounded-none border-0 bg-transparent shadow-none',
+          )}
           style={{
             height: sceneViewerHeight,
           }}
@@ -1014,9 +1052,11 @@ export function Stage({
         {/* Roundtable Area */}
         {mode === 'playback' && (
           <div
+            data-tour="controls"
             className={cn(
               'transition-opacity duration-300',
-              !isPresenting && 'shrink-0',
+              !isPresenting &&
+                'shrink-0 mx-0.5 mt-0.5 mb-0.5 rounded-3xl border-[3px] border-amber-200/70 bg-gradient-to-br from-amber-50/90 via-violet-50/85 to-sky-50/88 shadow-[0_14px_34px_-18px_rgba(245,158,11,0.35),0_14px_30px_-18px_rgba(124,58,237,0.45)] dark:border-violet-800/50 dark:from-violet-950/35 dark:via-slate-900/60 dark:to-fuchsia-950/20',
               isPresenting && 'absolute inset-x-0 bottom-0 z-20',
             )}
           >
@@ -1136,6 +1176,7 @@ export function Stage({
       {/* Chat Area */}
       <ChatArea
         ref={chatAreaRef}
+        className="tour-chat-panel"
         width={chatAreaWidth}
         onWidthChange={setChatAreaWidth}
         collapsed={chatAreaCollapsed}

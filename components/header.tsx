@@ -10,6 +10,7 @@ import {
   Download,
   FileDown,
   Package,
+  BookOpen,
 } from 'lucide-react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { useTheme } from '@/lib/hooks/use-theme';
@@ -23,9 +24,10 @@ import { useExportPPTX } from '@/lib/export/use-export-pptx';
 
 interface HeaderProps {
   readonly currentSceneTitle: string;
+  readonly onOpenGuidance?: () => void;
 }
 
-export function Header({ currentSceneTitle }: HeaderProps) {
+export function Header({ currentSceneTitle, onOpenGuidance }: HeaderProps) {
   const { t, locale, setLocale } = useI18n();
   const { theme, setTheme } = useTheme();
   const router = useRouter();
@@ -76,21 +78,26 @@ export function Header({ currentSceneTitle }: HeaderProps) {
 
   return (
     <>
-      <header className="h-20 px-8 flex items-center justify-between z-10 bg-transparent gap-4">
-        <div className="flex items-center gap-3 min-w-0 flex-1">
+      <header
+        className="relative h-20 px-8 flex items-center justify-between z-10 gap-4 border-b border-slate-200 bg-white shadow-sm"
+        style={{
+          backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.98))',
+        }}
+      >
+        <div className="relative z-10 flex items-center gap-3 min-w-0 flex-1">
           <button
             onClick={() => router.push('/')}
-            className="shrink-0 p-2 rounded-lg text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-700 dark:hover:text-gray-300 transition-colors"
+            className="shrink-0 p-2 rounded-xl text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors"
             title={t('generation.backToHome')}
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
           <div className="flex flex-col min-w-0">
-            <span className="text-[10px] uppercase tracking-widest font-bold text-gray-400 dark:text-gray-500 mb-0.5">
+            <span className="text-[10px] uppercase tracking-widest font-bold text-slate-500 mb-0.5">
               {t('stage.currentScene')}
             </span>
             <h1
-              className="text-xl font-bold text-gray-800 dark:text-gray-200 tracking-tight truncate"
+              className="text-xl font-bold text-slate-900 tracking-tight truncate"
               suppressHydrationWarning
             >
               {currentSceneTitle || t('common.loading')}
@@ -98,7 +105,21 @@ export function Header({ currentSceneTitle }: HeaderProps) {
           </div>
         </div>
 
-        <div className="flex items-center gap-4 bg-white/60 dark:bg-gray-800/60 backdrop-blur-md px-2 py-1.5 rounded-full border border-gray-100/50 dark:border-gray-700/50 shadow-sm shrink-0">
+        <div className="relative z-10 flex items-center gap-4 bg-slate-50 px-2 py-1.5 rounded-full border border-slate-200 shadow-sm shrink-0">
+          {onOpenGuidance && (
+            <>
+              <button
+                onClick={onOpenGuidance}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold text-violet-700 bg-violet-50 border border-violet-200/80 hover:bg-violet-100 transition-colors dark:text-violet-200 dark:bg-violet-900/35 dark:border-violet-700/70 dark:hover:bg-violet-800/45"
+                title={t('common.guidanceBook')}
+              >
+                <BookOpen className="w-3.5 h-3.5" />
+                {t('common.guidanceBook')}
+              </button>
+              <div className="w-[1px] h-4 bg-gray-200 dark:bg-gray-700" />
+            </>
+          )}
+
           {/* Language Selector */}
           <div className="relative" ref={languageRef}>
             <button
@@ -207,7 +228,7 @@ export function Header({ currentSceneTitle }: HeaderProps) {
 
           <div className="w-[1px] h-4 bg-gray-200 dark:bg-gray-700" />
 
-          {/* Settings Button */}
+          {/* Settings Button (temporarily hidden)
           <div className="relative">
             <button
               onClick={() => setSettingsOpen(true)}
@@ -216,11 +237,13 @@ export function Header({ currentSceneTitle }: HeaderProps) {
               <Settings className="w-4 h-4 group-hover:rotate-90 transition-transform duration-500" />
             </button>
           </div>
+          */}
         </div>
 
         {/* Export Dropdown */}
-        <div className="relative" ref={exportRef}>
+        <div className="relative z-10" ref={exportRef}>
           <button
+            data-tour="export"
             onClick={() => {
               if (canExport && !isExporting) setExportMenuOpen(!exportMenuOpen);
             }}

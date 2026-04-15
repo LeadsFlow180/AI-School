@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   PanelLeftClose,
@@ -11,6 +11,8 @@ import {
   Globe,
   AlertCircle,
   RefreshCw,
+  ChevronUp,
+  ChevronDown,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ThumbnailSlide } from '@/components/slide-renderer/components/ThumbnailSlide';
@@ -58,6 +60,9 @@ export function SceneSidebar({
 
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_WIDTH);
   const isDraggingRef = useRef(false);
+  const sceneListRef = useRef<HTMLDivElement>(null);
+  const [canScrollUp, setCanScrollUp] = useState(false);
+  const [canScrollDown, setCanScrollDown] = useState(false);
 
   const handleDragStart = useCallback(
     (e: React.MouseEvent) => {
@@ -100,14 +105,83 @@ export function SceneSidebar({
 
   const displayWidth = collapsed ? 0 : sidebarWidth;
 
+  const updateScrollButtons = useCallback(() => {
+    const el = sceneListRef.current;
+    if (!el) return;
+    setCanScrollUp(el.scrollTop > 8);
+    setCanScrollDown(el.scrollTop + el.clientHeight < el.scrollHeight - 8);
+  }, []);
+
+  useEffect(() => {
+    updateScrollButtons();
+  }, [scenes.length, generatingOutlines.length, collapsed, sidebarWidth, updateScrollButtons]);
+
+  const scrollSceneList = useCallback((direction: 'up' | 'down') => {
+    const el = sceneListRef.current;
+    if (!el) return;
+    const amount = Math.max(110, Math.round(el.clientHeight * 0.45));
+    el.scrollBy({ top: direction === 'up' ? -amount : amount, behavior: 'smooth' });
+  }, []);
+
   return (
     <div
       style={{
         width: displayWidth,
         transition: isDraggingRef.current ? 'none' : 'width 0.3s ease',
       }}
-      className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-xl border-r border-gray-100 dark:border-gray-800 shadow-[2px_0_24px_rgba(0,0,0,0.02)] flex flex-col shrink-0 z-20 relative overflow-visible"
+      className="h-full min-h-0 bg-gradient-to-b from-white/90 via-violet-50/65 to-sky-50/60 dark:from-slate-900/90 dark:via-violet-950/20 dark:to-slate-900/85 backdrop-blur-xl border-r border-violet-200/70 dark:border-violet-900/35 shadow-[6px_0_28px_-22px_rgba(124,58,237,0.45)] flex flex-col shrink-0 z-20 relative overflow-visible"
     >
+      <style jsx>{`
+        .scene-scroll {
+          scrollbar-width: thin;
+          scrollbar-color: rgba(139, 92, 246, 0.55) transparent;
+        }
+
+        .scene-scroll::-webkit-scrollbar {
+          width: 9px;
+        }
+
+        .scene-scroll::-webkit-scrollbar-track {
+          background: transparent;
+          border-radius: 999px;
+        }
+
+        .scene-scroll::-webkit-scrollbar-thumb {
+          background: linear-gradient(
+            180deg,
+            rgba(167, 139, 250, 0.72) 0%,
+            rgba(129, 140, 248, 0.72) 100%
+          );
+          border: 1.5px solid rgba(255, 255, 255, 0.78);
+          border-radius: 999px;
+        }
+
+        .scene-scroll:hover::-webkit-scrollbar-thumb {
+          background: linear-gradient(
+            180deg,
+            rgba(139, 92, 246, 0.86) 0%,
+            rgba(99, 102, 241, 0.86) 100%
+          );
+        }
+
+        .scene-scroll-fade-top {
+          background: linear-gradient(
+            to bottom,
+            rgba(248, 250, 255, 0.98) 0%,
+            rgba(248, 250, 255, 0.72) 45%,
+            rgba(255, 255, 255, 0) 100%
+          );
+        }
+
+        .scene-scroll-fade-bottom {
+          background: linear-gradient(
+            to top,
+            rgba(248, 250, 255, 0.98) 0%,
+            rgba(248, 250, 255, 0.72) 45%,
+            rgba(255, 255, 255, 0) 100%
+          );
+        }
+      `}</style>
       {/* Drag handle */}
       {!collapsed && (
         <div
@@ -118,7 +192,7 @@ export function SceneSidebar({
         </div>
       )}
 
-      <div className={cn('flex flex-col w-full h-full overflow-hidden', collapsed && 'hidden')}>
+      <div className={cn('flex flex-col w-full h-full min-h-0 overflow-hidden', collapsed && 'hidden')}>
         {/* Logo Header */}
         <div className="h-10 flex items-center justify-between shrink-0 relative mt-3 mb-1 px-3">
           <button
@@ -137,10 +211,16 @@ export function SceneSidebar({
         </div>
 
         {/* Scenes List */}
-        <div
-          data-testid="scene-list"
-          className="flex-1 overflow-y-auto overflow-x-hidden p-2 space-y-2 scrollbar-hide pt-1"
-        >
+        <div className="relative flex-1 min-h-0 px-1.5 pb-1.5">
+          <div className="pointer-events-none absolute left-3 top-2 z-20 rounded-full border border-violet-200/80 bg-white/90 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-violet-700 shadow-sm dark:border-violet-900/45 dark:bg-slate-900/85 dark:text-violet-300">
+            Slides {scenes.length + (generatingOutlines.length > 0 ? 1 : 0)}
+          </div>
+          <div
+            data-testid="scene-list"
+            ref={sceneListRef}
+            onScroll={updateScrollButtons}
+            className="scene-scroll h-full min-h-0 overflow-y-auto overflow-x-hidden px-2 pb-2 pt-8 space-y-2"
+          >
           {scenes.map((scene, index) => {
             const isActive = currentSceneId === scene.id;
             const Icon = getSceneTypeIcon(scene.type);
@@ -159,10 +239,10 @@ export function SceneSidebar({
                   }
                 }}
                 className={cn(
-                  'group relative rounded-lg transition-all duration-200 cursor-pointer flex flex-col gap-1 p-1.5',
+                  'group relative rounded-xl transition-all duration-200 cursor-pointer flex flex-col gap-1 p-1.5 border',
                   isActive
-                    ? 'bg-purple-50 dark:bg-purple-900/20 ring-1 ring-purple-200 dark:ring-purple-700'
-                    : 'hover:bg-gray-50/80 dark:hover:bg-gray-800/50',
+                    ? 'bg-white dark:bg-violet-950/25 border-violet-200/90 dark:border-violet-700/70 ring-1 ring-violet-200/70 dark:ring-violet-700/50 shadow-[0_12px_20px_-16px_rgba(124,58,237,0.65)] scale-[1.01]'
+                    : 'bg-white/62 dark:bg-slate-900/35 border-transparent hover:bg-white/92 dark:hover:bg-slate-800/55 hover:border-violet-100/80 dark:hover:border-violet-900/35',
                 )}
               >
                 {/* Scene Header */}
@@ -189,6 +269,11 @@ export function SceneSidebar({
                     >
                       {scene.title}
                     </span>
+                    {isActive && (
+                      <span className="text-[9px] font-bold uppercase tracking-wide rounded-full bg-purple-100 dark:bg-purple-900/45 text-purple-700 dark:text-purple-300 px-1.5 py-0.5">
+                        Current
+                      </span>
+                    )}
                   </div>
                 </div>
 
@@ -351,7 +436,7 @@ export function SceneSidebar({
                     !isFailed && !isActive && 'opacity-60',
                     isActive &&
                       !isFailed &&
-                      'bg-purple-50 dark:bg-purple-900/20 ring-1 ring-purple-200 dark:ring-purple-700 opacity-100',
+                    'bg-purple-50 dark:bg-purple-900/20 ring-1 ring-purple-200 dark:ring-purple-700 opacity-100 shadow-[0_10px_20px_-16px_rgba(124,58,237,0.55)] scale-[1.01]',
                   )}
                 >
                   {/* Scene Header */}
@@ -444,6 +529,39 @@ export function SceneSidebar({
                 </div>
               );
             })()}
+          </div>
+          <div className="scene-scroll-fade-top pointer-events-none absolute top-0 left-2 right-2 h-10 rounded-t-xl" />
+          <div className="scene-scroll-fade-bottom pointer-events-none absolute bottom-0 left-2 right-2 h-10 rounded-b-xl" />
+          <div className="absolute right-2 top-10 bottom-9 z-20 flex flex-col justify-between pointer-events-none">
+            <button
+              type="button"
+              onClick={() => scrollSceneList('up')}
+              disabled={!canScrollUp}
+              className={cn(
+                'pointer-events-auto w-7 h-7 rounded-full border flex items-center justify-center transition-all',
+                canScrollUp
+                  ? 'bg-white/95 border-violet-200/90 text-violet-700 shadow-[0_8px_16px_-12px_rgba(124,58,237,0.85)] hover:bg-violet-50'
+                  : 'bg-white/55 border-gray-200/70 text-gray-300 cursor-not-allowed dark:bg-slate-900/55 dark:border-slate-700 dark:text-slate-600',
+              )}
+              aria-label={t('common.previous')}
+            >
+              <ChevronUp className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => scrollSceneList('down')}
+              disabled={!canScrollDown}
+              className={cn(
+                'pointer-events-auto w-7 h-7 rounded-full border flex items-center justify-center transition-all',
+                canScrollDown
+                  ? 'bg-white/95 border-violet-200/90 text-violet-700 shadow-[0_8px_16px_-12px_rgba(124,58,237,0.85)] hover:bg-violet-50'
+                  : 'bg-white/55 border-gray-200/70 text-gray-300 cursor-not-allowed dark:bg-slate-900/55 dark:border-slate-700 dark:text-slate-600',
+              )}
+              aria-label={t('common.next')}
+            >
+              <ChevronDown className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
 
         {/* Spacer to push toggle button area */}

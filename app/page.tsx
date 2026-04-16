@@ -552,6 +552,12 @@ function HomePage() {
 
       const supabase = getSupabaseClient();
       if (isAuthenticated && isAdminUser && supabase) {
+        // Clear immediately so we never show the previous page while this page is loading.
+        if (isLatest()) {
+          setRecentsSource('remote');
+          setThumbnails({});
+          setClassrooms([]);
+        }
         const session = await getSessionSafe(supabase);
         const currentUserId = session?.user?.id;
 
@@ -577,7 +583,17 @@ function HomePage() {
           if (isLatest()) {
             setRecentsSource('remote');
             setRecentPage(targetPage);
-            setTotalClassroomsCount(count ?? rows.length);
+            let nextTotal = count ?? null;
+            // Fallback: if Supabase didn't return count for this query,
+            // fetch exact count once so pagination always spans all pages.
+            if (nextTotal === null && totalClassroomsCount === 0) {
+              const { count: exactCount } = await supabase
+                .from('classrooms')
+                .select('id', { count: 'exact', head: true })
+                .eq('user_id', currentUserId);
+              nextTotal = exactCount ?? null;
+            }
+            setTotalClassroomsCount(nextTotal ?? rows.length);
           }
           const list: StageListItem[] = rows.map((row) => {
             const scenes = Array.isArray(row.scenes_data) ? row.scenes_data : [];
@@ -590,9 +606,16 @@ function HomePage() {
               updatedAt: Date.parse(row.updated_at) || Date.now(),
             };
           });
+          // Apply classroom titles immediately; thumbnails will be filled one-by-one
+          // so the user sees content much sooner.
+          if (isLatest()) {
+            setClassrooms(list);
+            setThumbnails({});
+          }
 
-          const slideMap: Record<string, Slide> = {};
+          // Fill thumbnails incrementally (per card) for a "one by one" feel.
           for (const row of rows) {
+            if (!isLatest()) return;
             const scenes = Array.isArray(row.scenes_data) ? row.scenes_data : [];
             const firstSlideScene = scenes.find(
               (scene): scene is { content?: { type?: string; canvas?: Slide } } =>
@@ -603,11 +626,14 @@ function HomePage() {
             );
             const maybeCanvas = firstSlideScene?.content;
             if (maybeCanvas?.type === 'slide' && maybeCanvas.canvas) {
-              slideMap[row.id] = maybeCanvas.canvas;
+              const canvas = maybeCanvas.canvas;
+              setThumbnails((prev) => ({ ...prev, [row.id]: canvas }));
+              // Yield so React can paint updates between cards.
+              // eslint-disable-next-line no-await-in-loop
+              await new Promise((r) => setTimeout(r, 0));
             }
           }
 
-          applyClassrooms(list, slideMap);
           console.info(
             `[Recents] Loaded ${list.length} classrooms from Supabase for admin ${currentUserId}.`,
           );
@@ -1695,7 +1721,7 @@ function HomePage() {
                 transition={{ duration: 0.4, ease: [0.25, 0.1, 0.25, 1] }}
                 className="w-full overflow-hidden"
               >
-                {isRecentsLoading && (classrooms.length === 0 || recentsSource === 'remote') ? (
+                {isRecentsLoading && classrooms.length === 0 ? (
                   <div className="pt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-5 gap-y-6">
                     {Array.from({ length: RECENTS_PER_PAGE }).map((_, idx) => (
                       <div
@@ -2100,7 +2126,9 @@ function ClassroomCard({
 }) {
   const { t } = useI18n();
   const thumbRef = useRef<HTMLDivElement>(null);
-  const [thumbWidth, setThumbWidth] = useState(0);
+  // # Reason: render thumbnails immediately with a sensible default width so
+  // pagination feels fast, then refine via ResizeObserver.
+  const [thumbWidth, setThumbWidth] = useState(240);
 
   useEffect(() => {
     const el = thumbRef.current;
@@ -2122,10 +2150,10 @@ function ClassroomCard({
         ref={thumbRef}
         className="relative w-full aspect-[16/9] rounded-xl bg-slate-100 dark:bg-slate-800/80 overflow-hidden transition-transform duration-300 group-hover:scale-[1.015]"
       >
-        {slide && thumbWidth > 0 ? (
+        {slide ? (
           <ThumbnailSlide
             slide={slide}
-            size={thumbWidth}
+            size={thumbWidth > 0 ? thumbWidth : 240}
             viewportSize={slide.viewportSize ?? 1000}
             viewportRatio={slide.viewportRatio ?? 0.5625}
           />

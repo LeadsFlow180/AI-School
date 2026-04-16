@@ -4,6 +4,7 @@ export const commonZhCN = {
     confirm: '确定',
     cancel: '取消',
     loading: '加载中...',
+    guidanceBook: '课堂导览',
   },
   home: {
     slogan: 'Generative Learning in Multi-Agent Interactive Classroom',
@@ -34,11 +35,15 @@ export const commonZhCN = {
   },
   export: {
     pptx: '导出 PPTX',
+    audioPack: '导出音频包',
+    audioPackDesc: '按页面导出课堂语音',
     resourcePack: '导出教学资源包',
     resourcePackDesc: 'PPTX + 交互式页面',
     exporting: '正在导出...',
     exportSuccess: '导出成功',
     exportFailed: '导出失败',
+    noAudioFound: '未找到可导出的课堂音频',
+    noTtsProviderConfigured: '未配置可用的语音服务，请先在设置中配置 TTS 提供商',
   },
 } as const;
 
@@ -48,6 +53,7 @@ export const commonEnUS = {
     confirm: 'Confirm',
     cancel: 'Cancel',
     loading: 'Loading...',
+    guidanceBook: 'Guidance Book',
   },
   home: {
     slogan: 'Generative Learning in Multi-Agent Interactive Classroom',
@@ -78,10 +84,14 @@ export const commonEnUS = {
   },
   export: {
     pptx: 'Export PPTX',
+    audioPack: 'Export Audio Pack',
+    audioPackDesc: 'Classroom narration clips by slide',
     resourcePack: 'Export Resource Pack',
     resourcePackDesc: 'PPTX + interactive pages',
     exporting: 'Exporting...',
     exportSuccess: 'Export successful',
     exportFailed: 'Export failed',
+    noAudioFound: 'No classroom audio found to export',
+    noTtsProviderConfigured: 'No TTS provider is configured. Please configure one in Settings first.',
   },
 } as const;

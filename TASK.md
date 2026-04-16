@@ -54,6 +54,8 @@
 - [x] 2026-04-15 - Show explicit “Loading classrooms...” state in Home Recents when returning to `/` so users see loading feedback instead of an empty section.
 - [x] 2026-04-15 - Implement backend page-wise Recents loading for logged-in users via Supabase `range` + `count` to reduce home-page delay with large classroom history.
 - [x] 2026-04-15 - Replace Recents loading text with card skeleton placeholders so `/` shows a stable layout while classrooms are fetching.
+- [x] 2026-04-15 - Add admin-only “Edit in Canvas” button and `/classroom/[id]/edit` route for slide HTML editing.
+- [x] 2026-04-15 - Add OCR-based “Convert image text to editable” in classroom edit route to create live text layers from image-only Gamma slides.
 
 ## Discovered During Work
 

@@ -46,9 +46,11 @@ import { VisuallyHidden } from 'radix-ui';
 export function Stage({
   onRetryOutline,
   onOpenGuidance,
+  onOpenCanvasEdit,
 }: {
   onRetryOutline?: (outlineId: string) => Promise<void>;
   onOpenGuidance?: () => void;
+  onOpenCanvasEdit?: () => void;
 }) {
   const { t } = useI18n();
   const { mode, getCurrentScene, scenes, currentSceneId, setCurrentSceneId, generatingOutlines } =
@@ -993,7 +995,11 @@ export function Stage({
         {/* Header */}
         {!isPresenting && (
           <div data-tour="header">
-            <Header currentSceneTitle={currentScene?.title || ''} onOpenGuidance={onOpenGuidance} />
+            <Header
+              currentSceneTitle={currentScene?.title || ''}
+              onOpenGuidance={onOpenGuidance}
+              onOpenCanvasEdit={onOpenCanvasEdit}
+            />
           </div>
         )}
 

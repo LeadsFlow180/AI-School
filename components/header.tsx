@@ -12,6 +12,7 @@ import {
   Music,
   Package,
   BookOpen,
+  Pencil,
 } from 'lucide-react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { useTheme } from '@/lib/hooks/use-theme';
@@ -26,9 +27,10 @@ import { useExportPPTX } from '@/lib/export/use-export-pptx';
 interface HeaderProps {
   readonly currentSceneTitle: string;
   readonly onOpenGuidance?: () => void;
+  readonly onOpenCanvasEdit?: () => void;
 }
 
-export function Header({ currentSceneTitle, onOpenGuidance }: HeaderProps) {
+export function Header({ currentSceneTitle, onOpenGuidance, onOpenCanvasEdit }: HeaderProps) {
   const { t, locale, setLocale } = useI18n();
   const { theme, setTheme } = useTheme();
   const router = useRouter();
@@ -122,6 +124,20 @@ export function Header({ currentSceneTitle, onOpenGuidance }: HeaderProps) {
               >
                 <BookOpen className="w-3.5 h-3.5" />
                 {t('common.guidanceBook')}
+              </button>
+              <div className="w-[1px] h-4 bg-gray-200 dark:bg-gray-700" />
+            </>
+          )}
+
+          {onOpenCanvasEdit && (
+            <>
+              <button
+                onClick={onOpenCanvasEdit}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200/80 hover:bg-emerald-100 transition-colors dark:text-emerald-200 dark:bg-emerald-900/35 dark:border-emerald-700/70 dark:hover:bg-emerald-800/45"
+                title="Edit in Canvas"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+                <span className="whitespace-nowrap">Edit</span>
               </button>
               <div className="w-[1px] h-4 bg-gray-200 dark:bg-gray-700" />
             </>

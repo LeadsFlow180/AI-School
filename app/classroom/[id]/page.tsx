@@ -12,7 +12,7 @@ import { useWhiteboardHistoryStore } from '@/lib/store/whiteboard-history';
 import { createLogger } from '@/lib/logger';
 import { MediaStageProvider } from '@/lib/contexts/media-stage-context';
 import { generateMediaForOutlines } from '@/lib/media/media-orchestrator';
-import { getSupabaseClient } from '@/lib/supabase/client';
+import { getSessionSafe, getSupabaseClient } from '@/lib/supabase/client';
 import { ClassroomLoadingScene } from '@/components/stage/classroom-loading-scene';
 import { ClassroomTourOverlay } from '@/components/stage/classroom-tour-overlay';
 import type { Scene } from '@/lib/types/stage';
@@ -337,6 +337,7 @@ export default function ClassroomDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tourOpen, setTourOpen] = useState(false);
+  const [isAdminUser, setIsAdminUser] = useState(false);
 
   const generationStartedRef = useRef(false);
 
@@ -345,6 +346,47 @@ export default function ClassroomDetailPage() {
       log.info('[Classroom] All scenes generated');
     },
   });
+
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      setIsAdminUser(false);
+      return;
+    }
+
+    let active = true;
+    const syncAdmin = async () => {
+      try {
+        const session = await getSessionSafe(supabase);
+        const token = session?.access_token;
+        if (!token) {
+          if (active) setIsAdminUser(false);
+          return;
+        }
+
+        const res = await fetch('/api/auth/admin-status', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        if (!active) return;
+        if (!res.ok) {
+          setIsAdminUser(false);
+          return;
+        }
+
+        const json = await res.json();
+        if (!active) return;
+        setIsAdminUser(!!json.isAdmin);
+      } catch {
+        if (active) setIsAdminUser(false);
+      }
+    };
+
+    void syncAdmin();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const loadClassroom = useCallback(async () => {
     const loadingStartedAt = Date.now();
@@ -605,6 +647,17 @@ export default function ClassroomDetailPage() {
               <Stage
                 onRetryOutline={retrySingleOutline}
                 onOpenGuidance={tourOpen ? undefined : () => setTourOpen(true)}
+                onOpenCanvasEdit={
+                  isAdminUser
+                    ? () => {
+                        window.open(
+                          `/classroom/${encodeURIComponent(classroomId || '')}/edit`,
+                          '_blank',
+                          'noopener,noreferrer',
+                        );
+                      }
+                    : undefined
+                }
               />
               <ClassroomTourOverlay open={tourOpen} onFinish={handleFinishTour} />
             </>

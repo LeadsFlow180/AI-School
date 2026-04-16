@@ -51,6 +51,8 @@
 - [x] 2026-04-15 - Stabilize Home Recents refresh when returning to `/` by making `loadClassrooms` callback-safe and reloading on window focus + visibility restore.
 - [x] 2026-04-15 - Fix intermittent Recents disappearance on back navigation by guarding against stale async load overwrites (request sequence check) and reloading on `pageshow` restore.
 - [x] 2026-04-15 - Show explicit “Loading classrooms...” state in Home Recents when returning to `/` so users see loading feedback instead of an empty section.
+- [x] 2026-04-15 - Implement backend page-wise Recents loading for logged-in users via Supabase `range` + `count` to reduce home-page delay with large classroom history.
+- [x] 2026-04-15 - Replace Recents loading text with card skeleton placeholders so `/` shows a stable layout while classrooms are fetching.
 
 ## Discovered During Work
 

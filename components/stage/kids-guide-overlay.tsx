@@ -22,12 +22,17 @@ const CHAT_LINES = [
 export function KidsGuideOverlay({
   isNotesChatOpen = false,
   isSidebarOpen = false,
+  compact = false,
 }: {
   isNotesChatOpen?: boolean;
   isSidebarOpen?: boolean;
+  compact?: boolean;
 }) {
   const [topLineIdx, setTopLineIdx] = useState(0);
   const [chatLineIdx, setChatLineIdx] = useState(0);
+  const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
+  const [isSmallScreen, setIsSmallScreen] = useState(false);
+  const isCompact = compact && isSmallScreen;
 
   useEffect(() => {
     const topTimer = window.setInterval(() => {
@@ -44,6 +49,23 @@ export function KidsGuideOverlay({
     };
   }, []);
 
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 639px)');
+    const applyMatch = () => setIsSmallScreen(media.matches);
+    applyMatch();
+    media.addEventListener('change', applyMatch);
+    return () => media.removeEventListener('change', applyMatch);
+  }, []);
+
+  useEffect(() => {
+    const handleExportMenuState = (event: Event) => {
+      const customEvent = event as CustomEvent<{ open?: boolean }>;
+      setIsExportMenuOpen(!!customEvent.detail?.open);
+    };
+    window.addEventListener('classroom-export:menu-change', handleExportMenuState);
+    return () => window.removeEventListener('classroom-export:menu-change', handleExportMenuState);
+  }, []);
+
   return (
     <div className="pointer-events-none absolute inset-0 z-30 overflow-hidden">
       {/* # Reason: Horizontal position is plain CSS — Motion-animated `left` still
@@ -51,15 +73,19 @@ export function KidsGuideOverlay({
           the mascot; rotate uses origin-bottom so tilt does not read as sliding. */}
       <div
         className={cn(
-          'absolute top-[5.8rem] hidden lg:block transition-[left] duration-300 ease-out',
-          isSidebarOpen ? 'left-[22%]' : 'left-[15%]',
+          'absolute top-[4.5rem] sm:top-[5.8rem] block transition-[left] duration-300 ease-out',
+          isCompact
+            ? 'left-[3%] sm:left-[8%]'
+            : isSidebarOpen
+              ? 'left-[8%] sm:left-[22%]'
+              : 'left-[4%] sm:left-[15%]',
         )}
       >
         <motion.div
           animate={{ y: [0, -4, 0] }}
           transition={{ duration: 4.8, repeat: Infinity, ease: 'easeInOut' }}
         >
-          <div className="relative w-[260px]">
+          <div className={cn('relative', isCompact ? 'w-[170px] sm:w-[220px]' : 'w-[220px] sm:w-[260px]')}>
             <AnimatePresence mode="wait">
               <motion.div
                 key={`class-top-${topLineIdx}`}
@@ -67,7 +93,10 @@ export function KidsGuideOverlay({
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -4 }}
                 transition={{ duration: 0.42, ease: 'easeOut' }}
-                className="mb-1 rounded-2xl border border-pink-200/80 bg-white/92 px-3 py-2 text-[11px] font-semibold text-pink-700 shadow-[0_10px_24px_-16px_rgba(236,72,153,0.65)]"
+                className={cn(
+                  'mb-1 rounded-2xl border border-pink-200/80 bg-white/92 px-2.5 sm:px-3 py-1.5 sm:py-2 text-[10px] sm:text-[11px] font-semibold text-pink-700 shadow-[0_10px_24px_-16px_rgba(236,72,153,0.65)]',
+                  isCompact && 'opacity-92',
+                )}
               >
                 {TOP_BAR_LINES[topLineIdx]}
               </motion.div>
@@ -84,22 +113,22 @@ export function KidsGuideOverlay({
               alt="Guide character for top bar"
               width={58}
               height={70}
-              className="mt-1 opacity-85"
+              className={cn('mt-1 h-auto opacity-85', isCompact ? 'w-11 sm:w-[52px]' : 'w-[52px] sm:w-[58px]')}
             />
           </motion.div>
         </motion.div>
       </div>
 
       <motion.div
-        className="absolute right-3 hidden xl:block"
+        className={cn('absolute right-2 sm:right-3 block')}
         animate={{
-          top: isNotesChatOpen ? '66%' : '20%',
+          top: isCompact ? '70%' : isNotesChatOpen ? '66%' : isExportMenuOpen ? '40%' : '20%',
           x: isNotesChatOpen ? -8 : 0,
-          scale: isNotesChatOpen ? 0.94 : 1,
+          scale: isCompact ? 0.86 : isNotesChatOpen ? 0.94 : 1,
         }}
         transition={{ duration: 0.55, ease: 'easeOut' }}
       >
-        <div className="relative max-w-[260px]">
+        <div className={cn('relative', isCompact ? 'max-w-[170px] sm:max-w-[220px]' : 'max-w-[220px] sm:max-w-[260px]')}>
           <AnimatePresence mode="wait">
             <motion.div
               key={`class-chat-${chatLineIdx}`}
@@ -107,7 +136,7 @@ export function KidsGuideOverlay({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -4 }}
               transition={{ duration: 0.42, ease: 'easeOut' }}
-              className="mb-1 rounded-2xl border border-blue-200/80 bg-white/92 px-3 py-2 text-[11px] font-semibold text-blue-700 shadow-[0_10px_24px_-16px_rgba(37,99,235,0.6)]"
+              className="mb-1 rounded-2xl border border-blue-200/80 bg-white/92 px-2.5 sm:px-3 py-1.5 sm:py-2 text-[10px] sm:text-[11px] font-semibold text-blue-700 shadow-[0_10px_24px_-16px_rgba(37,99,235,0.6)]"
             >
               {CHAT_LINES[chatLineIdx]}
             </motion.div>
@@ -127,7 +156,7 @@ export function KidsGuideOverlay({
             alt="Guide character for chat area"
             width={74}
             height={86}
-            className="mt-2 opacity-90"
+            className={cn('mt-2 h-auto opacity-90', isCompact ? 'w-[54px] sm:w-[62px]' : 'w-[62px] sm:w-[74px]')}
           />
         </motion.div>
       </motion.div>

@@ -3,7 +3,7 @@
 import Image from 'next/image';
 import { motion } from 'motion/react';
 import { Loader2 } from 'lucide-react';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { cn } from '@/lib/utils';
 
@@ -313,10 +313,16 @@ const KIND_STYLES = {
  */
 export function ClassroomLoadingScene() {
   const { t } = useI18n();
-  // # Reason: Keep scene fresh by varying chips per load, while preserving
-  // a dense but readable composition every time.
-  const activeLearningSparks = useMemo(() => pickRandomSubset(LEARNING_SPARKS, 16), []);
-  const activeMiniSparks = useMemo(() => pickRandomSubset(MINI_SPARKS, 12), []);
+  // # Reason: Keep SSR deterministic to avoid hydration mismatch; randomize after mount.
+  const initialLearningSparks = useMemo(() => LEARNING_SPARKS.slice(0, 16), []);
+  const initialMiniSparks = useMemo(() => MINI_SPARKS.slice(0, 12), []);
+  const [activeLearningSparks, setActiveLearningSparks] = useState(initialLearningSparks);
+  const [activeMiniSparks, setActiveMiniSparks] = useState(initialMiniSparks);
+
+  useEffect(() => {
+    setActiveLearningSparks(pickRandomSubset(LEARNING_SPARKS, 16));
+    setActiveMiniSparks(pickRandomSubset(MINI_SPARKS, 12));
+  }, []);
 
   return (
     <div

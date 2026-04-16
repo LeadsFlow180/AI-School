@@ -7,9 +7,12 @@ import { saveAs } from 'file-saver';
 import { toast } from 'sonner';
 
 import { useStageStore } from '@/lib/store';
+import { useSettingsStore } from '@/lib/store/settings';
 import { useCanvasStore } from '@/lib/store/canvas';
 import { useMediaGenerationStore, isMediaPlaceholder } from '@/lib/store/media-generation';
 import { useI18n } from '@/lib/hooks/use-i18n';
+import { DEFAULT_TTS_VOICES } from '@/lib/audio/constants';
+import type { TTSProviderId } from '@/lib/audio/types';
 import type {
   Slide,
   PPTElementOutline,
@@ -1209,6 +1212,95 @@ export function useExportPPTX() {
   const slideScenes = scenes.filter((s) => s.content.type === 'slide');
   const slides = slideScenes.map((s) => (s.content as SlideContent).canvas);
 
+  const resolveSpeechActionAudioForExport = useCallback(
+    async (speech: SpeechAction, fallbackAudioId: string): Promise<{ data: string; extn: string } | null> => {
+      const resolved = await resolveSpeechActionAudio(speech);
+      if (resolved) return resolved;
+      if (!speech.text?.trim()) return null;
+
+      const settings = useSettingsStore.getState();
+      const preferredProvider =
+        settings.ttsEnabled && settings.ttsProviderId !== 'browser-native-tts'
+          ? settings.ttsProviderId
+          : null;
+
+      const providerCandidates: TTSProviderId[] = [
+        ...(preferredProvider ? [preferredProvider] : []),
+        'openai-tts',
+        'azure-tts',
+        'glm-tts',
+        'qwen-tts',
+        'elevenlabs-tts',
+      ]
+        .filter((provider, index, arr) => arr.indexOf(provider) === index)
+        .filter((providerId) => {
+          const cfg = settings.ttsProvidersConfig?.[providerId];
+          if (!cfg) return false;
+          return !!cfg.isServerConfigured || !!cfg.apiKey?.trim();
+        });
+
+      if (providerCandidates.length === 0) {
+        return null;
+      }
+
+      for (const providerId of providerCandidates) {
+        const providerConfig = settings.ttsProvidersConfig?.[providerId];
+        const voice =
+          providerId === settings.ttsProviderId && settings.ttsVoice && settings.ttsVoice !== 'default'
+            ? settings.ttsVoice
+            : DEFAULT_TTS_VOICES[providerId];
+        try {
+          const resp = await fetch('/api/generate/tts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              text: speech.text,
+              audioId: fallbackAudioId,
+              ttsProviderId: providerId,
+              ttsVoice: voice,
+              ttsSpeed: settings.ttsSpeed || 1,
+              ttsApiKey: providerConfig?.apiKey || undefined,
+              ttsBaseUrl: providerConfig?.baseUrl || undefined,
+            }),
+          });
+          if (!resp.ok) continue;
+
+          const json = (await resp.json()) as {
+            success?: boolean;
+            base64?: string;
+            format?: string;
+          };
+          if (!json.success || !json.base64) continue;
+
+          const format = (json.format || 'mp3').toLowerCase();
+          const mime = format === 'wav' ? 'audio/wav' : format === 'ogg' ? 'audio/ogg' : 'audio/mpeg';
+          const data = `data:${mime};base64,${json.base64}`;
+
+          try {
+            const audioBlob = await fetch(data).then((r) => r.blob());
+            await db.audioFiles.put({
+              id: fallbackAudioId,
+              blob: audioBlob,
+              format,
+              text: speech.text,
+              voice,
+              createdAt: Date.now(),
+            });
+          } catch {
+            // Ignore cache failures; export can still continue with in-memory base64.
+          }
+
+          return { data, extn: format };
+        } catch (err) {
+          log.warn(`On-demand TTS generation for export failed (${providerId}):`, err);
+        }
+      }
+
+      return null;
+    },
+    [],
+  );
+
   // Shared guard + state wrapper for export actions
   const withExportGuard = useCallback(
     (action: () => Promise<void>) => {
@@ -1307,5 +1399,71 @@ export function useExportPPTX() {
     t,
   ]);
 
-  return { exporting, exportPPTX, exportResourcePack };
+  // ── Export Classroom Audio Pack (slide-wise narration clips as ZIP) ──
+  const exportAudioPack = useCallback(() => {
+    withExportGuard(async () => {
+      const JSZip = (await import('jszip')).default;
+      const zip = new JSZip();
+      const fileName = sanitizeExportBasename(stage?.name, 'classroom-audio');
+      let exportCount = 0;
+      let missingCount = 0;
+      let hasConfiguredTTSProvider = false;
+      const reportLines: string[] = [`Classroom Audio Export Report`, `Stage: ${stage?.name || 'N/A'}`, ''];
+
+      for (let sceneIdx = 0; sceneIdx < scenes.length; sceneIdx++) {
+        const scene = scenes[sceneIdx];
+        if (!scene.actions?.length) continue;
+        const sceneFolder = `scene-${String(sceneIdx + 1).padStart(2, '0')}`;
+        let speechIdx = 0;
+        for (const action of scene.actions) {
+          if (action.type !== 'speech') continue;
+          const speech = action as SpeechAction;
+          if (!speech.text?.trim()) continue;
+          const fallbackAudioId = speech.audioId || `tts_export_${scene.id}_${speech.id}`;
+          const resolved = await resolveSpeechActionAudioForExport(speech, fallbackAudioId);
+          if (!resolved) {
+            const settings = useSettingsStore.getState();
+            const hasProvider = (
+              ['openai-tts', 'azure-tts', 'glm-tts', 'qwen-tts', 'elevenlabs-tts'] as TTSProviderId[]
+            ).some((providerId) => {
+              const cfg = settings.ttsProvidersConfig?.[providerId];
+              return !!cfg && (!!cfg.isServerConfigured || !!cfg.apiKey?.trim());
+            });
+            if (hasProvider) hasConfiguredTTSProvider = true;
+            missingCount += 1;
+            continue;
+          }
+          hasConfiguredTTSProvider = true;
+          const comma = resolved.data.indexOf(',');
+          if (comma === -1) continue;
+          speechIdx += 1;
+          const ext = (resolved.extn || 'mp3').toLowerCase().replace(/[^a-z0-9]/g, '') || 'mp3';
+          const clipName = `${sceneFolder}/speech-${String(speechIdx).padStart(2, '0')}.${ext}`;
+          zip.file(clipName, resolved.data.slice(comma + 1), { base64: true });
+          exportCount += 1;
+        }
+        reportLines.push(
+          `${sceneFolder}: exported ${speechIdx} clip(s)${
+            speechIdx === 0 ? ' (no cached/generated audio available)' : ''
+          }`,
+        );
+      }
+
+      if (exportCount === 0) {
+        toast.error(
+          hasConfiguredTTSProvider ? t('export.noAudioFound') : t('export.noTtsProviderConfigured'),
+        );
+        return;
+      }
+
+      reportLines.push('', `Total exported clips: ${exportCount}`, `Missing clips: ${missingCount}`);
+      zip.file('README.txt', reportLines.join('\n'));
+
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+      saveAs(zipBlob, `${fileName}-audio.zip`);
+      toast.success(t('export.exportSuccess'));
+    });
+  }, [withExportGuard, stage, scenes, t, resolveSpeechActionAudioForExport]);
+
+  return { exporting, exportPPTX, exportResourcePack, exportAudioPack };
 }

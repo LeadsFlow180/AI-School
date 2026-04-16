@@ -9,6 +9,7 @@ import {
   Loader2,
   Download,
   FileDown,
+  Music,
   Package,
   BookOpen,
 } from 'lucide-react';
@@ -36,7 +37,7 @@ export function Header({ currentSceneTitle, onOpenGuidance }: HeaderProps) {
   const [themeOpen, setThemeOpen] = useState(false);
 
   // Export
-  const { exporting: isExporting, exportPPTX, exportResourcePack } = useExportPPTX();
+  const { exporting: isExporting, exportPPTX, exportResourcePack, exportAudioPack } = useExportPPTX();
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const exportRef = useRef<HTMLDivElement>(null);
   const scenes = useStageStore((s) => s.scenes);
@@ -75,6 +76,12 @@ export function Header({ currentSceneTitle, onOpenGuidance }: HeaderProps) {
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
   }, [languageOpen, themeOpen, exportMenuOpen, handleClickOutside]);
+
+  useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent('classroom-export:menu-change', { detail: { open: exportMenuOpen } }),
+    );
+  }, [exportMenuOpen]);
 
   return (
     <>
@@ -269,13 +276,13 @@ export function Header({ currentSceneTitle, onOpenGuidance }: HeaderProps) {
             )}
           </button>
           {exportMenuOpen && (
-            <div className="absolute top-full mt-2 right-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg overflow-hidden z-50 min-w-[200px]">
+            <div className="absolute top-full mt-2 right-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg overflow-hidden z-50 min-w-[188px]">
               <button
                 onClick={() => {
                   setExportMenuOpen(false);
                   exportPPTX();
                 }}
-                className="w-full px-4 py-2.5 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-2.5"
+                className="w-full px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-2"
               >
                 <FileDown className="w-4 h-4 text-gray-400 shrink-0" />
                 <span>{t('export.pptx')}</span>
@@ -283,14 +290,29 @@ export function Header({ currentSceneTitle, onOpenGuidance }: HeaderProps) {
               <button
                 onClick={() => {
                   setExportMenuOpen(false);
+                  exportAudioPack();
+                }}
+                className="w-full px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-2"
+              >
+                <Music className="w-4 h-4 text-gray-400 shrink-0" />
+                <div>
+                  <div>{t('export.audioPack')}</div>
+                  <div className="text-[10px] leading-tight text-gray-400 dark:text-gray-500">
+                    {t('export.audioPackDesc')}
+                  </div>
+                </div>
+              </button>
+              <button
+                onClick={() => {
+                  setExportMenuOpen(false);
                   exportResourcePack();
                 }}
-                className="w-full px-4 py-2.5 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-2.5"
+                className="w-full px-3 py-2 text-left text-sm hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors flex items-center gap-2"
               >
                 <Package className="w-4 h-4 text-gray-400 shrink-0" />
                 <div>
                   <div>{t('export.resourcePack')}</div>
-                  <div className="text-[11px] text-gray-400 dark:text-gray-500">
+                  <div className="text-[10px] leading-tight text-gray-400 dark:text-gray-500">
                     {t('export.resourcePackDesc')}
                   </div>
                 </div>

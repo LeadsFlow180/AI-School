@@ -1153,11 +1153,11 @@ function HomePage() {
   };
 
   return (
-    <div className="relative min-h-[100dvh] w-full bg-[linear-gradient(to_bottom,rgba(250,250,250,1),rgba(244,244,245,0.95))] dark:bg-[linear-gradient(to_bottom,rgba(9,9,11,1),rgba(15,23,42,0.95))] flex flex-col items-center p-4 pt-16 md:p-8 md:pt-16 overflow-x-hidden">
+    <div className="relative min-h-[100dvh] w-full bg-[linear-gradient(to_bottom,rgba(250,250,250,1),rgba(244,244,245,0.95))] dark:bg-[linear-gradient(to_bottom,rgba(9,9,11,1),rgba(15,23,42,0.95))] flex flex-col items-center p-3 pt-20 sm:p-4 sm:pt-20 md:p-8 md:pt-16 overflow-x-hidden">
       {/* ═══ Top-right pill (unchanged) ═══ */}
       <div
         ref={toolbarRef}
-        className="fixed top-4 right-4 z-50 flex items-center gap-1.5 bg-white/90 dark:bg-zinc-900/85 backdrop-blur-xl px-2.5 py-1.5 rounded-full border border-zinc-200/80 dark:border-zinc-700/60 shadow-sm"
+        className="fixed top-2 inset-x-2 sm:top-4 sm:right-4 sm:inset-x-auto z-50 flex items-center justify-between sm:justify-start gap-1 bg-white/90 dark:bg-zinc-900/85 backdrop-blur-xl px-2 py-1.5 sm:px-2.5 rounded-full border border-zinc-200/80 dark:border-zinc-700/60 shadow-sm"
       >
         {/* Language Selector */}
         <div className="relative">
@@ -1375,7 +1375,7 @@ function HomePage() {
         />
       </div>
       <KidsParallaxBackground />
-      <KidsGuideOverlay />
+      <KidsGuideOverlay compact />
 
       {/* ═══ Hero section: title + input (centered, wider) ═══ */}
       <motion.div
@@ -1384,7 +1384,9 @@ function HomePage() {
         transition={{ duration: 0.6, ease: 'easeOut' }}
           className={cn(
             'relative z-20 w-full max-w-[900px] flex flex-col items-center',
-            classrooms.length === 0 ? 'justify-center min-h-[calc(100dvh-8rem)]' : 'mt-[8vh]',
+            classrooms.length === 0
+              ? 'justify-center min-h-[calc(100dvh-10rem)] sm:min-h-[calc(100dvh-8rem)]'
+              : 'mt-[5.5rem] sm:mt-[8vh]',
           )}
       >
         {/* ── Logo ── */}
@@ -1407,7 +1409,7 @@ function HomePage() {
           initial={{ opacity: 0, y: 6 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.2 }}
-          className="text-center text-2xl md:text-3xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-2"
+          className="text-center text-xl sm:text-2xl md:text-3xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-2"
         >
           Create interactive classrooms in minutes
         </motion.h1>
@@ -1416,7 +1418,7 @@ function HomePage() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.25 }}
-          className="text-sm md:text-[15px] text-muted-foreground/85 mb-8 text-center max-w-[680px]"
+          className="text-sm md:text-[15px] text-muted-foreground/85 mb-6 sm:mb-8 text-center max-w-[680px] px-1"
         >
           {t('home.slogan')}
         </motion.p>
@@ -1428,16 +1430,16 @@ function HomePage() {
           transition={{ delay: 0.35 }}
           className="w-full"
         >
-          <div className="w-full rounded-3xl border border-zinc-200/80 dark:border-zinc-700/60 bg-white/95 dark:bg-zinc-900/90 backdrop-blur-xl shadow-md transition-shadow focus-within:shadow-lg">
-            <div className="px-4 pt-3">
+          <div className="w-full rounded-2xl sm:rounded-3xl border border-zinc-200/80 dark:border-zinc-700/60 bg-white/95 dark:bg-zinc-900/90 backdrop-blur-xl shadow-md transition-shadow focus-within:shadow-lg">
+            <div className="px-3 sm:px-4 pt-3">
               <span className="inline-flex items-center rounded-full border border-zinc-300/80 dark:border-zinc-600/70 bg-zinc-100/90 dark:bg-zinc-800/70 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-zinc-700 dark:text-zinc-300">
                 AI Classroom Studio
               </span>
             </div>
             {/* ── Greeting + Profile + Agents ── */}
-            <div className="relative z-20 flex items-start justify-between">
+            <div className="relative z-20 flex flex-col sm:flex-row sm:items-start justify-between gap-2 sm:gap-0">
               <GreetingBar />
-              <div className="pr-3 pt-3.5 shrink-0">
+              <div className="pr-3 pt-0 sm:pt-3.5 pl-3 sm:pl-0 shrink-0">
                 <AgentBar />
               </div>
             </div>
@@ -1450,7 +1452,7 @@ function HomePage() {
                   ? t('upload.requirementPlaceholder')
                   : 'Login as admin to enter prompt and generate classroom.'
               }
-              className="w-full resize-none border-0 bg-transparent px-5 pt-2 pb-2 text-[14px] leading-relaxed placeholder:text-muted-foreground/50 focus:outline-none min-h-[150px] max-h-[320px]"
+              className="w-full resize-none border-0 bg-transparent px-3.5 sm:px-5 pt-2 pb-2 text-[14px] leading-relaxed placeholder:text-muted-foreground/50 focus:outline-none min-h-[128px] sm:min-h-[150px] max-h-[320px]"
               value={form.requirement}
               onChange={(e) => updateForm('requirement', e.target.value)}
               onKeyDown={handleKeyDown}
@@ -1459,13 +1461,13 @@ function HomePage() {
             />
 
             {/* Toolbar row */}
-            <div className="px-3 pb-1 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-              <div className="flex flex-wrap items-center gap-2">
+            <div className="px-3 pb-1 flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-x-4 gap-y-2">
+              <div className="grid grid-cols-1 min-[420px]:grid-cols-2 gap-2 w-full sm:w-auto sm:flex sm:flex-wrap sm:items-center">
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="h-8 gap-1.5 border-border/80 bg-background/70 text-xs font-medium shadow-none hover:bg-accent rounded-lg"
+                  className="h-8 gap-1.5 border-border/80 bg-background/70 text-xs font-medium shadow-none hover:bg-accent rounded-lg w-full sm:w-auto"
                   onClick={goToCreatorProfile}
                 >
                   <UserRound className="size-3.5" />
@@ -1475,7 +1477,7 @@ function HomePage() {
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="h-8 gap-1.5 border-border/80 bg-background/70 text-xs font-medium shadow-none hover:bg-accent rounded-lg"
+                  className="h-8 gap-1.5 border-border/80 bg-background/70 text-xs font-medium shadow-none hover:bg-accent rounded-lg w-full sm:w-auto"
                   onClick={() => {
                     // Persist immediately so text is not lost if the debounced draft write has not run yet.
                     try {
@@ -1493,7 +1495,7 @@ function HomePage() {
                   {t('home.manageRagDocs')}
                 </Button>
               </div>
-              <label className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+              <label className="inline-flex items-center gap-2 text-xs text-muted-foreground self-start sm:self-auto">
                 <input
                   type="checkbox"
                   checked={form.enableRAG}
@@ -1504,8 +1506,8 @@ function HomePage() {
             </div>
 
             {/* Toolbar row */}
-            <div className="px-3 pb-3 flex items-end gap-2">
-              <div className="flex-1 min-w-0">
+            <div className="px-3 pb-3 flex flex-wrap sm:flex-nowrap items-end gap-2">
+              <div className="min-w-0 w-full sm:flex-1">
                 <GenerationToolbar
                   language={form.language}
                   onLanguageChange={(lang) => updateForm('language', lang)}
@@ -1527,6 +1529,7 @@ function HomePage() {
               {/* Voice input */}
               <SpeechButton
                 size="md"
+                className="shrink-0"
                 onTranscription={(text) => {
                   setForm((prev) => {
                     const next = prev.requirement + (prev.requirement ? ' ' : '') + text;
@@ -1547,7 +1550,7 @@ function HomePage() {
                 }}
                 disabled={!canGenerateNow}
                 className={cn(
-                  'shrink-0 h-10 rounded-xl flex items-center justify-center gap-1.5 transition-all px-4',
+                  'h-10 rounded-xl flex items-center justify-center gap-1.5 transition-all px-4 min-w-[130px] w-[calc(100%-3rem)] min-[420px]:w-auto sm:w-auto sm:shrink-0',
                   canGenerateNow
                     ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 hover:opacity-95 shadow-sm cursor-pointer'
                     : 'bg-muted text-muted-foreground/40 cursor-not-allowed',
@@ -1581,7 +1584,7 @@ function HomePage() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.5 }}
-          className="relative z-30 mt-10 w-full max-w-6xl flex flex-col items-center pointer-events-auto rounded-3xl border border-white/55 bg-white/65 px-5 py-5 shadow-[0_24px_50px_-32px_rgba(15,23,42,0.45)] backdrop-blur-xl dark:border-slate-700/70 dark:bg-slate-900/55"
+          className="relative z-30 mt-8 sm:mt-10 w-full max-w-6xl flex flex-col items-center pointer-events-auto rounded-2xl sm:rounded-3xl border border-white/55 bg-white/65 px-3 sm:px-5 py-4 sm:py-5 shadow-[0_24px_50px_-32px_rgba(15,23,42,0.45)] backdrop-blur-xl dark:border-slate-700/70 dark:bg-slate-900/55"
         >
           {/* Trigger — divider-line with centered text */}
           <button
@@ -1623,7 +1626,7 @@ function HomePage() {
                 transition={{ duration: 0.4, ease: [0.25, 0.1, 0.25, 1] }}
                 className="w-full overflow-hidden"
               >
-                <div className="pt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-5 gap-y-6">
+                <div className="pt-4 sm:pt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 sm:gap-x-5 gap-y-4 sm:gap-y-6">
                   {pagedClassrooms.map((classroom, i) => (
                     <motion.div
                       key={classroom.id}
@@ -1649,19 +1652,19 @@ function HomePage() {
                   ))}
                 </div>
                 {totalRecentPages > 1 && (
-                  <div className="mt-5 flex items-center justify-center gap-3 pb-1">
+                  <div className="mt-5 flex items-center justify-center gap-2 sm:gap-3 pb-1">
                     <Button
                       type="button"
                       variant="outline"
                       size="sm"
                       disabled={recentPage === 1}
                       onClick={() => setRecentPage((prev) => Math.max(1, prev - 1))}
-                      className="h-8 rounded-full px-3 text-xs"
+                      className="h-8 rounded-full px-2.5 sm:px-3 text-xs min-w-8"
                     >
-                      <ChevronLeft className="mr-1 size-3.5" />
-                      Prev
+                      <ChevronLeft className="size-3.5" />
+                      <span className="hidden sm:inline ml-1">Prev</span>
                     </Button>
-                    <span className="rounded-full border border-violet-200/70 bg-violet-50 px-3 py-1 text-xs font-semibold text-violet-700 dark:border-violet-700/60 dark:bg-violet-900/30 dark:text-violet-200">
+                    <span className="rounded-full border border-violet-200/70 bg-violet-50 px-2.5 sm:px-3 py-1 text-[11px] sm:text-xs font-semibold text-violet-700 dark:border-violet-700/60 dark:bg-violet-900/30 dark:text-violet-200 whitespace-nowrap">
                       Page {recentPage} of {totalRecentPages}
                     </span>
                     <Button
@@ -1670,10 +1673,10 @@ function HomePage() {
                       size="sm"
                       disabled={recentPage === totalRecentPages}
                       onClick={() => setRecentPage((prev) => Math.min(totalRecentPages, prev + 1))}
-                      className="h-8 rounded-full px-3 text-xs"
+                      className="h-8 rounded-full px-2.5 sm:px-3 text-xs min-w-8"
                     >
-                      Next
-                      <ChevronRight className="ml-1 size-3.5" />
+                      <span className="hidden sm:inline mr-1">Next</span>
+                      <ChevronRight className="size-3.5" />
                     </Button>
                   </div>
                 )}

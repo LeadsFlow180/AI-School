@@ -2,6 +2,7 @@
 
 ## Active
 
+- [x] 2026-04-15 - Fix classroom Guidance Book label key and add Export Audio Pack action in Export menu for downloading slide narration clips.
 - [x] 2026-04-15 - Reposition Home Guidance Book button into the top profile-controls header row (above prompt area).
 - [x] 2026-04-15 - Move Home-page Guidance Book button out of prompt toolbar into a separate top-level action row.
 - [x] 2026-04-15 - Add in-classroom Guidance Book button to reopen the classroom tour overlay on demand.
@@ -45,6 +46,14 @@
 
 ## Discovered During Work
 
+- [x] 2026-04-15 - Improve Home mobile polish: recents pagination controls, prompt action layout, and compact mascot overlays visible in empty spaces on small screens.
+- [x] 2026-04-15 - Improve Home page small-screen responsiveness: compact top toolbar, tighter hero spacing, mobile-friendly prompt controls stacking, and denser recents card layout.
+- [x] 2026-04-15 - Compact Export dropdown item spacing (3 actions) to reduce menu height and avoid overlap with classroom guide character.
+- [x] 2026-04-15 - Prevent Export Audio fallback from spamming `/api/generate/tts` 500s by trying only configured server-capable TTS providers and showing a specific “configure TTS” message when none are set.
+- [x] 2026-04-15 - Export Audio Pack fallback: if classroom uses browser-native/no saved TTS clips, attempt server-capable providers with default voices and include `README.txt` export report in ZIP.
+- [x] 2026-04-15 - Fix classroom loading hydration mismatch by avoiding SSR/client random-content divergence (defer random chip selection until after mount).
+- [x] 2026-04-15 - Improve Export Audio Pack by exporting speech clips across all scenes and generating missing TTS audio on demand when provider settings are available.
+- [x] 2026-04-15 - Prevent right guide mascot overlap with Export dropdown by moving it downward while export menu is open and restoring when closed.
 - [x] 2026-04-15 - Extend classroom tour with explicit action guidance steps for Export PPT, Play/Pause audio, Speed, and Whiteboard (button-level spotlight selectors).
 - [x] 2026-04-15 - Smart tour card placement: auto-position guidance card to side with available space around spotlight target.
 - [x] 2026-04-15 - Tour trigger policy + readability fixes: show only via `?tour=1`, remove overlay blur, force-open sidebar/chat on relevant tour steps, move chat-step card to left.

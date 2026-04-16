@@ -8,6 +8,7 @@
 
 import { useMediaGenerationStore } from '@/lib/store/media-generation';
 import { useSettingsStore } from '@/lib/store/settings';
+import { useStageStore } from '@/lib/store/stage';
 import { db, mediaFileKey } from '@/lib/utils/database';
 import type { SceneOutline } from '@/lib/types/generation';
 import type { MediaGenerationRequest } from '@/lib/media/types';
@@ -22,6 +23,92 @@ class MediaApiError extends Error {
     super(message);
     this.errorCode = errorCode;
   }
+}
+
+const GENERATED_IMAGE_ID_RE = /^gen_img_[\w-]+$/i;
+
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(String(reader.result || ''));
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+export async function reconcileGeneratedImageSources(
+  stageId: string,
+  onlyElementIds?: string[],
+): Promise<void> {
+  const stageStore = useStageStore.getState();
+  if (stageStore.stage?.id !== stageId) return;
+  const onlySet = onlyElementIds ? new Set(onlyElementIds) : null;
+
+  const neededIds = new Set<string>();
+  for (const scene of stageStore.scenes) {
+    if (scene.content?.type !== 'slide') continue;
+    for (const el of scene.content.canvas.elements) {
+      if (el.type !== 'image' || typeof el.src !== 'string') continue;
+      if (!GENERATED_IMAGE_ID_RE.test(el.src)) continue;
+      if (onlySet && !onlySet.has(el.src)) continue;
+      neededIds.add(el.src);
+    }
+  }
+  if (neededIds.size === 0) return;
+
+  const resolvedMap = new Map<string, string>();
+  for (const elementId of neededIds) {
+    try {
+      const rec = await db.mediaFiles.get(mediaFileKey(stageId, elementId));
+      if (!rec || rec.type !== 'image' || rec.error || rec.blob.size === 0) continue;
+      const dataUrl = await blobToDataUrl(rec.blob);
+      if (dataUrl) {
+        resolvedMap.set(elementId, dataUrl);
+      }
+    } catch (err) {
+      log.warn(`Failed to resolve generated image "${elementId}" from media DB:`, err);
+    }
+  }
+  if (resolvedMap.size === 0) return;
+
+  let hasChanges = false;
+  const nextScenes = stageStore.scenes.map((scene) => {
+    if (scene.content?.type !== 'slide') return scene;
+
+    let sceneChanged = false;
+    const nextElements = scene.content.canvas.elements.map((el) => {
+      if (el.type === 'image' && typeof el.src === 'string') {
+        const resolved = resolvedMap.get(el.src);
+        if (!resolved) return el;
+        hasChanges = true;
+        sceneChanged = true;
+        return { ...el, src: resolved };
+      }
+      return el;
+    });
+
+    if (!sceneChanged) return scene;
+
+    return {
+      ...scene,
+      updatedAt: Date.now(),
+      content: {
+        ...scene.content,
+        canvas: {
+          ...scene.content.canvas,
+          elements: nextElements,
+        },
+      },
+    };
+  });
+
+  if (!hasChanges) return;
+  useStageStore.setState({ scenes: nextScenes });
+  // Reason: Persist resolved image data into scene JSON so all generated slides
+  // remain visible after DB/Supabase reload and for public classroom links.
+  await stageStore.saveToStorage().catch((err) => {
+    log.warn('Failed to persist generated image source into stage scenes:', err);
+  });
 }
 
 /**
@@ -160,6 +247,9 @@ async function generateSingleMedia(
     const objectUrl = URL.createObjectURL(blob);
     const posterObjectUrl = posterBlob ? URL.createObjectURL(posterBlob) : undefined;
     useMediaGenerationStore.getState().markDone(req.elementId, objectUrl, posterObjectUrl);
+    if (req.type === 'image') {
+      await reconcileGeneratedImageSources(stageId, [req.elementId]);
+    }
   } catch (err) {
     if (abortSignal?.aborted) return;
     const message = err instanceof Error ? err.message : String(err);

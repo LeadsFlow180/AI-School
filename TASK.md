@@ -42,6 +42,17 @@
 - [x] 2026-04-01 - Fetch Recents from Supabase when logged in with local IndexedDB fallback and source logging.
 - [x] 2026-04-01 - Restrict auth to admin-only login (remove signup UI) and add `admin_users` SQL grant query.
 - [x] 2026-04-01 - Add secure server API to create admin user directly with email/password (`/api/admin/create-admin-user`).
+- [x] 2026-04-15 - Fix simple-prompt image persistence after DB/Supabase reload by writing resolved generated image URLs into saved scene JSON (not only local media blobs).
+- [x] 2026-04-15 - Fix Home Recents intermittent load race by reloading classrooms when admin status resolves and adding resilient IndexedDB fallback on unexpected Recents load errors.
+- [x] 2026-04-15 - Make classroom links publicly loadable by adding server-side Supabase-admin fallback in `/api/classroom` when local file storage is missing.
+- [x] 2026-04-15 - Ensure all generated slide images persist (not only early scenes) by reconciling `gen_img_*` placeholders from media blobs after scene add/load and saving resolved data URLs to storage.
+- [x] 2026-04-15 - Prevent missing final slide count (e.g., 5/6) by adding per-scene retry logic for content/actions/TTS generation so transient API failures do not drop a scene before save.
+- [x] 2026-04-15 - Fix classroom loading-scene hydration mismatch by making first-render spark subsets deterministic (SSR/CSR match) and randomizing only after mount.
+- [x] 2026-04-15 - Stabilize Home Recents refresh when returning to `/` by making `loadClassrooms` callback-safe and reloading on window focus + visibility restore.
+- [x] 2026-04-15 - Fix intermittent Recents disappearance on back navigation by guarding against stale async load overwrites (request sequence check) and reloading on `pageshow` restore.
+- [x] 2026-04-15 - Show explicit “Loading classrooms...” state in Home Recents when returning to `/` so users see loading feedback instead of an empty section.
+- [x] 2026-04-15 - Implement backend page-wise Recents loading for logged-in users via Supabase `range` + `count` to reduce home-page delay with large classroom history.
+- [x] 2026-04-15 - Replace Recents loading text with card skeleton placeholders so `/` shows a stable layout while classrooms are fetching.
 
 ## Discovered During Work
 

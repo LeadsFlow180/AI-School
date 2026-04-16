@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -478,17 +478,21 @@ function HomePage() {
   const [classrooms, setClassrooms] = useState<StageListItem[]>([]);
   const [thumbnails, setThumbnails] = useState<Record<string, Slide>>({});
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [isRecentsLoading, setIsRecentsLoading] = useState(false);
   const [authReady, setAuthReady] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isAdminUser, setIsAdminUser] = useState(false);
   const [authUserEmail, setAuthUserEmail] = useState('');
   const [profileCardOpen, setProfileCardOpen] = useState(false);
   const [recentPage, setRecentPage] = useState(1);
+  const [recentsSource, setRecentsSource] = useState<'local' | 'remote'>('local');
+  const [totalClassroomsCount, setTotalClassroomsCount] = useState(0);
   const [gammaBusy, setGammaBusy] = useState(false);
   const gammaRunRef = useRef(0);
   const [gammaSelected, setGammaSelected] = useState(false);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const classroomsLoadSeqRef = useRef(0);
   const RECENTS_PER_PAGE = 8;
 
   const verifyAdminStatus = async (accessToken: string) => {
@@ -516,24 +520,44 @@ function HomePage() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [languageOpen, themeOpen, profileCardOpen]);
 
-  const loadClassrooms = async () => {
+  const loadClassrooms = useCallback(async (targetPage: number = recentPage) => {
+    const requestSeq = ++classroomsLoadSeqRef.current;
+    const isLatest = () => requestSeq === classroomsLoadSeqRef.current;
+    if (isLatest()) {
+      setIsRecentsLoading(true);
+    }
+    const applyClassrooms = (nextClassrooms: StageListItem[], nextThumbs: Record<string, Slide>) => {
+      if (!isLatest()) return;
+      setClassrooms(nextClassrooms);
+      setThumbnails(nextThumbs);
+    };
+
     try {
       const loadLocalFallback = async (reason: string) => {
         const localList = await listStages();
-        setClassrooms(localList);
+        if (isLatest()) {
+          setRecentsSource('local');
+          setTotalClassroomsCount(localList.length);
+        }
         console.info(
           `[Recents] Using local IndexedDB fallback (${reason}). Loaded ${localList.length} classrooms.`,
         );
         if (localList.length > 0) {
           const slides = await getFirstSlideByStages(localList.map((c) => c.id));
-          setThumbnails(slides);
+          applyClassrooms(localList, slides);
         } else {
-          setThumbnails({});
+          applyClassrooms(localList, {});
         }
       };
 
       const supabase = getSupabaseClient();
       if (isAuthenticated && isAdminUser && supabase) {
+        // Clear immediately so we never show the previous page while this page is loading.
+        if (isLatest()) {
+          setRecentsSource('remote');
+          setThumbnails({});
+          setClassrooms([]);
+        }
         const session = await getSessionSafe(supabase);
         const currentUserId = session?.user?.id;
 
@@ -542,14 +566,35 @@ function HomePage() {
           return;
         }
 
-        const { data, error } = await supabase
+        const from = Math.max(0, (targetPage - 1) * RECENTS_PER_PAGE);
+        const to = from + RECENTS_PER_PAGE - 1;
+
+        const { data, error, count } = await supabase
           .from('classrooms')
-          .select('id, user_id, name, description, scenes_data, created_at, updated_at')
+          .select('id, user_id, name, description, scenes_data, created_at, updated_at', {
+            count: 'exact',
+          })
           .eq('user_id', currentUserId)
-          .order('updated_at', { ascending: false });
+          .order('updated_at', { ascending: false })
+          .range(from, to);
 
         if (!error && data) {
           const rows = data as SupabaseClassroomRow[];
+          if (isLatest()) {
+            setRecentsSource('remote');
+            setRecentPage(targetPage);
+            let nextTotal = count ?? null;
+            // Fallback: if Supabase didn't return count for this query,
+            // fetch exact count once so pagination always spans all pages.
+            if (nextTotal === null && totalClassroomsCount === 0) {
+              const { count: exactCount } = await supabase
+                .from('classrooms')
+                .select('id', { count: 'exact', head: true })
+                .eq('user_id', currentUserId);
+              nextTotal = exactCount ?? null;
+            }
+            setTotalClassroomsCount(nextTotal ?? rows.length);
+          }
           const list: StageListItem[] = rows.map((row) => {
             const scenes = Array.isArray(row.scenes_data) ? row.scenes_data : [];
             return {
@@ -561,9 +606,16 @@ function HomePage() {
               updatedAt: Date.parse(row.updated_at) || Date.now(),
             };
           });
+          // Apply classroom titles immediately; thumbnails will be filled one-by-one
+          // so the user sees content much sooner.
+          if (isLatest()) {
+            setClassrooms(list);
+            setThumbnails({});
+          }
 
-          const slideMap: Record<string, Slide> = {};
+          // Fill thumbnails incrementally (per card) for a "one by one" feel.
           for (const row of rows) {
+            if (!isLatest()) return;
             const scenes = Array.isArray(row.scenes_data) ? row.scenes_data : [];
             const firstSlideScene = scenes.find(
               (scene): scene is { content?: { type?: string; canvas?: Slide } } =>
@@ -574,12 +626,14 @@ function HomePage() {
             );
             const maybeCanvas = firstSlideScene?.content;
             if (maybeCanvas?.type === 'slide' && maybeCanvas.canvas) {
-              slideMap[row.id] = maybeCanvas.canvas;
+              const canvas = maybeCanvas.canvas;
+              setThumbnails((prev) => ({ ...prev, [row.id]: canvas }));
+              // Yield so React can paint updates between cards.
+              // eslint-disable-next-line no-await-in-loop
+              await new Promise((r) => setTimeout(r, 0));
             }
           }
 
-          setClassrooms(list);
-          setThumbnails(slideMap);
           console.info(
             `[Recents] Loaded ${list.length} classrooms from Supabase for admin ${currentUserId}.`,
           );
@@ -599,8 +653,27 @@ function HomePage() {
       await loadLocalFallback('unauthenticated or non-admin mode');
     } catch (err) {
       log.error('Failed to load classrooms:', err);
+      try {
+        const localList = await listStages();
+        if (isLatest()) {
+          setRecentsSource('local');
+          setTotalClassroomsCount(localList.length);
+        }
+        if (localList.length > 0) {
+          const slides = await getFirstSlideByStages(localList.map((c) => c.id));
+          applyClassrooms(localList, slides);
+        } else {
+          applyClassrooms(localList, {});
+        }
+      } catch (fallbackErr) {
+        log.error('Failed to recover Recents from local IndexedDB fallback:', fallbackErr);
+      }
+    } finally {
+      if (isLatest()) {
+        setIsRecentsLoading(false);
+      }
     }
-  };
+  }, [isAuthenticated, isAdminUser, recentPage]);
 
   useEffect(() => {
     // Clear stale media store to prevent cross-course thumbnail contamination.
@@ -666,13 +739,37 @@ function HomePage() {
 
   useEffect(() => {
     if (!authReady) return;
-    void loadClassrooms();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- load based on auth state only
-  }, [authReady, isAuthenticated]);
+    void loadClassrooms(recentPage);
+  }, [authReady, loadClassrooms]);
 
   useEffect(() => {
-    setRecentPage(1);
-  }, [classrooms.length]);
+    if (!authReady) return;
+    const handleRefresh = () => {
+      void loadClassrooms(recentPage);
+    };
+    const handlePageShow = () => {
+      void loadClassrooms(recentPage);
+    };
+    const handleVisibility = () => {
+      if (!document.hidden) {
+        void loadClassrooms(recentPage);
+      }
+    };
+    window.addEventListener('focus', handleRefresh);
+    window.addEventListener('pageshow', handlePageShow);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.removeEventListener('focus', handleRefresh);
+      window.removeEventListener('pageshow', handlePageShow);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [authReady, loadClassrooms, recentPage]);
+
+  useEffect(() => {
+    if (recentsSource === 'local') {
+      setRecentPage(1);
+    }
+  }, [classrooms.length, recentsSource]);
 
   const handleDelete = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -694,7 +791,7 @@ function HomePage() {
         }
       }
 
-      await loadClassrooms();
+      await loadClassrooms(recentPage);
     } catch (err) {
       log.error('Failed to delete classroom:', err);
       toast.error('Failed to delete classroom');
@@ -1087,11 +1184,12 @@ function HomePage() {
   const canGenerate = !!form.requirement.trim() && isAuthenticated && isAdminUser;
   const canGenerateNow = canGenerate && !gammaBusy;
   const showAuthenticatedUi = authReady && isAuthenticated;
-  const totalRecentPages = Math.max(1, Math.ceil(classrooms.length / RECENTS_PER_PAGE));
-  const pagedClassrooms = classrooms.slice(
-    (recentPage - 1) * RECENTS_PER_PAGE,
-    recentPage * RECENTS_PER_PAGE,
-  );
+  const totalRecentItems = recentsSource === 'remote' ? totalClassroomsCount : classrooms.length;
+  const totalRecentPages = Math.max(1, Math.ceil(totalRecentItems / RECENTS_PER_PAGE));
+  const pagedClassrooms =
+    recentsSource === 'remote'
+      ? classrooms
+      : classrooms.slice((recentPage - 1) * RECENTS_PER_PAGE, recentPage * RECENTS_PER_PAGE);
   const goToCreatorProfile = () => {
     // Avoid false redirect during initial auth hydration after refresh.
     // If we already have an authenticated state, allow opening the card immediately.
@@ -1576,7 +1674,7 @@ function HomePage() {
       </motion.div>
 
       {/* ═══ Recent classrooms — collapsible ═══ */}
-      {classrooms.length > 0 && (
+      {(isRecentsLoading || classrooms.length > 0) && (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -1601,7 +1699,7 @@ function HomePage() {
               <Clock className="size-3.5 text-violet-500" />
               {t('classroom.recentClassrooms')}
               <span className="inline-flex items-center justify-center rounded-full bg-violet-600 px-1.5 py-0.5 text-[10px] tabular-nums text-white">
-                {classrooms.length}
+                {isRecentsLoading && classrooms.length === 0 ? '...' : totalRecentItems}
               </span>
               <motion.div
                 animate={{ rotate: recentOpen ? 180 : 0 }}
@@ -1623,31 +1721,48 @@ function HomePage() {
                 transition={{ duration: 0.4, ease: [0.25, 0.1, 0.25, 1] }}
                 className="w-full overflow-hidden"
               >
-                <div className="pt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-5 gap-y-6">
-                  {pagedClassrooms.map((classroom, i) => (
-                    <motion.div
-                      key={classroom.id}
-                      initial={{ opacity: 0, y: 16 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{
-                        delay: i * 0.035,
-                        duration: 0.35,
-                        ease: 'easeOut',
-                      }}
-                    >
-                      <ClassroomCard
-                        classroom={classroom}
-                        slide={thumbnails[classroom.id]}
-                        formatDate={formatDate}
-                        onDelete={handleDelete}
-                        confirmingDelete={pendingDeleteId === classroom.id}
-                        onConfirmDelete={() => confirmDelete(classroom.id)}
-                        onCancelDelete={() => setPendingDeleteId(null)}
-                        onClick={() => router.push(`/classroom/${encodeURIComponent(classroom.id)}`)}
-                      />
-                    </motion.div>
-                  ))}
-                </div>
+                {isRecentsLoading && classrooms.length === 0 ? (
+                  <div className="pt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-5 gap-y-6">
+                    {Array.from({ length: RECENTS_PER_PAGE }).map((_, idx) => (
+                      <div
+                        key={`recents-skeleton-${idx}`}
+                        className="rounded-2xl border border-white/70 bg-white/80 p-2 dark:border-slate-700/70 dark:bg-slate-900/70"
+                      >
+                        <div className="w-full aspect-[16/9] rounded-xl bg-slate-200/70 dark:bg-slate-800/70 animate-pulse" />
+                        <div className="mt-3 space-y-2 px-0.5">
+                          <div className="h-3.5 w-3/4 rounded-md bg-slate-200/70 dark:bg-slate-800/70 animate-pulse" />
+                          <div className="h-3 w-1/2 rounded-md bg-slate-200/60 dark:bg-slate-800/60 animate-pulse" />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="pt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-5 gap-y-6">
+                    {pagedClassrooms.map((classroom, i) => (
+                      <motion.div
+                        key={classroom.id}
+                        initial={{ opacity: 0, y: 16 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{
+                          delay: i * 0.035,
+                          duration: 0.35,
+                          ease: 'easeOut',
+                        }}
+                      >
+                        <ClassroomCard
+                          classroom={classroom}
+                          slide={thumbnails[classroom.id]}
+                          formatDate={formatDate}
+                          onDelete={handleDelete}
+                          confirmingDelete={pendingDeleteId === classroom.id}
+                          onConfirmDelete={() => confirmDelete(classroom.id)}
+                          onCancelDelete={() => setPendingDeleteId(null)}
+                          onClick={() => router.push(`/classroom/${encodeURIComponent(classroom.id)}`)}
+                        />
+                      </motion.div>
+                    ))}
+                  </div>
+                )}
                 {totalRecentPages > 1 && (
                   <div className="mt-5 flex items-center justify-center gap-3 pb-1">
                     <Button
@@ -1655,7 +1770,11 @@ function HomePage() {
                       variant="outline"
                       size="sm"
                       disabled={recentPage === 1}
-                      onClick={() => setRecentPage((prev) => Math.max(1, prev - 1))}
+                      onClick={() => {
+                        const nextPage = Math.max(1, recentPage - 1);
+                        setRecentPage(nextPage);
+                        void loadClassrooms(nextPage);
+                      }}
                       className="h-8 rounded-full px-3 text-xs"
                     >
                       <ChevronLeft className="mr-1 size-3.5" />
@@ -1669,7 +1788,11 @@ function HomePage() {
                       variant="outline"
                       size="sm"
                       disabled={recentPage === totalRecentPages}
-                      onClick={() => setRecentPage((prev) => Math.min(totalRecentPages, prev + 1))}
+                      onClick={() => {
+                        const nextPage = Math.min(totalRecentPages, recentPage + 1);
+                        setRecentPage(nextPage);
+                        void loadClassrooms(nextPage);
+                      }}
                       className="h-8 rounded-full px-3 text-xs"
                     >
                       Next
@@ -2003,7 +2126,9 @@ function ClassroomCard({
 }) {
   const { t } = useI18n();
   const thumbRef = useRef<HTMLDivElement>(null);
-  const [thumbWidth, setThumbWidth] = useState(0);
+  // # Reason: render thumbnails immediately with a sensible default width so
+  // pagination feels fast, then refine via ResizeObserver.
+  const [thumbWidth, setThumbWidth] = useState(240);
 
   useEffect(() => {
     const el = thumbRef.current;
@@ -2025,10 +2150,10 @@ function ClassroomCard({
         ref={thumbRef}
         className="relative w-full aspect-[16/9] rounded-xl bg-slate-100 dark:bg-slate-800/80 overflow-hidden transition-transform duration-300 group-hover:scale-[1.015]"
       >
-        {slide && thumbWidth > 0 ? (
+        {slide ? (
           <ThumbnailSlide
             slide={slide}
-            size={thumbWidth}
+            size={thumbWidth > 0 ? thumbWidth : 240}
             viewportSize={slide.viewportSize ?? 1000}
             viewportRatio={slide.viewportRatio ?? 0.5625}
           />

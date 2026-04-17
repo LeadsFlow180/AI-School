@@ -126,7 +126,7 @@ export function SceneSidebar({
   return (
     <div
       style={{
-        width: displayWidth,
+        width: collapsed ? 0 : `min(${displayWidth}px, calc(100vw - 0.75rem))`,
         transition: isDraggingRef.current ? 'none' : 'width 0.3s ease',
       }}
       className="h-full min-h-0 bg-gradient-to-b from-white/90 via-violet-50/65 to-sky-50/60 dark:from-slate-900/90 dark:via-violet-950/20 dark:to-slate-900/85 backdrop-blur-xl border-r border-violet-200/70 dark:border-violet-900/35 shadow-[6px_0_28px_-22px_rgba(124,58,237,0.45)] flex flex-col shrink-0 z-20 relative overflow-visible"

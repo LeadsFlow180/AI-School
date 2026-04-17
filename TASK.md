@@ -2,6 +2,7 @@
 
 ## Active
 
+- [x] 2026-04-17 - Fix classroom small-mobile responsiveness by keeping laptop layout unchanged while switching sidebar/chat to mobile overlays, constraining panel widths, and compacting header controls/text on narrow screens.
 - [x] 2026-04-15 - Fix classroom Guidance Book label key and add Export Audio Pack action in Export menu for downloading slide narration clips.
 - [x] 2026-04-15 - Reposition Home Guidance Book button into the top profile-controls header row (above prompt area).
 - [x] 2026-04-15 - Move Home-page Guidance Book button out of prompt toolbar into a separate top-level action row.

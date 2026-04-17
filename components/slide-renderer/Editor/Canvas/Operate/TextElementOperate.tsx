@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useCanvasStore } from '@/lib/store';
 import type { PPTTextElement } from '@/lib/types/slides';
 import type { OperateResizeHandlers } from '@/lib/types/edit';
+import emitter, { EmitterEvents } from '@/lib/utils/emitter';
 import { useCommonOperate } from '../hooks/useCommonOperate';
 import { RotateHandler } from './RotateHandler';
 import { ResizeHandler } from './ResizeHandler';
@@ -54,6 +55,39 @@ export function TextElementOperate({
       ))}
       {handlerVisible && (
         <>
+          <div
+            className="absolute top-1 left-1/2 z-[120] -translate-x-1/2 flex items-center gap-1 rounded-md border border-slate-300/80 bg-white/95 px-1 py-1 shadow-sm dark:border-slate-700/80 dark:bg-slate-900/90"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="h-6 min-w-6 rounded px-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800"
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                emitter.emit(EmitterEvents.RICH_TEXT_COMMAND, {
+                  target: elementInfo.id,
+                  action: { command: 'fontsize-reduce', value: '2' },
+                });
+              }}
+              title="Shrink text"
+            >
+              A-
+            </button>
+            <button
+              type="button"
+              className="h-6 min-w-6 rounded px-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800"
+              onMouseDown={(e) => {
+                e.stopPropagation();
+                emitter.emit(EmitterEvents.RICH_TEXT_COMMAND, {
+                  target: elementInfo.id,
+                  action: { command: 'fontsize-add', value: '2' },
+                });
+              }}
+              title="Expand text"
+            >
+              A+
+            </button>
+          </div>
           {resizeHandlers.map((point) => (
             <ResizeHandler
               key={point.direction}

@@ -610,7 +610,7 @@ export default function ClassroomEditCanvasPage() {
               </button>
             </div>
             <div className="w-full h-full min-h-[320px] flex items-center justify-center">
-              <div className="w-full h-full aspect-[16/9] bg-white dark:bg-gray-800 shadow-2xl rounded-lg overflow-hidden relative">
+              <div className="w-full h-full aspect-[16/9] bg-white dark:bg-gray-800 shadow-2xl rounded-lg overflow-visible relative">
                 <SceneProvider>
                   {selectedScene ? (
                     <SceneRenderer scene={selectedScene} mode="autonomous" />

@@ -28,7 +28,7 @@ export function BorderLine({ type, isWide = false, style, className }: BorderLin
 
   return (
     <div
-      className={`border-line absolute inset-0 border-dashed border-primary ${borderClass} ${wideBeforeClass} ${className || ''}`}
+      className={`border-line absolute inset-0 z-[125] border-2 border-dashed border-sky-500/95 ${borderClass} ${wideBeforeClass} ${className || ''}`}
       style={style}
     />
   );

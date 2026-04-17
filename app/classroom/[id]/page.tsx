@@ -36,6 +36,22 @@ function getGammaGenerationIdFromUrl(url?: string): string | null {
   }
 }
 
+function isGammaScene(scene: Scene): boolean {
+  if (/gamma slide/i.test(scene.title || '')) return true;
+
+  if (scene.type === 'interactive' && scene.content.type === 'interactive') {
+    return getGammaGenerationIdFromUrl(scene.content.url) !== null;
+  }
+
+  if (scene.type === 'slide' && scene.content.type === 'slide') {
+    const imageElement = scene.content.canvas.elements.find((el) => el.type === 'image');
+    const imageSrc = imageElement && imageElement.type === 'image' ? imageElement.src : '';
+    if (typeof imageSrc === 'string' && imageSrc.includes('/api/gamma/page-image/')) return true;
+  }
+
+  return false;
+}
+
 function ensureGammaSpeechActions(scene: Scene): Scene {
   const isGenericGammaLine = (text: string): boolean => {
     const t = text.replace(/\s+/g, ' ').trim().toLowerCase();
@@ -338,6 +354,7 @@ export default function ClassroomDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [tourOpen, setTourOpen] = useState(false);
   const [isAdminUser, setIsAdminUser] = useState(false);
+  const scenes = useStageStore((s) => s.scenes);
 
   const generationStartedRef = useRef(false);
 
@@ -620,6 +637,8 @@ export default function ClassroomDetailPage() {
     }
   }, [classroomId, router, searchParams]);
 
+  const isGammaClassroom = scenes.some(isGammaScene);
+
   return (
     <ThemeProvider>
       <MediaStageProvider value={classroomId}>
@@ -648,7 +667,7 @@ export default function ClassroomDetailPage() {
                 onRetryOutline={retrySingleOutline}
                 onOpenGuidance={tourOpen ? undefined : () => setTourOpen(true)}
                 onOpenCanvasEdit={
-                  isAdminUser
+                  isAdminUser && !isGammaClassroom
                     ? () => {
                         window.open(
                           `/classroom/${encodeURIComponent(classroomId || '')}/edit`,

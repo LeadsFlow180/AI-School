@@ -25,15 +25,12 @@ export interface TextElementProps {
  */
 export function TextElement({ elementInfo, selectElement }: TextElementProps) {
   const handleElementId = useCanvasStore.use.handleElementId();
-  const isScaling = useCanvasStore.use.isScaling();
   const { updateElement, deleteElement } = useCanvasOperations();
   const { addHistorySnapshot } = useHistorySnapshot();
 
   const { shadowStyle } = useElementShadow(elementInfo.shadow);
 
   const elementRef = useRef<HTMLDivElement>(null);
-  const [realHeightCache, setRealHeightCache] = useState(-1);
-  const [realWidthCache, setRealWidthCache] = useState(-1);
 
   const handleSelectElement = (e: React.MouseEvent | React.TouchEvent, canMove = true) => {
     if (elementInfo.lock) return;
@@ -43,92 +40,6 @@ export function TextElement({ elementInfo, selectElement }: TextElementProps) {
 
   // Check if element is being handled
   const isHandleElement = handleElementId === elementInfo.id;
-
-  // Update element height/width when scaling ends
-  useEffect(() => {
-    if (handleElementId !== elementInfo.id) return;
-
-    if (!isScaling) {
-      if (!elementInfo.vertical && realHeightCache !== -1) {
-        updateElement({
-          id: elementInfo.id,
-          props: { height: realHeightCache },
-        });
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- DOM measurement requires effect
-        setRealHeightCache(-1);
-      }
-      if (elementInfo.vertical && realWidthCache !== -1) {
-        updateElement({
-          id: elementInfo.id,
-          props: { width: realWidthCache },
-        });
-
-        setRealWidthCache(-1);
-      }
-    }
-  }, [
-    isScaling,
-    handleElementId,
-    elementInfo.id,
-    elementInfo.vertical,
-    realHeightCache,
-    realWidthCache,
-    updateElement,
-  ]);
-
-  // Monitor text element size changes
-  const updateTextElementHeight = useCallback(
-    (entries: ResizeObserverEntry[]) => {
-      const contentRect = entries[0].contentRect;
-      if (!elementRef.current) return;
-
-      const realHeight = contentRect.height + 20;
-      const realWidth = contentRect.width + 20;
-
-      if (!elementInfo.vertical && elementInfo.height !== realHeight) {
-        if (!isScaling) {
-          updateElement({
-            id: elementInfo.id,
-            props: { height: realHeight },
-          });
-        } else {
-          setRealHeightCache(realHeight);
-        }
-      }
-      if (elementInfo.vertical && elementInfo.width !== realWidth) {
-        if (!isScaling) {
-          updateElement({
-            id: elementInfo.id,
-            props: { width: realWidth },
-          });
-        } else {
-          setRealWidthCache(realWidth);
-        }
-      }
-    },
-    [
-      elementInfo.vertical,
-      elementInfo.height,
-      elementInfo.width,
-      elementInfo.id,
-      isScaling,
-      updateElement,
-    ],
-  );
-
-  // ResizeObserver setup
-  useEffect(() => {
-    const el = elementRef.current;
-    const resizeObserver = new ResizeObserver(updateTextElementHeight);
-    if (el) {
-      resizeObserver.observe(el);
-    }
-    return () => {
-      if (el) {
-        resizeObserver.unobserve(el);
-      }
-    };
-  }, [updateTextElementHeight]);
 
   // Update content
   const updateContent = useCallback(

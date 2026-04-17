@@ -129,11 +129,14 @@ export function Operate({
   const rotate = useMemo(() => ('rotate' in elementInfo ? elementInfo.rotate : 0), [elementInfo]);
   const height = useMemo(() => ('height' in elementInfo ? elementInfo.height : 0), [elementInfo]);
 
-  const handlerVisible = !elementInfo.lock && (isActiveGroupElement || !isMultiSelect);
+  // In grouped/multi-select scenarios, keep handles visible for the active element
+  // so users can still resize directly in presentation mode.
+  const handlerVisible =
+    !elementInfo.lock && (isActive || isActiveGroupElement || !isMultiSelect);
 
   return (
     <div
-      className={`operate absolute z-43 select-none ${isMultiSelect && !isActive ? 'opacity-20' : ''}`}
+      className={`operate absolute z-[90] select-none ${isMultiSelect && !isActive ? 'opacity-20' : ''}`}
       style={{
         top: elementInfo.top * canvasScale + 'px',
         left: elementInfo.left * canvasScale + 'px',
@@ -143,7 +146,7 @@ export function Operate({
       }}
     >
       {/* eslint-disable @typescript-eslint/no-explicit-any -- dynamic component dispatch requires type widening */}
-      {isSelected && CurrentOperateComponent && (
+      {(isSelected || isActive) && CurrentOperateComponent && (
         <CurrentOperateComponent
           elementInfo={elementInfo as any}
           handlerVisible={handlerVisible}

@@ -52,7 +52,19 @@ function isGammaScene(scene: Scene): boolean {
   return false;
 }
 
+function isScriptLocked(scene: Scene): boolean {
+  const meta = scene as Scene & { __scriptLocked?: boolean; __editedInCanvas?: boolean };
+  return meta.__scriptLocked === true || meta.__editedInCanvas === true;
+}
+
+function getStageFreshness(stage: Stage | null, scenes: Scene[]): number {
+  const stageUpdated = typeof stage?.updatedAt === 'number' ? stage.updatedAt : 0;
+  const sceneUpdated = scenes.reduce((max, s) => Math.max(max, s.updatedAt || 0), 0);
+  return Math.max(stageUpdated, sceneUpdated);
+}
+
 function ensureGammaSpeechActions(scene: Scene): Scene {
+  if (isScriptLocked(scene)) return scene;
   const isGenericGammaLine = (text: string): boolean => {
     const t = text.replace(/\s+/g, ' ').trim().toLowerCase();
     return (
@@ -157,6 +169,7 @@ function buildGammaSpeechFromExtractedText(
 function migrateLegacyGammaScenes(scenes: Scene[]): { scenes: Scene[]; changed: boolean } {
   let changed = false;
   const migrated = scenes.map((scene) => {
+    if (isScriptLocked(scene)) return scene;
     const titleLooksGamma = /gamma slide/i.test(scene.title || '');
     if (scene.type === 'interactive') {
       const interactive = scene.content.type === 'interactive' ? scene.content : null;
@@ -286,6 +299,7 @@ async function convertGammaInteractiveScenesToSlides(scenes: Scene[]): Promise<{
 
   let changed = false;
   const converted = scenes.map((scene) => {
+    if (isScriptLocked(scene)) return scene;
     const info = getGammaExportInfoFromScene(scene);
     if (!info) return scene;
     const image = renderedByKey.get(`${info.generationId}:${info.pageNumber}`);
@@ -413,6 +427,37 @@ export default function ClassroomDetailPage() {
       }
 
       await loadFromStorage(classroomId);
+
+      // Always try server classroom for freshness. Local IndexedDB can be stale
+      // across tabs/devices; server copy is the source of truth after edit sync.
+      try {
+        const localStage = useStageStore.getState().stage || null;
+        const localScenes = useStageStore.getState().scenes || [];
+        const localFreshness = getStageFreshness(localStage, localScenes);
+
+        const serverRes = await fetch(`/api/classroom?id=${encodeURIComponent(classroomId)}`, {
+          cache: 'no-store',
+        });
+        if (serverRes.ok) {
+          const serverJson = await serverRes.json();
+          if (serverJson.success && serverJson.classroom) {
+            const serverStage = serverJson.classroom.stage as Stage;
+            const serverScenes = (serverJson.classroom.scenes || []) as Scene[];
+            const serverFreshness = getStageFreshness(serverStage, serverScenes);
+            if (serverFreshness >= localFreshness) {
+              useStageStore.getState().setStage(serverStage);
+              useStageStore.setState({
+                scenes: serverScenes,
+                currentSceneId: serverScenes[0]?.id ?? null,
+              });
+              // Keep local cache in sync with fresh server data.
+              await useStageStore.getState().saveToStorage();
+            }
+          }
+        }
+      } catch (refreshErr) {
+        log.warn('Server refresh check failed, continuing with local snapshot:', refreshErr);
+      }
 
       // If IndexedDB had no data, try server-side storage (API-generated classrooms)
       if (!useStageStore.getState().stage) {

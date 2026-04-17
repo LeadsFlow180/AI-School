@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { SceneProvider } from '@/lib/contexts/scene-context';
 import { useStageStore } from '@/lib/store';
+import { useCanvasStore } from '@/lib/store/canvas';
 import { SceneRenderer } from '@/components/stage/scene-renderer';
 import { useMediaGenerationStore } from '@/lib/store/media-generation';
 import { useWhiteboardHistoryStore } from '@/lib/store/whiteboard-history';
@@ -27,6 +28,7 @@ export default function ClassroomEditCanvasPage() {
   const stage = useStageStore((s) => s.stage);
   const scenes = useStageStore((s) => s.scenes);
   const currentSceneId = useStageStore((s) => s.currentSceneId);
+  const handleElementId = useCanvasStore.use.handleElementId();
 
   const [authReady, setAuthReady] = useState(false);
   const [isAdminUser, setIsAdminUser] = useState(false);
@@ -34,6 +36,11 @@ export default function ClassroomEditCanvasPage() {
   const [error, setError] = useState<string | null>(null);
   const [isFinalizing, setIsFinalizing] = useState(false);
   const [isConvertingOcr, setIsConvertingOcr] = useState(false);
+  const [imageUrlInput, setImageUrlInput] = useState('');
+  const [isReplacingImage, setIsReplacingImage] = useState(false);
+  const imageUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const scriptSyncGuardRef = useRef(false);
+  const persistDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -228,12 +235,12 @@ export default function ClassroomEditCanvasPage() {
       },
       updatedAt: Date.now(),
     };
-    updateScene(selectedScene.id, nextScene);
+    applySceneUpdate(nextScene);
   };
 
   const handleUpdateSceneTitle = (value: string) => {
     if (!selectedScene) return;
-    updateScene(selectedScene.id, {
+    applySceneUpdate({
       ...selectedScene,
       title: value,
       updatedAt: Date.now(),
@@ -247,17 +254,132 @@ export default function ClassroomEditCanvasPage() {
       .filter((x): x is { action: Action & { type: 'speech' }; index: number } => x.action.type === 'speech');
   }, [selectedScene]);
 
+  const persistEditChanges = async () => {
+    try {
+      await useStageStore.getState().saveToStorage();
+      const supabase = getSupabaseClient();
+      const session = supabase ? await getSessionSafe(supabase) : null;
+      if (session?.access_token) {
+        const storeState = useStageStore.getState();
+        const stage = storeState.stage;
+        if (stage?.id) {
+          const syncRes = await fetch('/api/classroom/sync', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${session.access_token}`,
+            },
+            body: JSON.stringify({
+              stage,
+              scenes: storeState.scenes,
+              chats: storeState.chats,
+            }),
+          });
+          if (!syncRes.ok) {
+            const syncJson = await syncRes.json().catch(() => null);
+            const msg = syncJson?.error || 'Database sync failed.';
+            throw new Error(msg);
+          }
+        }
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to persist classroom updates.');
+    }
+  };
+
+  const rebuildTutorScript = (scene: Scene): Scene => {
+    if (scene.type !== 'slide' || scene.content.type !== 'slide') return scene;
+    const htmlToText = (input: string) =>
+      input
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/p>/gi, '\n')
+        .replace(/<[^>]+>/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const textFromElements = scene.content.canvas.elements
+      .map((el) => {
+        if (el.type === 'text') return htmlToText(el.content || '');
+        if (el.type === 'shape' && el.text) return htmlToText(el.text.content || '');
+        if (el.type === 'latex' && el.html) return htmlToText(el.html || '');
+        return '';
+      })
+      .filter(Boolean)
+      .join(' ')
+      .slice(0, 900);
+
+    const title = (scene.title || `Slide ${scene.order || 1}`).trim();
+    const firstSpeech = textFromElements
+      ? `In this slide, we focus on: ${textFromElements.slice(0, 260)}${textFromElements.length > 260 ? '...' : ''}`
+      : `In this slide, we focus on ${title}.`;
+    const secondSpeech = textFromElements
+      ? `Key takeaway: ${textFromElements.slice(260, 520).trim() || textFromElements.slice(0, 220)}`
+      : 'Please observe the visuals and highlighted points carefully before moving to the next slide.';
+
+    const nonSpeechActions = (scene.actions || []).filter((a) => a.type !== 'speech');
+    const refreshedSpeech: Action[] = [
+      { id: `edit-speech-1-${scene.id}`, type: 'speech', text: firstSpeech },
+      { id: `edit-speech-2-${scene.id}`, type: 'speech', text: secondSpeech },
+    ];
+
+    return {
+      ...scene,
+      actions: [...refreshedSpeech, ...nonSpeechActions],
+      updatedAt: Date.now(),
+    };
+  };
+
+  const applySceneUpdate = (scene: Scene, options?: { refreshTutorScript?: boolean }) => {
+    const next = options?.refreshTutorScript === false ? scene : rebuildTutorScript(scene);
+    // Mark as explicitly edited so classroom runtime does not auto-regenerate
+    // Gamma/default scripts repeatedly on every load.
+    const lockedScene = {
+      ...next,
+      __editedInCanvas: true,
+      __scriptLocked: true,
+    } as Scene;
+    updateScene(lockedScene.id, lockedScene);
+
+    if (persistDebounceRef.current) {
+      clearTimeout(persistDebounceRef.current);
+    }
+    persistDebounceRef.current = setTimeout(() => {
+      void persistEditChanges();
+      persistDebounceRef.current = null;
+    }, 700);
+  };
+
+  useEffect(() => {
+    if (!selectedScene || selectedScene.type !== 'slide' || selectedScene.content.type !== 'slide') return;
+    if (scriptSyncGuardRef.current) return;
+
+    const rebuilt = rebuildTutorScript(selectedScene);
+    const currentSpeech = (selectedScene.actions || []).filter((a) => a.type === 'speech');
+    const rebuiltSpeech = (rebuilt.actions || []).filter((a) => a.type === 'speech');
+    const currentSig = currentSpeech.map((a) => a.text).join('||');
+    const rebuiltSig = rebuiltSpeech.map((a) => a.text).join('||');
+
+    if (currentSig === rebuiltSig) return;
+
+    scriptSyncGuardRef.current = true;
+    applySceneUpdate(selectedScene, { refreshTutorScript: true });
+    // Release guard after state propagates; avoids self-trigger loops.
+    setTimeout(() => {
+      scriptSyncGuardRef.current = false;
+    }, 0);
+  }, [selectedScene]);
+
   const handleUpdateSpeechAction = (actionIndex: number, value: string) => {
     if (!selectedScene) return;
     const nextActions = [...(selectedScene.actions || [])];
     const current = nextActions[actionIndex];
     if (!current || current.type !== 'speech') return;
     nextActions[actionIndex] = { ...current, text: value };
-    updateScene(selectedScene.id, {
+    applySceneUpdate({
       ...selectedScene,
       actions: nextActions,
       updatedAt: Date.now(),
-    });
+    }, { refreshTutorScript: false });
   };
 
   const handleAddSlideTextBox = () => {
@@ -281,7 +403,7 @@ export default function ClassroomEditCanvasPage() {
       paragraphSpace: 5,
     });
 
-    updateScene(selectedScene.id, {
+    applySceneUpdate({
       ...selectedScene,
       content: {
         ...selectedScene.content,
@@ -324,7 +446,7 @@ export default function ClassroomEditCanvasPage() {
       paragraphSpace: 5,
     });
 
-    updateScene(selectedScene.id, {
+    applySceneUpdate({
       ...selectedScene,
       content: {
         ...selectedScene.content,
@@ -416,7 +538,7 @@ export default function ClassroomEditCanvasPage() {
           (el) => !(el.type === 'text' && (el.id.startsWith('edit_text_') || el.id.startsWith('edit_live_text_'))),
         );
 
-      updateScene(selectedScene.id, {
+      applySceneUpdate({
         ...selectedScene,
         content: {
           ...selectedScene.content,
@@ -482,7 +604,7 @@ export default function ClassroomEditCanvasPage() {
         };
       });
 
-      updateScene(selectedScene.id, {
+      applySceneUpdate({
         ...selectedScene,
         content: {
           ...selectedScene.content,
@@ -497,6 +619,101 @@ export default function ClassroomEditCanvasPage() {
       setError(e instanceof Error ? e.message : 'OCR conversion failed');
     } finally {
       setIsConvertingOcr(false);
+    }
+  };
+
+  const getTargetImageElementId = () => {
+    if (!selectedScene || selectedScene.content.type !== 'slide') return null;
+    const elements = selectedScene.content.canvas.elements;
+    if (handleElementId) {
+      const active = elements.find((el) => el.id === handleElementId);
+      if (active?.type === 'image') return active.id;
+    }
+    const firstImage = elements.find((el) => el.type === 'image');
+    return firstImage?.id ?? null;
+  };
+
+  const persistStageNow = persistEditChanges;
+
+  const fileToDataUrl = (file: File | Blob) =>
+    new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(new Error('Failed to read image.'));
+      reader.readAsDataURL(file);
+    });
+
+  const replaceImageSource = async (nextSrc: string) => {
+    if (!selectedScene || selectedScene.content.type !== 'slide') return false;
+    const targetImageId = getTargetImageElementId();
+    if (!targetImageId) return false;
+    const nextElements = selectedScene.content.canvas.elements.map((el) =>
+      el.id === targetImageId && el.type === 'image' ? { ...el, src: nextSrc } : el,
+    );
+    applySceneUpdate({
+      ...selectedScene,
+      content: {
+        ...selectedScene.content,
+        canvas: {
+          ...selectedScene.content.canvas,
+          elements: nextElements,
+        },
+      },
+      updatedAt: Date.now(),
+    });
+    await persistStageNow();
+    return true;
+  };
+
+  const handleReplaceImageFromUrl = async () => {
+    const src = imageUrlInput.trim();
+    if (!src) return;
+    setIsReplacingImage(true);
+    setError(null);
+    try {
+      const supabase = getSupabaseClient();
+      const session = supabase ? await getSessionSafe(supabase) : null;
+      let durableSrc = src;
+
+      // Convert to data URL for guaranteed persistence in saved scene JSON.
+      // # Reason: third-party URLs or private storage links can break in new tabs.
+      try {
+        const remoteRes = await fetch(src);
+        if (remoteRes.ok) {
+          const blob = await remoteRes.blob();
+          if (blob.type.startsWith('image/')) {
+            durableSrc = await fileToDataUrl(blob);
+          }
+        }
+      } catch {
+        // Fall back to original URL if fetch/read fails.
+      }
+
+      const success = await replaceImageSource(durableSrc);
+      if (!success) {
+        setError('No image element found in this slide. Select an image or add one first.');
+      } else {
+        setImageUrlInput('');
+      }
+    } finally {
+      setIsReplacingImage(false);
+    }
+  };
+
+  const handleReplaceImageFromUpload = async (file: File) => {
+    setIsReplacingImage(true);
+    setError(null);
+    try {
+      // Always store as data URL for deterministic rendering after save/reload.
+      const nextSrc = await fileToDataUrl(file);
+      const success = await replaceImageSource(nextSrc);
+      if (!success) {
+        setError('No image element found in this slide. Select an image or add one first.');
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to replace image.');
+    } finally {
+      setIsReplacingImage(false);
     }
   };
 
@@ -590,6 +807,16 @@ export default function ClassroomEditCanvasPage() {
               </button>
               <button
                 type="button"
+                onClick={() => {
+                  if (!selectedScene) return;
+                  applySceneUpdate(selectedScene);
+                }}
+                className="rounded-lg bg-fuchsia-600 hover:bg-fuchsia-700 text-white text-xs font-semibold px-3 py-2 transition-colors"
+              >
+                Rebuild AI tutor script
+              </button>
+              <button
+                type="button"
                 disabled={isConvertingOcr}
                 onClick={() => {
                   void handleConvertImageTextToEditable();
@@ -608,6 +835,45 @@ export default function ClassroomEditCanvasPage() {
               >
                 {isFinalizing ? 'Finalizing...' : 'Finalize replace'}
               </button>
+              <div className="flex items-center gap-2 rounded-lg border border-slate-200 px-2 py-1 bg-slate-50">
+                <input
+                  type="url"
+                  value={imageUrlInput}
+                  onChange={(e) => setImageUrlInput(e.target.value)}
+                  placeholder="Paste image URL to replace selected image"
+                  className="w-[320px] max-w-[60vw] rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700"
+                />
+                <button
+                  type="button"
+                  disabled={isReplacingImage || !imageUrlInput.trim()}
+                  onClick={() => {
+                    void handleReplaceImageFromUrl();
+                  }}
+                  className="rounded-lg bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 text-white text-xs font-semibold px-3 py-2 transition-colors"
+                >
+                  {isReplacingImage ? 'Replacing...' : 'Replace via URL'}
+                </button>
+                <input
+                  ref={imageUploadInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    void handleReplaceImageFromUpload(file);
+                    e.currentTarget.value = '';
+                  }}
+                />
+                <button
+                  type="button"
+                  disabled={isReplacingImage}
+                  onClick={() => imageUploadInputRef.current?.click()}
+                  className="rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-semibold px-3 py-2 transition-colors"
+                >
+                  Upload image
+                </button>
+              </div>
             </div>
             <div className="w-full h-full min-h-[320px] flex items-center justify-center">
               <div className="w-full h-full aspect-[16/9] bg-white dark:bg-gray-800 shadow-2xl rounded-lg overflow-visible relative">

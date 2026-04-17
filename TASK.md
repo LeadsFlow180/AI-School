@@ -76,6 +76,15 @@
 - [x] 2026-04-15 - Restore drag/move behavior for text/image elements by removing wrapper-level pointer capture/selection interception in canvas editable elements.
 - [x] 2026-04-15 - Fix first click-drag move rejection by using live canvas selection state inside `useDragElement` (avoid stale closure on newly selected element drag).
 - [x] 2026-04-15 - Hide “Edit in Canvas” for Gamma-generated classrooms by detecting Gamma scenes on `/classroom/[id]` and suppressing the edit action when present.
+- [x] 2026-04-15 - Add image replacement tools in `/classroom/[id]/edit` for admins: replace slide image from URL input or local upload, targeting selected image first with fallback to first image on slide.
+- [x] 2026-04-15 - Persist replaced slide images to durable storage via new admin-only `/api/classroom/media-upload` Supabase upload route, with edit-page fallback to Data URL when storage is unavailable.
+- [x] 2026-04-15 - Fix edited image persistence across tabs by storing replacement images as Data URLs directly in scene JSON and forcing immediate `saveToStorage()` after image replace actions.
+- [x] 2026-04-15 - Ensure edit changes sync to shared DB for cross-device visibility by adding admin-authenticated `/api/classroom/sync` upsert route and invoking it from edit persistence flow after local save.
+- [x] 2026-04-15 - Auto-refresh AI tutor speech script in `/classroom/[id]/edit` whenever slide content/title changes, and add a manual “Rebuild AI tutor script” action for admins.
+- [x] 2026-04-15 - Prevent runtime script re-overwrites after admin edits by marking edited scenes as script-locked in edit page and skipping Gamma/default script regeneration for locked scenes on classroom load.
+- [x] 2026-04-15 - Auto-sync tutor speech actions when slide canvas content/title changes in `/classroom/[id]/edit` so direct element edits update classroom playback script without manual retrigger.
+- [x] 2026-04-15 - Persist every edit-triggered scene update (debounced) to local + DB sync path so rebuilt tutor script from edit page is actually saved and reflected on `/classroom/[id]` playback.
+- [x] 2026-04-15 - Fix stale classroom script/cache by adding server freshness refresh on classroom load (`cache: no-store`) and replacing local snapshot when server data is newer, then re-saving local cache.
 - [x] 2026-04-15 - Replace Recents loading text with card skeleton placeholders so `/` shows a stable layout while classrooms are fetching.
 - [x] 2026-04-15 - Add admin-only “Edit in Canvas” button and `/classroom/[id]/edit` route for slide HTML editing.
 - [x] 2026-04-15 - Add OCR-based “Convert image text to editable” in classroom edit route to create live text layers from image-only Gamma slides.

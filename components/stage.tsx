@@ -46,9 +46,11 @@ import { VisuallyHidden } from 'radix-ui';
 export function Stage({
   onRetryOutline,
   onOpenGuidance,
+  onOpenCanvasEdit,
 }: {
   onRetryOutline?: (outlineId: string) => Promise<void>;
   onOpenGuidance?: () => void;
+  onOpenCanvasEdit?: () => void;
 }) {
   const { t } = useI18n();
   const { mode, getCurrentScene, scenes, currentSceneId, setCurrentSceneId, generatingOutlines } =
@@ -106,6 +108,7 @@ export function Stage({
   const [isPresenting, setIsPresenting] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [isPresentationInteractionActive, setIsPresentationInteractionActive] = useState(false);
+  const [isSmallScreen, setIsSmallScreen] = useState(false);
 
   // Whiteboard state (from canvas store so AI tools can open it)
   const whiteboardOpen = useCanvasStore.use.whiteboardOpen();
@@ -229,6 +232,25 @@ export function Stage({
       window.removeEventListener('classroom-tour:open-chat', openChatForTour);
     };
   }, [setSidebarCollapsed, setChatAreaCollapsed]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const mediaQuery = window.matchMedia('(max-width: 767px)');
+    const syncScreenMode = () => {
+      const mobile = mediaQuery.matches;
+      setIsSmallScreen(mobile);
+      // # Reason: On phones, side panels should not shrink the slide viewport.
+      if (mobile) {
+        setSidebarCollapsed(true);
+        setChatAreaCollapsed(true);
+      }
+    };
+
+    syncScreenMode();
+    mediaQuery.addEventListener('change', syncScreenMode);
+    return () => mediaQuery.removeEventListener('change', syncScreenMode);
+  }, [setChatAreaCollapsed, setSidebarCollapsed]);
 
   /** Reset all live/discussion state (shared by doSessionCleanup & onDiscussionEnd) */
   const resetLiveState = useCallback(() => {
@@ -956,7 +978,7 @@ export function Stage({
   // Calculate scene viewer height (subtract Header's 80px height)
   const sceneViewerHeight = (() => {
     const headerHeight = isPresenting ? 0 : 80; // Header h-20 = 80px
-    const roundtableHeight = mode === 'playback' && !isPresenting ? 192 : 0;
+    const roundtableHeight = mode === 'playback' && !isPresenting ? (isSmallScreen ? 212 : 192) : 0;
     return `calc(100% - ${headerHeight + roundtableHeight}px)`;
   })();
 
@@ -970,7 +992,7 @@ export function Stage({
     >
       <KidsParallaxBackground />
       <KidsSparkleOverlay />
-      {!isPresenting && (
+      {!isPresenting && !isSmallScreen && (
         <KidsGuideOverlay
           isNotesChatOpen={!chatAreaCollapsed}
           isSidebarOpen={!sidebarCollapsed}
@@ -979,7 +1001,13 @@ export function Stage({
 
 
       {/* Scene Sidebar */}
-      <div className="relative z-20 h-full min-h-0" data-tour="sidebar">
+      <div
+        className={cn(
+          'relative z-20 h-full min-h-0',
+          isSmallScreen && 'absolute left-0 top-0 bottom-0 z-40',
+        )}
+        data-tour="sidebar"
+      >
         <SceneSidebar
           collapsed={sidebarCollapsed}
           onCollapseChange={setSidebarCollapsed}
@@ -993,7 +1021,11 @@ export function Stage({
         {/* Header */}
         {!isPresenting && (
           <div data-tour="header">
-            <Header currentSceneTitle={currentScene?.title || ''} onOpenGuidance={onOpenGuidance} />
+            <Header
+              currentSceneTitle={currentScene?.title || ''}
+              onOpenGuidance={onOpenGuidance}
+              onOpenCanvasEdit={onOpenCanvasEdit}
+            />
           </div>
         )}
 
@@ -1176,7 +1208,10 @@ export function Stage({
       {/* Chat Area */}
       <ChatArea
         ref={chatAreaRef}
-        className="tour-chat-panel"
+        className={cn(
+          'tour-chat-panel',
+          isSmallScreen && 'absolute right-0 top-0 bottom-0 z-40 max-w-[calc(100vw-0.75rem)]',
+        )}
         width={chatAreaWidth}
         onWidthChange={setChatAreaWidth}
         collapsed={chatAreaCollapsed}
@@ -1228,6 +1263,18 @@ export function Stage({
         onSegmentSealed={discussionTTS.handleSegmentSealed}
         shouldHoldAfterReveal={discussionTTS.shouldHold}
       />
+
+      {isSmallScreen && !isPresenting && (!sidebarCollapsed || !chatAreaCollapsed) && (
+        <button
+          type="button"
+          aria-label="Close panels"
+          onClick={() => {
+            setSidebarCollapsed(true);
+            setChatAreaCollapsed(true);
+          }}
+          className="absolute inset-0 z-30 bg-slate-950/30"
+        />
+      )}
 
       {/* Scene switch confirmation dialog */}
       <AlertDialog

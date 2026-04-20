@@ -35,7 +35,10 @@ export function useDragElement(
       const isTouchEvent = native instanceof TouchEvent;
       if (isTouchEvent && !native.changedTouches?.length) return;
 
-      if (!activeElementIdList.includes(element.id)) return;
+      // Use live store state here to avoid stale-closure rejection on the
+      // first click-drag after selection changes.
+      const liveActiveElementIdList = useCanvasStore.getState().activeElementIdList;
+      if (!liveActiveElementIdList.includes(element.id)) return;
 
       let isMouseDown = true;
       const edgeWidth = viewportSize;

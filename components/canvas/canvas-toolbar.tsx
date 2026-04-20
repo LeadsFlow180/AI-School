@@ -61,7 +61,7 @@ const ctrlBtn = cn(
 
 /* Subtle separator */
 function CtrlDivider() {
-  return <div className="w-px h-3 bg-gray-200/80 dark:bg-gray-700/60 mx-0.5 shrink-0" />;
+  return <div className="hidden sm:block w-px h-3 bg-gray-200/80 dark:bg-gray-700/60 mx-0.5 shrink-0" />;
 }
 
 /* Volume icon based on level */
@@ -141,9 +141,9 @@ export function CanvasToolbar({
 
   return (
     <TooltipProvider delayDuration={250}>
-      <div className={cn('flex items-center gap-2', className)}>
+      <div className={cn('flex flex-wrap sm:flex-nowrap items-center gap-x-2 gap-y-1', className)}>
       {/* ── Left: sidebar toggle + page indicator ── */}
-      <div className="flex items-center gap-1 shrink-0 pl-1">
+      <div className="order-1 flex items-center gap-1 shrink-0 pl-1">
         {onToggleSidebar && (
           <button
             onClick={onToggleSidebar}
@@ -169,10 +169,10 @@ export function CanvasToolbar({
       <CtrlDivider />
 
       {/* ── Center: unified playback controls ── */}
-      <div className="flex-1 flex items-center justify-center min-w-0">
+      <div className="order-3 basis-full sm:order-2 sm:basis-auto flex-1 flex items-center justify-center min-w-0">
         <div
           className={cn(
-            'inline-flex items-center gap-0.5 px-1 h-7',
+            'inline-flex flex-wrap sm:flex-nowrap items-center justify-center gap-0.5 px-1 py-0.5 sm:py-0 min-h-7 sm:h-7',
             isPresenting
               ? '' /* Single visual layer in fullscreen — buttons sit inside outer pill directly */
               : 'bg-gray-100/60 dark:bg-gray-800/60 rounded-lg',
@@ -451,7 +451,7 @@ export function CanvasToolbar({
       </div>
 
       {/* ── Right: fullscreen + chat toggle ── */}
-      <div className="flex items-center justify-end gap-px shrink-0 pr-1">
+      <div className="order-2 sm:order-3 ml-auto flex items-center justify-end gap-px shrink-0 pr-1">
         <CtrlDivider />
         {onTogglePresentation && (
           <button

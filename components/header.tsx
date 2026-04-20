@@ -12,6 +12,7 @@ import {
   Music,
   Package,
   BookOpen,
+  Pencil,
 } from 'lucide-react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { useTheme } from '@/lib/hooks/use-theme';
@@ -26,9 +27,10 @@ import { useExportPPTX } from '@/lib/export/use-export-pptx';
 interface HeaderProps {
   readonly currentSceneTitle: string;
   readonly onOpenGuidance?: () => void;
+  readonly onOpenCanvasEdit?: () => void;
 }
 
-export function Header({ currentSceneTitle, onOpenGuidance }: HeaderProps) {
+export function Header({ currentSceneTitle, onOpenGuidance, onOpenCanvasEdit }: HeaderProps) {
   const { t, locale, setLocale } = useI18n();
   const { theme, setTheme } = useTheme();
   const router = useRouter();
@@ -86,12 +88,12 @@ export function Header({ currentSceneTitle, onOpenGuidance }: HeaderProps) {
   return (
     <>
       <header
-        className="relative h-20 px-8 flex items-center justify-between z-10 gap-4 border-b border-slate-200 bg-white shadow-sm"
+        className="relative h-20 px-3 sm:px-8 flex items-center justify-between z-10 gap-2 sm:gap-4 border-b border-slate-200 bg-white shadow-sm"
         style={{
           backgroundImage: 'linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.98))',
         }}
       >
-        <div className="relative z-10 flex items-center gap-3 min-w-0 flex-1">
+        <div className="relative z-10 flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
           <button
             onClick={() => router.push('/')}
             className="shrink-0 p-2 rounded-xl text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors"
@@ -100,11 +102,11 @@ export function Header({ currentSceneTitle, onOpenGuidance }: HeaderProps) {
             <ArrowLeft className="w-5 h-5" />
           </button>
           <div className="flex flex-col min-w-0">
-            <span className="text-[10px] uppercase tracking-widest font-bold text-slate-500 mb-0.5">
+            <span className="hidden sm:inline text-[10px] uppercase tracking-widest font-bold text-slate-500 mb-0.5">
               {t('stage.currentScene')}
             </span>
             <h1
-              className="text-xl font-bold text-slate-900 tracking-tight truncate"
+              className="text-sm sm:text-xl font-bold text-slate-900 tracking-tight truncate"
               suppressHydrationWarning
             >
               {currentSceneTitle || t('common.loading')}
@@ -112,7 +114,7 @@ export function Header({ currentSceneTitle, onOpenGuidance }: HeaderProps) {
           </div>
         </div>
 
-        <div className="relative z-10 flex items-center gap-4 bg-slate-50 px-2 py-1.5 rounded-full border border-slate-200 shadow-sm shrink-0">
+        <div className="relative z-10 hidden sm:flex items-center gap-1 sm:gap-4 bg-slate-50 px-1.5 sm:px-2 py-1.5 rounded-full border border-slate-200 shadow-sm shrink-0">
           {onOpenGuidance && (
             <>
               <button
@@ -122,6 +124,20 @@ export function Header({ currentSceneTitle, onOpenGuidance }: HeaderProps) {
               >
                 <BookOpen className="w-3.5 h-3.5" />
                 {t('common.guidanceBook')}
+              </button>
+              <div className="w-[1px] h-4 bg-gray-200 dark:bg-gray-700" />
+            </>
+          )}
+
+          {onOpenCanvasEdit && (
+            <>
+              <button
+                onClick={onOpenCanvasEdit}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200/80 hover:bg-emerald-100 transition-colors dark:text-emerald-200 dark:bg-emerald-900/35 dark:border-emerald-700/70 dark:hover:bg-emerald-800/45"
+                title="Edit in Canvas"
+              >
+                <Pencil className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline whitespace-nowrap">Edit</span>
               </button>
               <div className="w-[1px] h-4 bg-gray-200 dark:bg-gray-700" />
             </>
@@ -263,16 +279,16 @@ export function Header({ currentSceneTitle, onOpenGuidance }: HeaderProps) {
                 : t('share.notReady')
             }
             className={cn(
-              'shrink-0 p-2 rounded-full transition-all',
+              'shrink-0 p-1.5 sm:p-2 rounded-full transition-all',
               canExport && !isExporting
                 ? 'text-gray-400 dark:text-gray-500 hover:bg-white dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200 hover:shadow-sm'
                 : 'text-gray-300 dark:text-gray-600 cursor-not-allowed opacity-50',
             )}
           >
             {isExporting ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
+              <Loader2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 animate-spin" />
             ) : (
-              <Download className="w-4 h-4" />
+              <Download className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
             )}
           </button>
           {exportMenuOpen && (

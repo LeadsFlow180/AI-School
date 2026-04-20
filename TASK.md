@@ -2,6 +2,7 @@
 
 ## Active
 
+- [x] 2026-04-17 - Fix classroom small-mobile responsiveness by keeping laptop layout unchanged while switching sidebar/chat to mobile overlays, constraining panel widths, and compacting header controls/text on narrow screens.
 - [x] 2026-04-15 - Fix classroom Guidance Book label key and add Export Audio Pack action in Export menu for downloading slide narration clips.
 - [x] 2026-04-15 - Reposition Home Guidance Book button into the top profile-controls header row (above prompt area).
 - [x] 2026-04-15 - Move Home-page Guidance Book button out of prompt toolbar into a separate top-level action row.
@@ -53,7 +54,43 @@
 - [x] 2026-04-15 - Fix intermittent Recents disappearance on back navigation by guarding against stale async load overwrites (request sequence check) and reloading on `pageshow` restore.
 - [x] 2026-04-15 - Show explicit “Loading classrooms...” state in Home Recents when returning to `/` so users see loading feedback instead of an empty section.
 - [x] 2026-04-15 - Implement backend page-wise Recents loading for logged-in users via Supabase `range` + `count` to reduce home-page delay with large classroom history.
+- [x] 2026-04-16 - Enable manual text box resize in editor by removing automatic content-based size override that reverted drag-resize changes.
+- [x] 2026-04-16 - Add visible text shrink/expand controls (`A-` / `A+`) on selected text boxes in editor to adjust font size directly.
+- [x] 2026-04-16 - Add quick image shrink/expand controls (`-` / `+`) on selected images in editor for one-click resizing.
+- [x] 2026-04-15 - Allow text/image resizing directly from classroom presentation view by enabling editable slide canvas in playback mode.
+- [x] 2026-04-15 - Fix playback slide click interception so editor selection/resize handles remain visible inside presentation page (no auto play-toggle on canvas clicks).
+- [x] 2026-04-15 - Ensure resize handles render for active elements even during grouped/multi-select states in presentation mode.
+- [x] 2026-04-15 - Fix canvas layer stacking so resize/operate overlays render above slide content in presentation mode.
+- [x] 2026-04-15 - Improve resize affordance visibility in presentation mode (higher-contrast handles/border + viewport overflow-visible at editor layer edges).
+- [x] 2026-04-15 - Prevent canvas blank-click handler from clearing selection when interacting with editable elements/operate overlays (fixes disappearing resize border/cursor in presentation mode).
+- [x] 2026-04-15 - Force slide renderer to use autonomous editor behavior on classroom pages so resize/select handles are enabled reliably in presentation page PPT scenes.
+- [x] 2026-04-15 - Restrict canvas selection clearing to true background clicks only (avoid wiping selection when clicking inner PPT element layers in presentation page).
+- [x] 2026-04-15 - Add fallback wrapper-level element selection handlers in canvas editor so presentation-page clicks always set active element and reveal resize handles.
+- [x] 2026-04-15 - Add capture-phase forced activation on editable element wrapper to guarantee selection state before nested handlers/context-menu logic in presentation page.
+- [x] 2026-04-15 - Revert classroom presentation page to read-only slide renderer (disable in-page edit/resize behavior) and restore stable display for `/classroom/[id]`.
+- [x] 2026-04-15 - Fix `/classroom/[id]/edit` resize visibility by removing slide-frame clipping (`overflow-visible`) so operate border/handles show at PPT edges.
+- [x] 2026-04-15 - Keep resize handles inside element bounds (remove negative offset margins) so full-canvas PPT elements show draggable dots/cursor inside `/classroom/[id]/edit`.
+- [x] 2026-04-15 - Use active-handle fallback for operate overlay mount (`isSelected || isActive`) so resize border/controls still render in `/classroom/[id]/edit` when selection-list state is unstable.
+- [x] 2026-04-15 - Localize canvas right-click menus (element and blank-canvas context menus) to follow selected/detected app language via i18n keys.
+- [x] 2026-04-15 - Fix `/classroom/[id]/edit` blank slides by restoring canvas background layer to viewport content stack (prevent overlay above elements after z-index adjustments).
+- [x] 2026-04-15 - Implement fully functional canvas context-menu clipboard actions (copy/cut/paste) with multi-select support, ID/group remapping, paste offset, and selection/history updates.
+- [x] 2026-04-15 - Restore drag/move behavior for text/image elements by removing wrapper-level pointer capture/selection interception in canvas editable elements.
+- [x] 2026-04-15 - Fix first click-drag move rejection by using live canvas selection state inside `useDragElement` (avoid stale closure on newly selected element drag).
+- [x] 2026-04-15 - Hide “Edit in Canvas” for Gamma-generated classrooms by detecting Gamma scenes on `/classroom/[id]` and suppressing the edit action when present.
+- [x] 2026-04-15 - Add image replacement tools in `/classroom/[id]/edit` for admins: replace slide image from URL input or local upload, targeting selected image first with fallback to first image on slide.
+- [x] 2026-04-15 - Persist replaced slide images to durable storage via new admin-only `/api/classroom/media-upload` Supabase upload route, with edit-page fallback to Data URL when storage is unavailable.
+- [x] 2026-04-15 - Fix edited image persistence across tabs by storing replacement images as Data URLs directly in scene JSON and forcing immediate `saveToStorage()` after image replace actions.
+- [x] 2026-04-15 - Ensure edit changes sync to shared DB for cross-device visibility by adding admin-authenticated `/api/classroom/sync` upsert route and invoking it from edit persistence flow after local save.
+- [x] 2026-04-15 - Auto-refresh AI tutor speech script in `/classroom/[id]/edit` whenever slide content/title changes, and add a manual “Rebuild AI tutor script” action for admins.
+- [x] 2026-04-15 - Prevent runtime script re-overwrites after admin edits by marking edited scenes as script-locked in edit page and skipping Gamma/default script regeneration for locked scenes on classroom load.
+- [x] 2026-04-15 - Auto-sync tutor speech actions when slide canvas content/title changes in `/classroom/[id]/edit` so direct element edits update classroom playback script without manual retrigger.
+- [x] 2026-04-15 - Persist every edit-triggered scene update (debounced) to local + DB sync path so rebuilt tutor script from edit page is actually saved and reflected on `/classroom/[id]` playback.
+- [x] 2026-04-15 - Fix stale classroom script/cache by adding server freshness refresh on classroom load (`cache: no-store`) and replacing local snapshot when server data is newer, then re-saving local cache.
 - [x] 2026-04-15 - Replace Recents loading text with card skeleton placeholders so `/` shows a stable layout while classrooms are fetching.
+- [x] 2026-04-15 - Add admin-only “Edit in Canvas” button and `/classroom/[id]/edit` route for slide HTML editing.
+- [x] 2026-04-15 - Add OCR-based “Convert image text to editable” in classroom edit route to create live text layers from image-only Gamma slides.
+- [x] 2026-04-15 - Make `/classroom/[id]/edit` mobile responsive: stacked header, horizontal slide strip on small screens, wrapped tool controls, and touch-friendly canvas viewport sizing while preserving desktop layout.
+- [x] 2026-04-15 - Ensure edit-page actions are mobile-usable by making action buttons full-width/touch-friendly on small screens with stronger minimum tap targets and preserved desktop sizing.
 
 ## Discovered During Work
 

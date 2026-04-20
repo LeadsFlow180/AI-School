@@ -140,7 +140,7 @@ function RoundtableZoneChip({
   return (
     <div
       className={cn(
-        'absolute top-1 z-[1] max-w-[min(200px,calc(100%-10px))] rounded-xl border-2 border-amber-100/95 bg-gradient-to-br from-white via-white to-amber-50/70 px-2 py-1 shadow-sm ring-1 ring-violet-200/40 dark:border-violet-800/60 dark:from-slate-900 dark:via-slate-900 dark:to-violet-950/40 dark:ring-violet-900/30',
+        'hidden sm:block absolute top-1 z-[1] max-w-[min(200px,calc(100%-10px))] rounded-xl border-2 border-amber-100/95 bg-gradient-to-br from-white via-white to-amber-50/70 px-2 py-1 shadow-sm ring-1 ring-violet-200/40 dark:border-violet-800/60 dark:from-slate-900 dark:via-slate-900 dark:to-violet-950/40 dark:ring-violet-900/30',
         side === 'left' && 'left-1',
         side === 'right' && 'right-1 text-right',
         side === 'center' && 'left-1/2 -translate-x-1/2 text-center',
@@ -644,7 +644,7 @@ export function Roundtable({
     isProcessing;
   const toolbar = (
     <CanvasToolbar
-      className="shrink-0 h-8 px-3 border-b border-gray-100/40 dark:border-gray-700/30"
+      className="shrink-0 min-h-8 sm:h-8 px-1.5 sm:px-3 py-1 sm:py-0 border-b border-gray-100/40 dark:border-gray-700/30"
       currentSceneIndex={currentSceneIndex}
       scenesCount={scenesCount}
       engineState={
@@ -1082,7 +1082,7 @@ export function Roundtable({
   return (
     <div
       className={cn(
-        'h-[192px] w-full flex flex-col relative z-10 transition-all duration-300 overflow-hidden',
+        'h-[212px] sm:h-[192px] w-full flex flex-col relative z-10 transition-all duration-300 overflow-hidden',
         isPresenting && !controlsVisible
           ? 'border-t border-transparent bg-transparent backdrop-blur-none'
           : 'border-t-2 border-violet-200/80 dark:border-violet-900/35 bg-gradient-to-br from-amber-50/90 via-violet-100/80 to-sky-100/85 dark:from-violet-950/40 dark:via-slate-900/70 dark:to-fuchsia-950/25 backdrop-blur-md',
@@ -1102,11 +1102,11 @@ export function Roundtable({
       {/* ── Toolbar strip — merged from CanvasArea ── */}
       <div
         className={cn(
-          'relative z-[1] px-2 pt-1.5 transition-opacity duration-300',
+          'relative z-[1] px-1.5 sm:px-2 pt-1 sm:pt-1.5 transition-opacity duration-300',
           isPresenting && !controlsVisible && 'opacity-0 pointer-events-none',
         )}
       >
-        <div className="rounded-3xl border-2 border-violet-200/75 bg-white/88 shadow-[0_10px_28px_-14px_rgba(245,158,11,0.35),0_8px_24px_-16px_rgba(139,92,246,0.45)] dark:border-violet-800/50 dark:bg-slate-900/80 dark:shadow-[0_8px_24px_-16px_rgba(30,41,59,0.7)]">
+        <div className="rounded-2xl sm:rounded-3xl border-2 border-violet-200/75 bg-white/88 shadow-[0_10px_28px_-14px_rgba(245,158,11,0.35),0_8px_24px_-16px_rgba(139,92,246,0.45)] dark:border-violet-800/50 dark:bg-slate-900/80 dark:shadow-[0_8px_24px_-16px_rgba(30,41,59,0.7)]">
           {toolbar}
         </div>
       </div>
@@ -1115,7 +1115,7 @@ export function Roundtable({
         {/* Left: Teacher identity */}
         <div
           className={cn(
-            'w-[100px] shrink-0 flex flex-col border-r-2 border-violet-200/70 dark:border-violet-900/40 bg-gradient-to-b from-white/90 via-violet-100/60 to-amber-50/75 dark:from-slate-900/75 dark:via-violet-950/25 dark:to-slate-900/70 overflow-visible relative transition-opacity duration-300',
+            'hidden sm:flex w-[100px] shrink-0 flex-col border-r-2 border-violet-200/70 dark:border-violet-900/40 bg-gradient-to-b from-white/90 via-violet-100/60 to-amber-50/75 dark:from-slate-900/75 dark:via-violet-950/25 dark:to-slate-900/70 overflow-visible relative transition-opacity duration-300',
             isPresenting && !controlsVisible && 'opacity-0 pointer-events-none',
           )}
         >
@@ -1245,7 +1245,7 @@ export function Roundtable({
         </div>
 
         {/* Center: Interaction stage */}
-        <div className="flex-1 relative mx-2.5 mb-2 min-w-0">
+        <div className="flex-1 relative mx-1.5 sm:mx-2.5 mb-1.5 sm:mb-2 min-w-0">
           <RoundtableZoneChip
             title={t('roundtable.zoneTalkTitle')}
             hint={t('roundtable.zoneTalkHint')}
@@ -1284,7 +1284,7 @@ export function Roundtable({
                 if (isRecording || isProcessing) cancelRecording();
               }
             }}
-            className="relative w-full h-full rounded-[2.5rem] bg-gradient-to-br from-white/96 via-amber-50/80 to-sky-100/85 dark:from-slate-900/75 dark:via-violet-950/28 dark:to-slate-900/70 backdrop-blur-xl border-[3px] border-violet-200/85 dark:border-violet-800/45 shadow-[0_16px_38px_-18px_rgba(245,158,11,0.2),0_16px_38px_-18px_rgba(139,92,246,0.35),inset_0_1px_0_0_rgba(255,255,255,0.95)] dark:shadow-[0_16px_38px_-18px_rgba(30,41,59,0.65)] flex flex-col justify-center px-5 sm:px-6 overflow-hidden group transition-all duration-700 cursor-default ring-1 ring-amber-200/40 dark:ring-violet-900/30"
+            className="relative w-full h-full rounded-[1.35rem] sm:rounded-[2.5rem] bg-gradient-to-br from-white/96 via-amber-50/80 to-sky-100/85 dark:from-slate-900/75 dark:via-violet-950/28 dark:to-slate-900/70 backdrop-blur-xl border-2 sm:border-[3px] border-violet-200/85 dark:border-violet-800/45 shadow-[0_16px_38px_-18px_rgba(245,158,11,0.2),0_16px_38px_-18px_rgba(139,92,246,0.35),inset_0_1px_0_0_rgba(255,255,255,0.95)] dark:shadow-[0_16px_38px_-18px_rgba(30,41,59,0.65)] flex flex-col justify-center px-2.5 sm:px-6 overflow-hidden group transition-all duration-700 cursor-default ring-1 ring-amber-200/40 dark:ring-violet-900/30"
           >
             {/* Text input box */}
             <AnimatePresence>
@@ -1616,7 +1616,7 @@ export function Roundtable({
                         onPlayPause?.();
                       }}
                       className={cn(
-                        'relative px-4 pt-2 pb-3 rounded-2xl text-base leading-relaxed transition-all border w-[min(420px,calc(100%-3rem))] group/bubble flex flex-col max-h-[110px]',
+                        'relative px-2.5 sm:px-4 pt-1.5 sm:pt-2 pb-2 sm:pb-3 rounded-2xl text-[13px] sm:text-base leading-relaxed transition-all border w-[min(320px,calc(100%-1rem))] sm:w-[min(420px,calc(100%-3rem))] group/bubble flex flex-col max-h-[86px] sm:max-h-[110px]',
                         bubbleRole === 'teacher' ? 'pl-4 pr-10' : 'pl-4 pr-10',
                         bubbleRole === 'user'
                           ? 'bg-purple-600/95 dark:bg-purple-500/95 backdrop-blur-sm border-purple-400/40 dark:border-purple-300/40 text-white rounded-br-sm shadow-md shadow-purple-300/30 dark:shadow-purple-800/30'
@@ -1819,7 +1819,7 @@ export function Roundtable({
         {/* Right: Participants area */}
         <div
           className={cn(
-            'w-[144px] shrink-0 flex flex-col py-3 border-l-2 border-sky-200/75 dark:border-violet-900/40 bg-gradient-to-b from-white/90 via-sky-100/60 to-violet-50/75 dark:from-slate-900/75 dark:via-violet-950/25 dark:to-slate-900/70 overflow-visible transition-opacity duration-300',
+            'w-[92px] sm:w-[144px] shrink-0 flex flex-col py-1.5 sm:py-3 border-l-2 border-sky-200/75 dark:border-violet-900/40 bg-gradient-to-b from-white/90 via-sky-100/60 to-violet-50/75 dark:from-slate-900/75 dark:via-violet-950/25 dark:to-slate-900/70 overflow-visible transition-opacity duration-300',
             isPresenting && !controlsVisible && 'opacity-0 pointer-events-none',
           )}
         >
@@ -1829,7 +1829,7 @@ export function Roundtable({
             side="right"
           />
           {/* Companion agent avatars — horizontal row, scrollable on overflow, arrows on hover */}
-          <div className="flex-none relative group/scroll pt-9">
+          <div className="hidden sm:block flex-none relative group/scroll pt-9">
             {/* Left arrow */}
             <button
               onClick={() => {
@@ -2020,10 +2020,10 @@ export function Roundtable({
           </div>
 
           {/* Divider */}
-          <div className="mx-auto my-1.5 w-8 h-px bg-gray-200 dark:bg-gray-700 opacity-50 shrink-0" />
+          <div className="hidden sm:block mx-auto my-1.5 w-8 h-px bg-gray-200 dark:bg-gray-700 opacity-50 shrink-0" />
 
           {/* User avatar + interaction buttons */}
-          <div className="flex-1 flex items-center justify-center gap-3 px-2 min-h-0">
+          <div className="flex-1 flex flex-col sm:flex-row items-center justify-center gap-1.5 sm:gap-3 px-1 sm:px-2 min-h-0">
             <div className="flex flex-col gap-1.5 shrink-0">
               {isSendCooldown ? (
                 /* Unified cooldown indicator — replaces both buttons with a single dot wave */
@@ -2056,7 +2056,7 @@ export function Roundtable({
                     }}
                     disabled={!asrEnabled}
                     className={cn(
-                      'w-9 h-9 rounded-full border flex items-center justify-center transition-all active:scale-95 shadow-sm',
+                      'w-8 h-8 sm:w-9 sm:h-9 rounded-full border flex items-center justify-center transition-all active:scale-95 shadow-sm',
                       !asrEnabled
                         ? 'bg-gray-100 dark:bg-gray-800/50 text-gray-300 dark:text-gray-600 border-gray-200 dark:border-gray-700 cursor-not-allowed'
                         : isVoiceOpen
@@ -2076,7 +2076,7 @@ export function Roundtable({
                       handleToggleInput();
                     }}
                     className={cn(
-                      'w-9 h-9 rounded-full border flex items-center justify-center transition-all active:scale-95 shadow-sm',
+                      'w-8 h-8 sm:w-9 sm:h-9 rounded-full border flex items-center justify-center transition-all active:scale-95 shadow-sm',
                       isInputOpen
                         ? 'bg-purple-600 dark:bg-purple-500 border-purple-600 dark:border-purple-500 text-white shadow-purple-300/70 dark:shadow-purple-900/60 ring-1 ring-purple-300/70 dark:ring-purple-700/60'
                         : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-400 dark:text-gray-500 hover:bg-purple-50 dark:hover:bg-purple-900/20 hover:text-purple-600 dark:hover:text-purple-400 hover:border-purple-200 dark:hover:border-purple-700',
@@ -2098,7 +2098,7 @@ export function Roundtable({
             >
               <div
                 className={cn(
-                  'relative w-16 h-16 rounded-full transition-all duration-300 flex items-center justify-center',
+                  'relative w-11 h-11 sm:w-16 sm:h-16 rounded-full transition-all duration-300 flex items-center justify-center',
                   activeRole === 'user' || isInputOpen || isCueUser
                     ? 'scale-105'
                     : 'opacity-50 grayscale-[0.2] scale-95 group-hover:opacity-100 group-hover:grayscale-0 group-hover:scale-100',
@@ -2114,13 +2114,13 @@ export function Roundtable({
                         : 'border-white dark:border-gray-700 group-hover:border-purple-200 dark:group-hover:border-purple-600',
                   )}
                 />
-                <div className="w-14 h-14 rounded-full bg-gray-50 dark:bg-gray-800 overflow-hidden relative z-10 shadow-sm border border-gray-50 dark:border-gray-700 text-2xl">
+                <div className="w-10 h-10 sm:w-14 sm:h-14 rounded-full bg-gray-50 dark:bg-gray-800 overflow-hidden relative z-10 shadow-sm border border-gray-50 dark:border-gray-700 text-2xl">
                   <AvatarDisplay src={userAvatar} alt={t('roundtable.you')} />
                 </div>
-                <div className="absolute top-0 right-0 w-5 h-5 bg-white dark:bg-gray-800 rounded-full flex items-center justify-center shadow-md border border-gray-100 dark:border-gray-700 z-20">
+                <div className="absolute top-0 right-0 w-4 h-4 sm:w-5 sm:h-5 bg-white dark:bg-gray-800 rounded-full flex items-center justify-center shadow-md border border-gray-100 dark:border-gray-700 z-20">
                   <div
                     className={cn(
-                      'w-1.5 h-1.5 rounded-full',
+                      'w-1 h-1 sm:w-1.5 sm:h-1.5 rounded-full',
                       isInputOpen || isCueUser
                         ? 'bg-purple-500 animate-pulse'
                         : 'bg-gray-300 dark:bg-gray-600',

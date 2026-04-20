@@ -40,6 +40,7 @@ import {
   ContextMenuShortcut,
   ContextMenuItem,
 } from '@/components/ui/context-menu';
+import { useI18n } from '@/lib/hooks/use-i18n';
 
 export interface CanvasProps {
   editable?: boolean;
@@ -60,6 +61,7 @@ export interface CanvasProps {
  * </SceneProvider>
  */
 export function Canvas(_props: CanvasProps) {
+  const { t } = useI18n();
   const canvasRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
 
@@ -147,6 +149,16 @@ export function Canvas(_props: CanvasProps) {
       return; // Skip blank area handling if clicking on context menu
     }
 
+    // Only clear selection for true canvas background clicks.
+    // Any click inside element/operate layers should keep current selection.
+    const isBackgroundClick =
+      target === e.currentTarget ||
+      target.classList.contains('viewport') ||
+      target.classList.contains('viewport-wrapper') ||
+      target.classList.contains('viewport-background') ||
+      target.classList.contains('grid-lines');
+    if (!isBackgroundClick) return;
+
     if (activeElementIdList.length) {
       setActiveElementIdList([]);
     }
@@ -176,48 +188,48 @@ export function Canvas(_props: CanvasProps) {
   const contextmenus = (): ContextmenuItem[] => {
     return [
       {
-        text: '粘贴',
+        text: t('canvasMenu.paste'),
         subText: 'Ctrl + V',
         handler: pasteElement,
       },
       {
-        text: '全选',
+        text: t('canvasMenu.selectAll'),
         subText: 'Ctrl + A',
         handler: selectAllElements,
       },
       {
-        text: '标尺',
-        subText: showRuler ? '√' : '',
+        text: t('canvasMenu.ruler'),
+        subText: showRuler ? t('canvasMenu.check') : '',
         handler: () => setRulerState(!showRuler),
       },
       {
-        text: '网格线',
+        text: t('canvasMenu.gridLines'),
         handler: () => setGridLineSize(gridLineSize ? 0 : 50),
         children: [
           {
-            text: '无',
-            subText: gridLineSize === 0 ? '√' : '',
+            text: t('canvasMenu.gridNone'),
+            subText: gridLineSize === 0 ? t('canvasMenu.check') : '',
             handler: () => setGridLineSize(0),
           },
           {
-            text: '小',
-            subText: gridLineSize === 25 ? '√' : '',
+            text: t('canvasMenu.gridSmall'),
+            subText: gridLineSize === 25 ? t('canvasMenu.check') : '',
             handler: () => setGridLineSize(25),
           },
           {
-            text: '中',
-            subText: gridLineSize === 50 ? '√' : '',
+            text: t('canvasMenu.gridMedium'),
+            subText: gridLineSize === 50 ? t('canvasMenu.check') : '',
             handler: () => setGridLineSize(50),
           },
           {
-            text: '大',
-            subText: gridLineSize === 100 ? '√' : '',
+            text: t('canvasMenu.gridLarge'),
+            subText: gridLineSize === 100 ? t('canvasMenu.check') : '',
             handler: () => setGridLineSize(100),
           },
         ],
       },
       {
-        text: '重置当前页',
+        text: t('canvasMenu.resetSlide'),
         handler: deleteAllElements,
       },
     ];
@@ -248,7 +260,7 @@ export function Canvas(_props: CanvasProps) {
 
           {/* Viewport wrapper */}
           <div
-            className="viewport-wrapper absolute shadow-[0_0_0_1px_rgba(0,0,0,0.01),0_0_12px_0_rgba(0,0,0,0.1)]"
+            className="viewport-wrapper absolute overflow-visible shadow-[0_0_0_1px_rgba(0,0,0,0.01),0_0_12px_0_rgba(0,0,0,0.1)]"
             style={{
               width: `${viewportStyles.width * canvasScale}px`,
               height: `${viewportStyles.height * canvasScale}px`,
@@ -257,7 +269,7 @@ export function Canvas(_props: CanvasProps) {
             }}
           >
             {/* Operations layer - alignment lines and selection handles */}
-            <div className="operates absolute top-0 left-0 w-full h-full pointer-events-none">
+            <div className="operates absolute top-0 left-0 z-[120] w-full h-full pointer-events-none">
               {/* Alignment lines */}
               {alignmentLines.map((line, index) => (
                 <AlignmentLine
@@ -296,20 +308,20 @@ export function Canvas(_props: CanvasProps) {
                     />
                   ),
               )}
-
-              <ViewportBackground />
             </div>
 
             {/* Viewport - the actual slide canvas */}
             <div
               ref={viewportRef}
-              className="viewport absolute top-0 left-0 origin-top-left"
+              className="viewport absolute top-0 left-0 z-[10] origin-top-left"
               style={{
                 width: `${viewportStyles.width}px`,
                 height: `${viewportStyles.height}px`,
                 transform: `scale(${canvasScale})`,
               }}
             >
+              <ViewportBackground />
+
               {/* Grid lines */}
               {gridLineSize > 0 && <GridLines />}
 

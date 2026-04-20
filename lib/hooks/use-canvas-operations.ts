@@ -34,6 +34,13 @@ import { useOrderElement } from './use-order-element';
 import { nanoid } from 'nanoid';
 
 type PPTElementKey = keyof PPTElement;
+type CanvasClipboardPayload = {
+  elements: PPTElement[];
+  copiedAt: number;
+};
+
+let canvasClipboard: CanvasClipboardPayload | null = null;
+const PASTE_OFFSET = 20;
 
 interface RemovePropData {
   id: string;
@@ -180,32 +187,67 @@ export function useCanvasOperations() {
 
   // Copy selected element data to clipboard
   const copyElement = () => {
-    // if (!activeElementIdList.length) return
+    if (!activeElementIdList.length) {
+      toast.warning('No elements selected');
+      return;
+    }
 
-    // const text = JSON.stringify({
-    //   type: 'elements',
-    //   data: activeElementList,
-    // })
+    // Keep element order as rendered in the current slide.
+    const selectedElements = currentSlide.elements.filter((el) => activeElementIdList.includes(el.id));
+    if (!selectedElements.length) {
+      toast.warning('No elements selected');
+      return;
+    }
 
-    // copyText(text).then(() => {
-    //   setEditorareaFocus(true)
-    // })
-    toast.warning('Not implemented');
+    canvasClipboard = {
+      elements: JSON.parse(JSON.stringify(selectedElements)),
+      copiedAt: Date.now(),
+    };
+    _setEditorareaFocus(true);
+    toast.success(`Copied ${selectedElements.length} element${selectedElements.length > 1 ? 's' : ''}`);
   };
 
   // Copy and delete selected elements (cut)
   const cutElement = () => {
-    // copyElement()
-    // deleteElement()
-    toast.warning('Not implemented');
+    if (!activeElementIdList.length) {
+      toast.warning('No elements selected');
+      return;
+    }
+    copyElement();
+    deleteElement();
   };
 
   // Attempt to paste element data from clipboard
   const pasteElement = () => {
-    // readClipboard().then(text => {
-    //   pasteTextClipboardData(text)
-    // }).catch(err => toast.warning(err))
-    toast.warning('Not implemented');
+    if (!canvasClipboard || canvasClipboard.elements.length === 0) {
+      toast.warning('Clipboard is empty');
+      return;
+    }
+
+    const groupIdMap = new Map<string, string>();
+    const pastedElements: PPTElement[] = canvasClipboard.elements.map((source) => {
+      const copied = JSON.parse(JSON.stringify(source)) as PPTElement;
+      const newId = nanoid(10);
+      copied.id = newId;
+      copied.left += PASTE_OFFSET;
+      copied.top += PASTE_OFFSET;
+      copied.lock = false;
+
+      if (copied.groupId) {
+        const mappedGroupId = groupIdMap.get(copied.groupId) || nanoid(10);
+        groupIdMap.set(copied.groupId, mappedGroupId);
+        copied.groupId = mappedGroupId;
+      }
+
+      return copied;
+    });
+
+    updateSlide({ elements: [...currentSlide.elements, ...pastedElements] });
+    const pastedIds = pastedElements.map((el) => el.id);
+    setActiveElementIdList(pastedIds);
+    _setEditorareaFocus(true);
+    addHistorySnapshot();
+    toast.success(`Pasted ${pastedElements.length} element${pastedElements.length > 1 ? 's' : ''}`);
   };
 
   // Copy and immediately paste selected elements

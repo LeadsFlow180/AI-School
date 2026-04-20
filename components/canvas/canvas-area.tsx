@@ -58,6 +58,10 @@ export function CanvasArea({
   const handleSlideClick = useCallback(
     (e: React.MouseEvent) => {
       if (!showControls || isLiveSession || currentScene?.type !== 'slide') return;
+      const target = e.target as HTMLElement;
+      // When slide editing is enabled in playback, clicks inside editor canvas
+      // should select/resize elements instead of toggling play/pause.
+      if (target.closest('.canvas')) return;
       // Don't trigger page play/pause when clicking inside a video element's visual area.
       // Video elements may be visually covered by other slide elements (e.g. text),
       // so we check click coordinates against all video element bounding rects.

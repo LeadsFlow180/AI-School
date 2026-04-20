@@ -241,7 +241,7 @@ export const ChatArea = forwardRef<ChatAreaRef, ChatAreaProps>(
     return (
       <div
         style={{
-          width: displayWidth,
+          width: collapsed ? 0 : `min(${displayWidth}px, calc(100vw - 0.75rem))`,
           transition: isDragging ? 'none' : 'width 0.3s ease',
         }}
         className={cn(

@@ -719,21 +719,25 @@ export default function ClassroomEditCanvasPage() {
 
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-slate-50 dark:bg-slate-950">
-      <div className="h-16 flex items-center justify-between px-6 border-b border-slate-200 bg-white shrink-0">
-        <div className="flex items-center gap-3 min-w-0">
+      <div className="shrink-0 border-b border-slate-200 bg-white px-3 py-2 sm:h-16 sm:px-6 sm:py-0">
+        <div className="flex flex-col gap-2 sm:h-full sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
           <button
             onClick={() => router.push(`/classroom/${encodeURIComponent(classroomId || '')}`)}
-            className="px-3 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold transition-colors"
+            className="rounded-lg bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-200"
           >
             Back
           </button>
           <div className="min-w-0">
-            <div className="text-xs uppercase tracking-widest text-slate-500 font-bold">Edit in Canvas</div>
-            <div className="text-sm font-bold text-slate-900 truncate">{stage?.name || ''}</div>
+            <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500 sm:text-xs">
+              Edit in Canvas
+            </div>
+            <div className="truncate text-sm font-bold text-slate-900">{stage?.name || ''}</div>
           </div>
         </div>
-        <div className="text-xs text-slate-500 font-semibold">
-          {authReady && !isAdminUser ? 'Admin only' : ''}
+          <div className="text-xs font-semibold text-slate-500">
+            {authReady && !isAdminUser ? 'Admin only' : ''}
+          </div>
         </div>
       </div>
 
@@ -754,13 +758,13 @@ export default function ClassroomEditCanvasPage() {
           </div>
         </div>
       ) : (
-        <div className="flex-1 min-h-0 flex overflow-hidden">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
           {/* Slide list */}
-          <aside className="w-[260px] border-r border-slate-200 bg-white overflow-auto">
-            <div className="p-4 border-b border-slate-200">
+          <aside className="max-h-[38vh] border-b border-slate-200 bg-white overflow-auto lg:max-h-none lg:w-[260px] lg:border-b-0 lg:border-r">
+            <div className="border-b border-slate-200 p-3 sm:p-4">
               <div className="text-xs font-bold uppercase tracking-widest text-slate-500">Slides</div>
             </div>
-            <div className="p-2">
+            <div className="flex gap-2 overflow-x-auto p-2 lg:block lg:overflow-visible">
               {slideScenes.length === 0 ? (
                 <div className="text-sm text-slate-600 p-3">No slide scenes available for editing.</div>
               ) : (
@@ -771,7 +775,7 @@ export default function ClassroomEditCanvasPage() {
                       key={scene.id}
                       onClick={() => setCurrentSceneId(scene.id)}
                       className={[
-                        'w-full text-left px-3 py-2 rounded-xl border mb-2 transition-colors',
+                        'min-w-[180px] rounded-xl border px-3 py-2 text-left transition-colors lg:mb-2 lg:w-full lg:min-w-0',
                         isActive
                           ? 'border-emerald-300 bg-emerald-50 text-emerald-900'
                           : 'border-transparent hover:border-slate-200 bg-transparent text-slate-800',
@@ -789,19 +793,19 @@ export default function ClassroomEditCanvasPage() {
           </aside>
 
           {/* Canvas editor */}
-          <main className="flex-1 min-w-0 min-h-0 bg-slate-50 dark:bg-slate-950 overflow-auto p-4">
-            <div className="mb-3 rounded-xl border border-slate-200 bg-white p-2 flex flex-wrap gap-2">
+          <main className="min-h-0 min-w-0 flex-1 overflow-auto bg-slate-50 p-3 dark:bg-slate-950 sm:p-4">
+            <div className="mb-3 flex flex-wrap gap-2 rounded-xl border border-slate-200 bg-white p-2 sm:p-3">
               <button
                 type="button"
                 onClick={handleAddSlideTextBox}
-                className="rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-3 py-2 transition-colors"
+                className="min-h-[40px] w-full rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-emerald-700 sm:w-auto"
               >
                 Add live text box
               </button>
               <button
                 type="button"
                 onClick={handleCreateLiveTextFromSpeech}
-                className="rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold px-3 py-2 transition-colors"
+                className="min-h-[40px] w-full rounded-lg bg-violet-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-violet-700 sm:w-auto"
               >
                 Generate text from narration
               </button>
@@ -811,7 +815,7 @@ export default function ClassroomEditCanvasPage() {
                   if (!selectedScene) return;
                   applySceneUpdate(selectedScene);
                 }}
-                className="rounded-lg bg-fuchsia-600 hover:bg-fuchsia-700 text-white text-xs font-semibold px-3 py-2 transition-colors"
+                className="min-h-[40px] w-full rounded-lg bg-fuchsia-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-fuchsia-700 sm:w-auto"
               >
                 Rebuild AI tutor script
               </button>
@@ -821,7 +825,7 @@ export default function ClassroomEditCanvasPage() {
                 onClick={() => {
                   void handleConvertImageTextToEditable();
                 }}
-                className="rounded-lg bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-xs font-semibold px-3 py-2 transition-colors"
+                className="min-h-[40px] w-full rounded-lg bg-amber-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-amber-700 disabled:opacity-50 sm:w-auto"
               >
                 {isConvertingOcr ? 'Converting OCR...' : 'Convert image text to editable'}
               </button>
@@ -831,17 +835,17 @@ export default function ClassroomEditCanvasPage() {
                 onClick={() => {
                   void handleFinalizeReplaceOnImage();
                 }}
-                className="rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold px-3 py-2 transition-colors"
+                className="min-h-[40px] w-full rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-50 sm:w-auto"
               >
                 {isFinalizing ? 'Finalizing...' : 'Finalize replace'}
               </button>
-              <div className="flex items-center gap-2 rounded-lg border border-slate-200 px-2 py-1 bg-slate-50">
+              <div className="flex w-full flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1">
                 <input
                   type="url"
                   value={imageUrlInput}
                   onChange={(e) => setImageUrlInput(e.target.value)}
                   placeholder="Paste image URL to replace selected image"
-                  className="w-[320px] max-w-[60vw] rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700"
+                  className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700 sm:w-[320px] sm:max-w-[60vw]"
                 />
                 <button
                   type="button"
@@ -849,7 +853,7 @@ export default function ClassroomEditCanvasPage() {
                   onClick={() => {
                     void handleReplaceImageFromUrl();
                   }}
-                  className="rounded-lg bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 text-white text-xs font-semibold px-3 py-2 transition-colors"
+                  className="min-h-[40px] w-full rounded-lg bg-cyan-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-cyan-700 disabled:opacity-50 sm:w-auto"
                 >
                   {isReplacingImage ? 'Replacing...' : 'Replace via URL'}
                 </button>
@@ -869,14 +873,14 @@ export default function ClassroomEditCanvasPage() {
                   type="button"
                   disabled={isReplacingImage}
                   onClick={() => imageUploadInputRef.current?.click()}
-                  className="rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-semibold px-3 py-2 transition-colors"
+                  className="min-h-[40px] w-full rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-indigo-700 disabled:opacity-50 sm:w-auto"
                 >
                   Upload image
                 </button>
               </div>
             </div>
-            <div className="w-full h-full min-h-[320px] flex items-center justify-center">
-              <div className="w-full h-full aspect-[16/9] bg-white dark:bg-gray-800 shadow-2xl rounded-lg overflow-visible relative">
+            <div className="flex h-full min-h-[320px] w-full items-center justify-center sm:min-h-[420px]">
+              <div className="relative w-full max-w-full aspect-[16/9] min-h-[220px] overflow-visible rounded-lg bg-white shadow-2xl dark:bg-gray-800 sm:h-full sm:max-h-full">
                 <SceneProvider>
                   {selectedScene ? (
                     <SceneRenderer scene={selectedScene} mode="autonomous" />

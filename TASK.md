@@ -89,6 +89,8 @@
 - [x] 2026-04-15 - Replace Recents loading text with card skeleton placeholders so `/` shows a stable layout while classrooms are fetching.
 - [x] 2026-04-15 - Add admin-only “Edit in Canvas” button and `/classroom/[id]/edit` route for slide HTML editing.
 - [x] 2026-04-15 - Add OCR-based “Convert image text to editable” in classroom edit route to create live text layers from image-only Gamma slides.
+- [x] 2026-04-15 - Make `/classroom/[id]/edit` mobile responsive: stacked header, horizontal slide strip on small screens, wrapped tool controls, and touch-friendly canvas viewport sizing while preserving desktop layout.
+- [x] 2026-04-15 - Ensure edit-page actions are mobile-usable by making action buttons full-width/touch-friendly on small screens with stronger minimum tap targets and preserved desktop sizing.
 
 ## Discovered During Work
 

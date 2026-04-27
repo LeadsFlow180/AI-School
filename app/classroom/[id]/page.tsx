@@ -574,6 +574,50 @@ export default function ClassroomDetailPage() {
             cleanIds && cleanIds.length > 0 ? cleanIds : ['default-1', 'default-2', 'default-3'],
           );
       }
+
+      // Re-apply tutor profile saved with this classroom stage so refresh keeps
+      // the same tutor name/avatar/voice for this specific classroom.
+      const stageWithTutor = useStageStore.getState().stage as
+        | (Stage & {
+            tutorConfig?: {
+              name?: string;
+              avatar?: string;
+              description?: string;
+              voicePreset?: {
+                id: string;
+                name: string;
+                providerId: string;
+                voiceId: string;
+              };
+            };
+          })
+        | null;
+      const tutorCfg = stageWithTutor?.tutorConfig;
+      if (tutorCfg) {
+        const registry = useAgentRegistry.getState();
+        const selectedIds = useSettingsStore.getState().selectedAgentIds;
+        const settingsState = useSettingsStore.getState();
+        const teacherId =
+          selectedIds.find((id) => registry.getAgent(id)?.role === 'teacher') || selectedIds[0] || 'default-1';
+        registry.updateAgent(teacherId, {
+          ...(tutorCfg.name ? { name: tutorCfg.name } : {}),
+          ...(tutorCfg.avatar ? { avatar: tutorCfg.avatar } : {}),
+          ...(tutorCfg.voicePreset
+            ? {
+                voiceConfig: {
+                  providerId: tutorCfg.voicePreset.providerId as import('@/lib/audio/types').TTSProviderId,
+                  voiceId: tutorCfg.voicePreset.voiceId,
+                },
+              }
+            : {}),
+        });
+        if (tutorCfg.voicePreset?.providerId && tutorCfg.voicePreset?.voiceId) {
+          settingsState.setTTSProvider(
+            tutorCfg.voicePreset.providerId as import('@/lib/audio/types').TTSProviderId,
+          );
+          settingsState.setTTSVoice(tutorCfg.voicePreset.voiceId);
+        }
+      }
     } catch (error) {
       log.error('Failed to load classroom:', error);
       setError(error instanceof Error ? error.message : 'Failed to load classroom');

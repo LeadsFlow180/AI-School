@@ -26,6 +26,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import type { AgentConfig } from '@/lib/orchestration/registry/types';
 import type { TTSProviderId } from '@/lib/audio/types';
 import type { ProviderWithVoices } from '@/lib/audio/voice-resolver';
+import type { TutorVoicePreset } from '@/lib/types/tutor-voice';
 
 function AgentVoicePill({
   agent,
@@ -455,11 +456,17 @@ export function AgentBar() {
   const setMaxTurns = useSettingsStore((s) => s.setMaxTurns);
   const agentMode = useSettingsStore((s) => s.agentMode);
   const setAgentMode = useSettingsStore((s) => s.setAgentMode);
+  const setTTSProvider = useSettingsStore((s) => s.setTTSProvider);
+  const setTTSVoice = useSettingsStore((s) => s.setTTSVoice);
   const ttsProvidersConfig = useSettingsStore((s) => s.ttsProvidersConfig);
   const ttsEnabled = useSettingsStore((s) => s.ttsEnabled);
+  const updateAgent = useAgentRegistry((s) => s.updateAgent);
 
   const [open, setOpen] = useState(false);
   const [browserVoices, setBrowserVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [customTutors, setCustomTutors] = useState<TutorVoicePreset[]>([]);
+  const [isTutorsLoading, setIsTutorsLoading] = useState(false);
+  const [customTutorsError, setCustomTutorsError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Load browser native TTS voices
@@ -472,7 +479,9 @@ export function AgentBar() {
   }, []);
 
   const allAgents = listAgents();
-  const agents = allAgents.filter((a) => !a.isGenerated);
+  // Include generated agents so classroom-specific tutor/teacher profiles
+  // are visible in presenter list after generation/reload.
+  const agents = allAgents;
   const teacherAgent = agents.find((a) => a.role === 'teacher');
   const selectedAgents = agents.filter((a) => selectedAgentIds.includes(a.id));
   const nonTeacherSelected = selectedAgents.filter((a) => a.role !== 'teacher');
@@ -491,6 +500,101 @@ export function AgentBar() {
       : []),
   ];
   const showVoice = availableProviders.length > 0;
+
+  const loadCustomTutors = useCallback(async () => {
+    try {
+      setIsTutorsLoading(true);
+      setCustomTutorsError(null);
+      const res = await fetch('/api/admin/custom-voices', { cache: 'no-store' });
+      const json = await res.json();
+      if (!res.ok || !json?.success || !Array.isArray(json.voices)) {
+        setCustomTutors([]);
+        setCustomTutorsError(
+          typeof json?.error === 'string' ? json.error : 'Failed to load tutors from DB',
+        );
+        return;
+      }
+      const voices = (json.voices as Array<Record<string, unknown>>).map((v) => ({
+        id: String(v.id || ''),
+        name: String(v.name || ''),
+        title: v.title ? String(v.title) : String(v.name || ''),
+        description: v.description ? String(v.description) : null,
+        providerId: String(v.provider_id || 'custom-cloned-tts'),
+        providerVoiceId: String(v.provider_voice_id || ''),
+        referenceUrl: v.reference_url ? String(v.reference_url) : null,
+        avatar: v.avatar ? String(v.avatar) : null,
+      })) as TutorVoicePreset[];
+      setCustomTutors(voices.filter((v) => v.id && v.name));
+    } catch (err) {
+      setCustomTutors([]);
+      setCustomTutorsError(err instanceof Error ? err.message : 'Failed to load tutors from DB');
+    } finally {
+      setIsTutorsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadCustomTutors();
+  }, [loadCustomTutors]);
+
+  useEffect(() => {
+    if (!open) return;
+    void loadCustomTutors();
+  }, [loadCustomTutors, open]);
+
+  const applyTutorPresetToTeacher = useCallback(
+    (preset: TutorVoicePreset) => {
+      if (!teacherAgent) return;
+      updateAgent(teacherAgent.id, {
+        name: preset.name || teacherAgent.name,
+        avatar: preset.avatar || teacherAgent.avatar,
+        ...(preset.providerVoiceId
+          ? {
+              voiceConfig: {
+                providerId: preset.providerId as TTSProviderId,
+                voiceId: preset.providerVoiceId,
+              },
+            }
+          : {}),
+      });
+      if (preset.providerVoiceId) {
+        setTTSProvider(preset.providerId as TTSProviderId);
+        setTTSVoice(preset.providerVoiceId);
+      }
+    },
+    [setTTSProvider, setTTSVoice, teacherAgent, updateAgent],
+  );
+
+  const renderDynamicTutorRow = (preset: TutorVoicePreset) => {
+    if (!teacherAgent) return null;
+    const isActive =
+      teacherAgent.voiceConfig?.providerId === (preset.providerId as TTSProviderId) &&
+      teacherAgent.voiceConfig?.voiceId === preset.providerVoiceId;
+    return (
+      <button
+        key={preset.id}
+        type="button"
+        onClick={() => applyTutorPresetToTeacher(preset)}
+        className={cn(
+          'w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg transition-colors text-left',
+          isActive ? 'bg-primary/10 ring-1 ring-primary/30' : 'hover:bg-muted/50',
+        )}
+      >
+        <Checkbox checked={isActive} className="pointer-events-none" />
+        <div className="size-7 rounded-full overflow-hidden ring-1 ring-border/40 shrink-0">
+          <img
+            src={preset.avatar || teacherAgent.avatar}
+            alt={preset.name}
+            className="size-full object-cover"
+          />
+        </div>
+        <span className="text-[13px] font-medium truncate min-w-0 flex-1">{preset.name}</span>
+        <span className="text-[10px] text-muted-foreground/60 shrink-0 w-[88px] text-right truncate">
+          Tutor
+        </span>
+      </button>
+    );
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -524,9 +628,8 @@ export function AgentBar() {
   };
 
   const toggleAgent = (agentId: string) => {
-    const agent = agents.find((a) => a.id === agentId);
-    if (agent?.role === 'teacher') return;
     if (selectedAgentIds.includes(agentId)) {
+      if (selectedAgentIds.length <= 1) return;
       setSelectedAgentIds(selectedAgentIds.filter((id) => id !== agentId));
     } else {
       setSelectedAgentIds([...selectedAgentIds, agentId]);
@@ -534,6 +637,8 @@ export function AgentBar() {
   };
 
   const getAgentName = (agent: { id: string; name: string }) => {
+    // Reason: keep user-customized tutor/presenter names visible after refresh.
+    if (agent.name?.trim()) return agent.name;
     const key = `settings.agentNames.${agent.id}`;
     const translated = t(key);
     return translated !== key ? translated : agent.name;
@@ -609,22 +714,22 @@ export function AgentBar() {
   );
 
   const renderAgentRow = (agent: AgentConfig, agentIndex: number, isTeacher: boolean) => {
-    const isSelected = isTeacher || selectedAgentIds.includes(agent.id);
+    const isSelected = selectedAgentIds.includes(agent.id);
     return (
       <div
         key={agent.id}
-        onClick={isTeacher ? undefined : () => toggleAgent(agent.id)}
+        onClick={() => toggleAgent(agent.id)}
         className={cn(
           'w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg transition-colors',
-          isTeacher ? 'bg-primary/5' : 'cursor-pointer',
+          'cursor-pointer',
+          isTeacher && isSelected && 'bg-primary/5',
           !isTeacher && isSelected && 'bg-primary/5',
-          !isTeacher && !isSelected && 'hover:bg-muted/50',
+          !isSelected && 'hover:bg-muted/50',
         )}
       >
         <Checkbox
           checked={isSelected}
-          disabled={isTeacher}
-          className={cn('pointer-events-none', isTeacher && 'opacity-50')}
+          className="pointer-events-none"
         />
         <div
           className="size-7 rounded-full overflow-hidden shrink-0 ring-1 ring-border/40"
@@ -743,6 +848,31 @@ export function AgentBar() {
 
               {agentMode === 'preset' ? (
                 <div className="max-h-56 overflow-y-auto -mx-0.5">
+                  {teacherAgent && (
+                    <>
+                      <div className="px-2 pt-1 pb-1 text-[10px] uppercase tracking-wide text-muted-foreground/70">
+                        Dynamic tutors (DB)
+                      </div>
+                      {isTutorsLoading && (
+                        <div className="px-2.5 py-1 text-[11px] text-muted-foreground/70">
+                          Loading tutors...
+                        </div>
+                      )}
+                      {!isTutorsLoading && customTutorsError && (
+                        <div className="px-2.5 py-1 text-[11px] text-rose-500/90 truncate">
+                          {customTutorsError}
+                        </div>
+                      )}
+                      {!isTutorsLoading &&
+                        !customTutorsError &&
+                        customTutors.map((preset) => renderDynamicTutorRow(preset))}
+                      {!isTutorsLoading && !customTutorsError && customTutors.length === 0 && (
+                        <div className="px-2.5 py-1 text-[11px] text-muted-foreground/70">
+                          No saved tutors in DB
+                        </div>
+                      )}
+                    </>
+                  )}
                   {agents
                     .filter((a) => a.role !== 'teacher')
                     .map((agent, idx) => renderAgentRow(agent, idx + 1, false))}

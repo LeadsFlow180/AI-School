@@ -94,11 +94,15 @@ function GenerationPreviewContent() {
   const getApiHeaders = (forcedModel?: { providerId: ProviderId; modelId: string }) => {
     const defaultModelConfig = getCurrentModelConfig();
     const settings = useSettingsStore.getState();
-    const forcedProvider = forcedModel ? settings.providersConfig[forcedModel.providerId] : undefined;
+    const forcedProvider = forcedModel
+      ? settings.providersConfig[forcedModel.providerId]
+      : undefined;
     const canUseForcedModel = Boolean(
       forcedModel &&
-        forcedProvider &&
-        (!forcedProvider.requiresApiKey || forcedProvider.apiKey || forcedProvider.isServerConfigured),
+      forcedProvider &&
+      (!forcedProvider.requiresApiKey ||
+        forcedProvider.apiKey ||
+        forcedProvider.isServerConfigured),
     );
     const resolvedProviderId = canUseForcedModel
       ? forcedModel!.providerId
@@ -110,7 +114,8 @@ function GenerationPreviewContent() {
       apiKey: resolvedProvider?.apiKey || defaultModelConfig.apiKey,
       baseUrl: resolvedProvider?.baseUrl || defaultModelConfig.baseUrl,
       providerType:
-        resolvedProvider?.type || (resolvedProviderId === 'google' ? 'google' : defaultModelConfig.providerType),
+        resolvedProvider?.type ||
+        (resolvedProviderId === 'google' ? 'google' : defaultModelConfig.providerType),
       requiresApiKey: resolvedProvider?.requiresApiKey ?? defaultModelConfig.requiresApiKey,
     };
     const imageProviderConfig = settings.imageProvidersConfig?.[settings.imageProviderId];
@@ -393,6 +398,20 @@ function GenerationPreviewContent() {
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
+      const stageWithTutor = stage as Stage & {
+        tutorConfig?: {
+          name?: string;
+          avatar?: string;
+          description?: string;
+          voicePreset?: {
+            id: string;
+            name: string;
+            providerId: string;
+            voiceId: string;
+          };
+        };
+      };
+      stageWithTutor.tutorConfig = currentSession.tutorConfig;
 
       if (settings.agentMode === 'auto') {
         const agentStepIdx = activeSteps.findIndex((s) => s.id === 'agent-generation');
@@ -452,13 +471,29 @@ function GenerationPreviewContent() {
 
           const getAvailableVoicesForGeneration = () => {
             const providers = getAvailableProvidersWithVoices(settings.ttsProvidersConfig);
-            return providers.flatMap((p) =>
+            const voices = providers.flatMap((p) =>
               p.voices.map((v) => ({
                 providerId: p.providerId,
                 voiceId: v.id,
                 voiceName: v.name,
               })),
             );
+
+            const preset = currentSession.tutorConfig?.voicePreset;
+            if (
+              preset &&
+              !voices.some(
+                (v) => v.providerId === preset.providerId && v.voiceId === preset.voiceId,
+              )
+            ) {
+              voices.unshift({
+                providerId: preset.providerId,
+                voiceId: preset.voiceId,
+                voiceName: `${preset.name} (cloned)`,
+              });
+            }
+
+            return voices;
           };
 
           // No outlines yet — agent generation uses only stage name + description
@@ -471,6 +506,7 @@ function GenerationPreviewContent() {
               availableAvatars: allAvatars.map((a) => a.path),
               avatarDescriptions: allAvatars.map((a) => ({ path: a.path, desc: a.desc })),
               availableVoices: getAvailableVoicesForGeneration(),
+              preferredTutor: currentSession.tutorConfig,
             }),
             signal,
           });
@@ -732,6 +768,11 @@ function GenerationPreviewContent() {
       // Generate TTS for first scene (part of actions step — blocking)
       if (settings.ttsEnabled && settings.ttsProviderId !== 'browser-native-tts') {
         const ttsProviderConfig = settings.ttsProvidersConfig?.[settings.ttsProviderId];
+        const tutorVoicePreset = currentSession.tutorConfig?.voicePreset;
+        const effectiveProviderId = (tutorVoicePreset?.providerId ||
+          settings.ttsProviderId) as import('@/lib/audio/types').TTSProviderId;
+        const effectiveVoiceId = tutorVoicePreset?.voiceId || settings.ttsVoice;
+        const effectiveProviderConfig = settings.ttsProvidersConfig?.[effectiveProviderId];
         const speechActions = (data.scene.actions || []).filter(
           (a: { type: string; text?: string }) => a.type === 'speech' && a.text,
         );
@@ -747,11 +788,16 @@ function GenerationPreviewContent() {
               body: JSON.stringify({
                 text: action.text,
                 audioId,
-                ttsProviderId: settings.ttsProviderId,
-                ttsVoice: settings.ttsVoice,
+                ttsProviderId: effectiveProviderId,
+                ttsVoice: effectiveVoiceId,
                 ttsSpeed: settings.ttsSpeed,
-                ttsApiKey: ttsProviderConfig?.apiKey || undefined,
-                ttsBaseUrl: ttsProviderConfig?.baseUrl || undefined,
+                ttsApiKey: effectiveProviderConfig?.apiKey || ttsProviderConfig?.apiKey || undefined,
+                ttsBaseUrl:
+                  effectiveProviderConfig?.serverBaseUrl ||
+                  effectiveProviderConfig?.baseUrl ||
+                  ttsProviderConfig?.serverBaseUrl ||
+                  ttsProviderConfig?.baseUrl ||
+                  undefined,
               }),
               signal,
             });
@@ -763,6 +809,9 @@ function GenerationPreviewContent() {
             if (!ttsData.success) {
               ttsFailCount++;
               continue;
+            }
+            if (ttsData.ttsDebug) {
+              log.info('[TTS Debug]', ttsData.ttsDebug);
             }
             const binary = atob(ttsData.base64);
             const bytes = new Uint8Array(binary.length);

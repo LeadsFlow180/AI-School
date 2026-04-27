@@ -7,11 +7,13 @@ import type {
   PdfImage,
   ImageMapping,
 } from '@/lib/types/generation';
+import type { TutorGenerationConfig } from '@/lib/types/tutor-voice';
 
 // Session state stored in sessionStorage
 export interface GenerationSessionState {
   sessionId: string;
   requirements: UserRequirements;
+  tutorConfig?: TutorGenerationConfig;
   pdfText: string;
   pdfImages?: PdfImage[];
   imageStorageIds?: string[];

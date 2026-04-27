@@ -24,6 +24,10 @@ export function resolveAgentVoice(
       return agent.voiceConfig;
     }
     const list = getServerVoiceList(agent.voiceConfig.providerId);
+    // Custom providers (e.g. cloned tutor voices) may not exist in static TTS_PROVIDERS.
+    if (list.length === 0) {
+      return agent.voiceConfig;
+    }
     if (list.includes(agent.voiceConfig.voiceId)) {
       return agent.voiceConfig;
     }

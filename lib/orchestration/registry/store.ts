@@ -242,11 +242,22 @@ export const useAgentRegistry = create<AgentRegistryState>()(
         const persistedAgents = (persisted?.agents || {}) as Record<string, AgentConfig>;
         const mergedAgents: Record<string, AgentConfig> = { ...DEFAULT_AGENTS };
 
-        // Only preserve non-default, non-generated (custom) agents from cache
-        // Generated agents are loaded on-demand from IndexedDB per stage
+        // Preserve user customizations for default agents (e.g. tutor name/avatar/voiceConfig),
+        // and preserve non-default custom agents from cache.
+        // Generated agents are loaded on-demand from IndexedDB per stage.
         for (const [id, agent] of Object.entries(persistedAgents)) {
           const agentConfig = agent as AgentConfig;
-          if (!id.startsWith('default-') && !agentConfig.isGenerated) {
+          if (agentConfig.isGenerated) continue;
+          if (id.startsWith('default-') && DEFAULT_AGENTS[id]) {
+            mergedAgents[id] = {
+              ...DEFAULT_AGENTS[id],
+              ...agentConfig,
+              id,
+              isDefault: true,
+            };
+            continue;
+          }
+          if (!id.startsWith('default-')) {
             mergedAgents[id] = agentConfig;
           }
         }

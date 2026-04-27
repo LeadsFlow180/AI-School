@@ -99,6 +99,153 @@ import { TTS_PROVIDERS } from './constants';
 export interface TTSGenerationResult {
   audio: Uint8Array;
   format: string;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface ClonedTutorSynthesizeConfig {
+  apiUrl: string;
+  apiKey?: string;
+  referenceUrl: string;
+  speed?: number;
+  language?: string;
+}
+
+function joinUrl(base: string, path: string): string {
+  const normalizedBase = base.endsWith('/') ? base.slice(0, -1) : base;
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return `${normalizedBase}${normalizedPath}`;
+}
+
+function parseDataUrl(dataUrl: string): { mimeType: string; bytes: Uint8Array } {
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) {
+    throw new Error('Synthesize response audioUrl is not a valid base64 data URL.');
+  }
+  const mimeType = match[1] || 'audio/wav';
+  const base64 = match[2] || '';
+  const buffer = Buffer.from(base64, 'base64');
+  return { mimeType, bytes: new Uint8Array(buffer) };
+}
+
+function getFormatFromMime(mimeType: string): string {
+  if (mimeType.includes('wav')) return 'wav';
+  if (mimeType.includes('mp3') || mimeType.includes('mpeg')) return 'mp3';
+  if (mimeType.includes('ogg')) return 'ogg';
+  return 'wav';
+}
+
+export async function generateClonedTutorTTS(
+  config: ClonedTutorSynthesizeConfig,
+  text: string,
+): Promise<TTSGenerationResult> {
+  const payloadBody = JSON.stringify({
+    text,
+    referenceUrl: config.referenceUrl,
+    language: config.language || process.env.VOICE_CLONE_DEFAULT_LANGUAGE || 'en',
+    emotion: process.env.VOICE_CLONE_DEFAULT_EMOTION || 'neutral',
+    emotion_intensity: Number(process.env.VOICE_CLONE_DEFAULT_EMOTION_INTENSITY || 5),
+    speed: config.speed ?? 1.0,
+    pitch: Number(process.env.VOICE_CLONE_DEFAULT_PITCH || 0),
+    energy_level: Number(process.env.VOICE_CLONE_DEFAULT_ENERGY_LEVEL || 5),
+    expressions_already_added: true,
+    personality: {
+      dominant_trait: process.env.VOICE_CLONE_PERSONALITY_TRAIT || 'friendly',
+      all_traits: [process.env.VOICE_CLONE_PERSONALITY_TRAIT || 'friendly'],
+      speaking_style: process.env.VOICE_CLONE_PERSONALITY_STYLE || 'conversational',
+      intensity: Number(process.env.VOICE_CLONE_PERSONALITY_INTENSITY || 5),
+    },
+  });
+  const candidateUrls = Array.from(
+    new Set([
+      config.apiUrl,
+      config.apiUrl.endsWith('/') ? config.apiUrl.slice(0, -1) : `${config.apiUrl}/`,
+      config.apiUrl.endsWith('/synthesize')
+        ? `${config.apiUrl}/`
+        : joinUrl(config.apiUrl, '/synthesize'),
+    ]),
+  ).filter(Boolean);
+
+  let response: Response | null = null;
+  let textBody = '';
+  let attemptedUrl = config.apiUrl;
+  for (const url of candidateUrls) {
+    attemptedUrl = url;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+      },
+      body: payloadBody,
+    });
+    const body = await res.text();
+    response = res;
+    textBody = body;
+    if (res.ok) break;
+    // Retry on common route-shape mismatch statuses.
+    if (res.status !== 404 && res.status !== 405 && res.status !== 308 && res.status !== 307) {
+      break;
+    }
+  }
+
+  if (!response) {
+    throw new Error('Custom voice synthesize request failed: no response received.');
+  }
+
+  let payload: {
+    success?: boolean;
+    data?: { audioUrl?: string };
+    metadata?: Record<string, unknown>;
+    error?: string;
+  } = {};
+  try {
+    payload = textBody ? (JSON.parse(textBody) as typeof payload) : {};
+  } catch {
+    payload = {};
+  }
+
+  if (!response.ok || !payload.success || !payload.data?.audioUrl) {
+    throw new Error(
+      payload.error ||
+        textBody ||
+        `Custom voice synthesize request failed: HTTP ${response.status} at ${attemptedUrl}`,
+    );
+  }
+
+  const audioUrl = payload.data.audioUrl;
+  if (audioUrl.startsWith('data:')) {
+    const { mimeType, bytes } = parseDataUrl(audioUrl);
+    return {
+      audio: bytes,
+      format: getFormatFromMime(mimeType),
+      metadata: payload.metadata || null,
+    };
+  }
+
+  const externalResponse = await fetch(audioUrl);
+  if (!externalResponse.ok) {
+    throw new Error(`Failed to download synthesized audio: HTTP ${externalResponse.status}`);
+  }
+  const arrayBuffer = await externalResponse.arrayBuffer();
+  const mimeType = externalResponse.headers.get('content-type') || 'audio/wav';
+  return {
+    audio: new Uint8Array(arrayBuffer),
+    format: getFormatFromMime(mimeType),
+    metadata: payload.metadata || null,
+  };
+}
+
+export function resolveVoiceCloneSynthesizeUrl(): string {
+  if (process.env.VOICE_CLONE_SYNTHESIZE_URL) {
+    return process.env.VOICE_CLONE_SYNTHESIZE_URL;
+  }
+  if (process.env.VOICE_CLONE_BASE_URL) {
+    return joinUrl(
+      process.env.VOICE_CLONE_BASE_URL,
+      process.env.VOICE_CLONE_SYNTHESIZE_PATH || '/synthesize',
+    );
+  }
+  return '';
 }
 
 /**

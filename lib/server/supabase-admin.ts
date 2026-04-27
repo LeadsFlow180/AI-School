@@ -5,7 +5,8 @@ let adminClient: SupabaseClient | null = null;
 export function getSupabaseAdminClient() {
   if (adminClient) return adminClient;
 
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  // Prefer server-only SUPABASE_URL when available; fallback to NEXT_PUBLIC_ for compatibility.
+  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!url || !serviceRoleKey) {

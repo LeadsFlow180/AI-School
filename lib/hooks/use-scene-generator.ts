@@ -176,6 +176,9 @@ export async function generateAndStoreTTS(
     log.warn('TTS failed for', audioId, ':', err);
     throw err;
   }
+  if (data.ttsDebug) {
+    log.info('[TTS Debug]', data.ttsDebug);
+  }
 
   const binary = atob(data.base64);
   const bytes = new Uint8Array(binary.length);

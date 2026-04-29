@@ -89,6 +89,15 @@ function parseImageDataUrl(input: string): { mimeType: string; bytes: Uint8Array
   return { mimeType, bytes: new Uint8Array(buffer) };
 }
 
+function extractStoragePathFromPublicUrl(url: string, bucket: string): string | null {
+  const marker = `/storage/v1/object/public/${bucket}/`;
+  const idx = url.indexOf(marker);
+  if (idx < 0) return null;
+  const rest = url.slice(idx + marker.length);
+  const clean = rest.split('?')[0] || '';
+  return clean || null;
+}
+
 async function requireAdmin(request: NextRequest) {
   const adminClient = getSupabaseAdminClient();
   if (!adminClient) {
@@ -171,20 +180,19 @@ export async function GET(request: NextRequest) {
   try {
     const adminClient = getSupabaseAdminClient();
     if (!adminClient) {
-      return apiError(
-        API_ERROR_CODES.MISSING_API_KEY,
-        500,
-        'Server missing Supabase admin configuration.',
-      );
+      log.warn('Supabase admin configuration missing for custom tutor voices GET.');
+      return apiSuccess({ voices: [], count: 0, diagnostics: { source: 'missing-admin-config' } });
     }
 
-    const { data, error, count } = await adminClient
+    const { data, error } = await adminClient
       .schema('public')
       .from('custom_tutor_voices')
       .select(
-        'id, name, title, description, provider_id, provider_voice_id, reference_url, avatar, metadata, created_at',
-        { count: 'exact' },
-      );
+        // Keep this list lightweight to avoid statement timeout on large rows
+        // (legacy rows may contain large JSON/data-url fields).
+        'id, name, title, description, provider_id, provider_voice_id, reference_url, avatar, created_at',
+      )
+      .limit(200);
 
     if (error) {
       const dbError = error as DbErrorLike;
@@ -193,12 +201,43 @@ export async function GET(request: NextRequest) {
         log.warn('custom_tutor_voices table not found; returning empty tutor preset list.');
         return apiSuccess({ voices: [] });
       }
-      return apiError(
-        API_ERROR_CODES.INTERNAL_ERROR,
-        500,
-        'Failed to list custom tutor voices.',
-        error.message,
-      );
+      // Timeout fallback: run a minimal fast query so users can still see tutors.
+      const isTimeout =
+        typeof error.message === 'string' && error.message.toLowerCase().includes('statement timeout');
+      if (isTimeout) {
+        log.warn('custom_tutor_voices primary query timed out; using minimal fallback query.');
+        const { data: fallbackData, error: fallbackError } = await adminClient
+          .schema('public')
+          .from('custom_tutor_voices')
+          .select('id, name, provider_id, provider_voice_id, avatar')
+          .limit(100);
+        if (!fallbackError) {
+          const fallbackRows = Array.isArray(fallbackData)
+            ? (fallbackData as Array<Record<string, unknown>>)
+            : [];
+          const fallbackNormalized = fallbackRows
+            .map((row) => ({
+              id: row.id,
+              name: row.name,
+              title: row.name ?? null,
+              description: null,
+              provider_id: row.provider_id ?? 'custom-cloned-tts',
+              provider_voice_id: row.provider_voice_id ?? null,
+              reference_url: null,
+              avatar: row.avatar ?? null,
+              metadata: {},
+              created_at: null,
+            }))
+            .filter((row) => row.id && row.name);
+          return apiSuccess({
+            voices: fallbackNormalized,
+            count: fallbackNormalized.length,
+            diagnostics: { source: 'timeout-fallback' },
+          });
+        }
+      }
+      log.warn(`Failed to list custom tutor voices; returning empty list. ${error.message}`);
+      return apiSuccess({ voices: [], count: 0, diagnostics: { source: 'query-error' } });
     }
 
     const rows = Array.isArray(data) ? (data as Array<Record<string, unknown>>) : [];
@@ -222,19 +261,14 @@ export async function GET(request: NextRequest) {
         return bTs - aTs;
       });
 
-    return apiSuccess({ voices: normalized, count: count ?? normalized.length });
+    return apiSuccess({ voices: normalized, count: normalized.length });
   } catch (error) {
-    log.error(
-      `Failed to load custom tutor voices. ${
+    log.warn(
+      `Failed to load custom tutor voices; returning empty list. ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
-    return apiError(
-      API_ERROR_CODES.INTERNAL_ERROR,
-      500,
-      'Failed to load custom tutor voices.',
-      error instanceof Error ? error.message : String(error),
-    );
+    return apiSuccess({ voices: [], count: 0, diagnostics: { source: 'exception' } });
   }
 }
 
@@ -296,6 +330,7 @@ export async function POST(request: NextRequest) {
       }
     }
     const parsedAvatarDataUrl = avatar ? parseImageDataUrl(avatar) : null;
+    let avatarObjectPath: string | null = null;
     if (parsedAvatarDataUrl) {
       if (parsedAvatarDataUrl.bytes.byteLength > MAX_AVATAR_UPLOAD_BYTES) {
         return apiError(API_ERROR_CODES.INVALID_REQUEST, 400, 'Tutor avatar must be <= 2MB.');
@@ -307,7 +342,7 @@ export async function POST(request: NextRequest) {
           : parsedAvatarDataUrl.mimeType === 'image/webp'
             ? 'webp'
             : 'png';
-      const avatarObjectPath = `${safeUserId}/avatar-${Date.now()}-${crypto.randomUUID()}.${avatarExt}`;
+      avatarObjectPath = `${safeUserId}/avatar-${Date.now()}-${crypto.randomUUID()}.${avatarExt}`;
       const { error: avatarUploadErr } = await auth.adminClient.storage
         .from(AVATAR_BUCKET)
         .upload(avatarObjectPath, parsedAvatarDataUrl.bytes, {
@@ -338,6 +373,12 @@ export async function POST(request: NextRequest) {
                 url: referenceUrl,
               },
             ],
+          }
+        : {}),
+      ...(avatarObjectPath
+        ? {
+            avatarPath: avatarObjectPath,
+            avatarUrl: avatar,
           }
         : {}),
     };
@@ -407,6 +448,104 @@ export async function DELETE(request: NextRequest) {
     const id = request.nextUrl.searchParams.get('id')?.trim() || '';
     if (!id) {
       return apiError(API_ERROR_CODES.MISSING_REQUIRED_FIELD, 400, 'id is required.');
+    }
+
+    const { data: voiceRow, error: selectErr } = await auth.adminClient
+      .from('custom_tutor_voices')
+      .select('reference_url, avatar, metadata, provider_id, provider_voice_id')
+      .eq('id', id)
+      .maybeSingle();
+    if (selectErr) {
+      return apiError(
+        API_ERROR_CODES.INTERNAL_ERROR,
+        500,
+        'Failed to load tutor voice before deletion.',
+        selectErr.message,
+      );
+    }
+    const providerId = voiceRow?.provider_id ? String(voiceRow.provider_id) : '';
+    const providerVoiceId = voiceRow?.provider_voice_id ? String(voiceRow.provider_voice_id) : '';
+
+    // Protect classrooms that are already bound to this tutor preset.
+    const linkedByIdResult = await auth.adminClient
+      .from('classrooms')
+      .select('id', { count: 'exact' })
+      .contains('stage_data', { tutorConfig: { voicePreset: { id } } })
+      .limit(1);
+    if (linkedByIdResult.error) {
+      return apiError(
+        API_ERROR_CODES.INTERNAL_ERROR,
+        500,
+        'Failed to verify tutor usage in classrooms.',
+        linkedByIdResult.error.message,
+      );
+    }
+    let linkedCount = linkedByIdResult.count || 0;
+    if (!linkedCount && providerId && providerVoiceId) {
+      const linkedByVoiceResult = await auth.adminClient
+        .from('classrooms')
+        .select('id', { count: 'exact' })
+        .contains('stage_data', {
+          tutorConfig: { voicePreset: { providerId, voiceId: providerVoiceId } },
+        })
+        .limit(1);
+      if (linkedByVoiceResult.error) {
+        return apiError(
+          API_ERROR_CODES.INTERNAL_ERROR,
+          500,
+          'Failed to verify tutor usage in classrooms.',
+          linkedByVoiceResult.error.message,
+        );
+      }
+      linkedCount = linkedByVoiceResult.count || 0;
+    }
+    if (linkedCount > 0) {
+      return apiError(
+        API_ERROR_CODES.INVALID_REQUEST,
+        409,
+        'Cannot delete tutor because it is associated with existing classrooms.',
+        `linked_classrooms=${linkedCount}`,
+      );
+    }
+
+    const toDeleteByBucket = new Map<string, Set<string>>();
+    const addPath = (bucket: string, path: string | null) => {
+      if (!path) return;
+      if (!toDeleteByBucket.has(bucket)) toDeleteByBucket.set(bucket, new Set());
+      toDeleteByBucket.get(bucket)!.add(path);
+    };
+
+    const metadataObj =
+      voiceRow?.metadata && typeof voiceRow.metadata === 'object'
+        ? (voiceRow.metadata as Record<string, unknown>)
+        : null;
+    const metadataData = Array.isArray(metadataObj?.data)
+      ? (metadataObj?.data as Array<Record<string, unknown>>)
+      : [];
+    for (const item of metadataData) {
+      if (typeof item.path === 'string' && item.path) {
+        addPath(DEFAULT_BUCKET, item.path);
+      }
+    }
+    if (metadataObj?.avatarPath && typeof metadataObj.avatarPath === 'string') {
+      addPath(AVATAR_BUCKET, metadataObj.avatarPath);
+    }
+    if (voiceRow?.reference_url && typeof voiceRow.reference_url === 'string') {
+      addPath(DEFAULT_BUCKET, extractStoragePathFromPublicUrl(voiceRow.reference_url, DEFAULT_BUCKET));
+    }
+    if (voiceRow?.avatar && typeof voiceRow.avatar === 'string') {
+      addPath(AVATAR_BUCKET, extractStoragePathFromPublicUrl(voiceRow.avatar, AVATAR_BUCKET));
+    }
+
+    for (const [bucket, paths] of toDeleteByBucket.entries()) {
+      const list = Array.from(paths);
+      if (list.length === 0) continue;
+      const { error: storageErr } = await auth.adminClient.storage.from(bucket).remove(list);
+      if (storageErr) {
+        log.warn(
+          `Failed to delete one or more tutor assets from bucket "${bucket}" during tutor delete: ${storageErr.message}`,
+        );
+      }
     }
 
     const { error } = await auth.adminClient.from('custom_tutor_voices').delete().eq('id', id);

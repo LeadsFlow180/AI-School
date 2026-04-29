@@ -30,8 +30,44 @@ import { createLogger } from '@/lib/logger';
 import { type GenerationSessionState, ALL_STEPS, getActiveSteps } from './types';
 import type { ProviderId } from '@/lib/ai/providers';
 import { StepVisualizer } from './components/visualizers';
+import { getSessionSafe, getSupabaseClient } from '@/lib/supabase/client';
 
 const log = createLogger('GenerationPreview');
+
+async function uploadSpeechAudio(
+  classroomId: string,
+  audioId: string,
+  blob: Blob,
+): Promise<string | null> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+  const session = await getSessionSafe(supabase);
+  const token = session?.access_token;
+  if (!token) return null;
+
+  const ext = blob.type.includes('wav')
+    ? 'wav'
+    : blob.type.includes('mpeg') || blob.type.includes('mp3')
+      ? 'mp3'
+      : blob.type.includes('ogg')
+        ? 'ogg'
+        : blob.type.includes('webm')
+          ? 'webm'
+          : 'bin';
+  const file = new File([blob], `${audioId}.${ext}`, { type: blob.type || 'audio/mpeg' });
+  const form = new FormData();
+  form.append('file', file);
+  form.append('classroomId', classroomId);
+
+  const res = await fetch('/api/classroom/media-upload', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json?.success || !json?.src) return null;
+  return String(json.src);
+}
 
 function GenerationPreviewContent() {
   const router = useRouter();
@@ -823,6 +859,14 @@ function GenerationPreviewContent() {
               format: ttsData.format,
               createdAt: Date.now(),
             });
+            try {
+              const uploadedUrl = await uploadSpeechAudio(stage.id, audioId, blob);
+              if (uploadedUrl) {
+                action.audioUrl = uploadedUrl;
+              }
+            } catch (uploadErr) {
+              log.warn('[TTS] Failed to upload first-scene speech clip', uploadErr);
+            }
           } catch (err) {
             log.warn(`[TTS] Failed for ${audioId}:`, err);
             ttsFailCount++;

@@ -120,6 +120,25 @@
 - [x] 2026-04-27 - Harden cloned tutor TTS against synth I/O errors by retrying `/api/generate/tts` cloned flow with multiple reference URL candidates (stored URL + rebuilt public URL from metadata path) and auto-uploading `data:audio/...` references to Supabase storage before synth requests.
 - [x] 2026-04-27 - Fix classroom still using default voice by forcing generation-preview first-scene `/api/generate/tts` calls to use `generationSession.tutorConfig.voicePreset` (provider/voice) when available, rather than always using global default TTS settings.
 - [x] 2026-04-27 - Fix prompt-generation tutor carryover by deriving `tutorConfig` from the currently selected teacher agent (name/avatar/voiceConfig) when form preset id is missing; prevents fallback to default tutor voice after selecting tutor in Presenter list.
+- [x] 2026-04-15 - Replace system `window.confirm` for dynamic tutor deletion with themed in-app `AlertDialog` confirmation in Presenter panel.
+- [x] 2026-04-28 - Make Gamma generation use the currently selected tutor voice by persisting stage `tutorConfig` and pre-generating speech audio via `/api/generate/tts` (cloned tutors route to `/synthesize`).
+- [x] 2026-04-28 - Replace static default character names shown in Chinese with English labels across registry defaults and i18n fallback names, including persisted-state normalization.
+- [x] 2026-04-28 - Improve cross-browser tutor persistence by adding server-sync fallback for classroom DB writes and restoring Home tutor/voice/avatar from the latest DB classroom `stage_data.tutorConfig`.
+- [x] 2026-04-28 - Persist admin-selected tutor preference in DB-backed auth metadata and restore/apply it on Home/Presenter so name/avatar/voice stay consistent across browsers/tabs.
+- [x] 2026-04-28 - Keep public/no-login classroom tutor identity consistent by preventing i18n override of customized default-agent names and force-applying saved `stage.tutorConfig` onto teacher + `default-1` on classroom load.
+- [x] 2026-04-28 - Fix new-tab default tutor regression by preferring server classroom snapshot when local cache lacks `tutorConfig`, and prevent chat sender-name fallback from overriding custom tutor names with static i18n defaults.
+- [x] 2026-04-29 - Fix mute speaker in new tabs by adding playback-time TTS regeneration fallback when IndexedDB audio blobs are missing, caching regenerated clips locally and replaying immediately.
+- [x] 2026-04-29 - Persist generated speech tracks to Supabase Storage (audio upload via `/api/classroom/media-upload`) and write `speechAction.audioUrl` into saved scenes so cross-browser playback works without local IndexedDB audio cache.
+- [x] 2026-04-29 - Add classroom-load speech hydration fallback: regenerate missing speech clips to `audioUrl`/`audioId` via `/api/generate/tts` when opening in a new tab/browser with empty local audio cache.
+- [x] 2026-04-29 - Persist hydrated speech `audioUrl` back to classroom storage/DB after regeneration so future browser changes reuse saved audio tracks and avoid repeating synth for the same content.
+- [x] 2026-04-29 - Add `audioHydratedAt` stage marker when speech clips are regenerated and persisted, so DB write-back can be verified in stored classroom payloads.
+- [x] 2026-04-29 - Prefer server classroom snapshot when it contains more persisted speech `audioUrl` actions than local cache, preventing new-tab playback from falling back to runtime TTS requests.
+- [x] 2026-04-29 - Make playback DB-first for speech audio: build cached `actionId -> audioUrl` index from `/api/classroom` and use stored URLs before any runtime TTS regeneration.
+- [x] 2026-04-29 - Reduce Supabase `ERR_CONNECTION_RESET` impact by replacing client-side `admin_users` verification with server `/api/auth/admin-status` check and adding local logout fallback when global revoke fails.
+- [x] 2026-04-29 - Fix `431 Request Header Fields Too Large` / admin-status resets by switching to POST token body + `credentials: omit` and using local-only sign out to avoid failing Supabase global logout requests.
+- [x] 2026-04-29 - Harden auth-card login flow against 400/401 cascades: normalize email to lowercase, fallback to `getSessionSafe` for token retrieval, and clear local Supabase auth storage instead of network signout on admin-check failures.
+- [x] 2026-04-29 - Reduce admin-status 401 noise by returning `200` with `isAdmin: false` for missing/invalid tokens, keeping background auth checks non-disruptive while preserving access control.
+- [x] 2026-04-29 - Bypass unstable localhost admin-status checks in client auth flow by verifying `admin_users` directly via Supabase with retry/backoff on both auth card and home auth sync.
 
 ## Discovered During Work
 
@@ -158,5 +177,6 @@
 - [x] 2026-04-10 - Improve Gamma slide narration quality to match simple-prompt teaching style (stronger prompts, language-aware scripts, 3 lines per slide).
 - [x] 2026-04-10 - Expand Gamma narration coverage to better explain full slide content (longer extracted text + 4-6 script lines + dynamic speech actions).
 - [x] 2026-04-10 - Persist Gamma-generated classrooms to Supabase explicitly at creation time (in addition to store save sync).
+- [x] 2026-04-28 - Improve dynamic tutor loading UX by preloading tutors once on page load and avoiding repeated fetches on each presenter modal open; only retry fetch on open if initial preload failed.
 - [ ] Replace in-memory vector store with persistent vector DB for production.
 - [ ] Add RAG source citation rendering in chat and generated lesson scenes.

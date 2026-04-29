@@ -51,9 +51,33 @@ export async function syncClassroomToSupabase(input: {
   };
 
   const { error } = await supabase.from('classrooms').upsert(payload, { onConflict: 'id' });
-  if (error) {
-    throw error;
+  if (!error) {
+    console.info(`[ClassroomSync] Synced classroom ${stage.id} to Supabase for user ${userId}.`);
+    return;
   }
 
-  console.info(`[ClassroomSync] Synced classroom ${stage.id} to Supabase for user ${userId}.`);
+  // Reason: browser/network/CORS issues can fail direct Supabase client writes on some devices.
+  // Fallback to server sync route so tutorConfig/voice/avatar still reaches DB reliably.
+  const session = await getSessionSafe(supabase);
+  const token = session?.access_token;
+  if (!token) {
+    throw error;
+  }
+  const fallbackRes = await fetch('/api/classroom/sync', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      stage,
+      scenes,
+      chats,
+    }),
+  });
+  const fallbackJson = await fallbackRes.json().catch(() => ({}));
+  if (!fallbackRes.ok || !fallbackJson?.success) {
+    throw error;
+  }
+  console.info(`[ClassroomSync] Synced classroom ${stage.id} through server fallback.`);
 }

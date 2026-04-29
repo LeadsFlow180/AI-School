@@ -38,6 +38,7 @@ import { ActionEngine } from '@/lib/action/engine';
 import { useCanvasStore } from '@/lib/store/canvas';
 import { useSettingsStore } from '@/lib/store/settings';
 import { createLogger } from '@/lib/logger';
+import { db } from '@/lib/utils/database';
 
 const log = createLogger('PlaybackEngine');
 
@@ -82,6 +83,9 @@ export class PlaybackEngine {
   private browserTTSChunkIndex: number = 0; // current chunk being spoken
   private browserTTSPausedChunks: string[] = []; // remaining chunks saved on pause (for cancel+re-speak)
   private speechTimerRemaining: number = 0; // remaining ms (set on pause)
+  private classroomAudioUrlIndex: Map<string, string> | null = null;
+  private classroomAudioIndexStageId: string | null = null;
+  private classroomAudioIndexPromise: Promise<void> | null = null;
 
   constructor(
     scenes: Scene[],
@@ -490,10 +494,125 @@ export class PlaybackEngine {
           }, readingMs);
         };
 
+        const tryHydrateSpeechAudioFromClassroomDb = async (): Promise<boolean> => {
+          const currentScene = this.scenes[this.sceneIndex];
+          const stageId = currentScene?.stageId;
+          if (!stageId) return false;
+
+          // Load and cache classroom-level speech audio URLs once per stage.
+          if (this.classroomAudioIndexStageId !== stageId || !this.classroomAudioUrlIndex) {
+            if (!this.classroomAudioIndexPromise) {
+              this.classroomAudioIndexPromise = (async () => {
+                try {
+                  const res = await fetch(`/api/classroom?id=${encodeURIComponent(stageId)}`, {
+                    cache: 'no-store',
+                  });
+                  const json = await res.json().catch(() => ({}));
+                  if (!res.ok || !json?.success || !json?.classroom?.scenes) {
+                    this.classroomAudioUrlIndex = new Map();
+                    this.classroomAudioIndexStageId = stageId;
+                    return;
+                  }
+                  const scenes = json.classroom.scenes as Array<{
+                    actions?: Array<{ id?: string; type?: string; audioUrl?: string }>;
+                  }>;
+                  const index = new Map<string, string>();
+                  for (const s of scenes) {
+                    const actions = s.actions || [];
+                    for (const a of actions) {
+                      if (
+                        a.type === 'speech' &&
+                        typeof a.id === 'string' &&
+                        typeof a.audioUrl === 'string' &&
+                        a.audioUrl.trim().length > 0
+                      ) {
+                        index.set(a.id, a.audioUrl);
+                      }
+                    }
+                  }
+                  this.classroomAudioUrlIndex = index;
+                  this.classroomAudioIndexStageId = stageId;
+                } catch {
+                  this.classroomAudioUrlIndex = new Map();
+                  this.classroomAudioIndexStageId = stageId;
+                } finally {
+                  this.classroomAudioIndexPromise = null;
+                }
+              })();
+            }
+            await this.classroomAudioIndexPromise;
+          }
+
+          const foundUrl = this.classroomAudioUrlIndex?.get(speechAction.id);
+          if (!foundUrl) return false;
+          speechAction.audioUrl = foundUrl;
+          return true;
+        };
+
+        const tryRegenerateSpeechAudio = async (): Promise<boolean> => {
+          const settings = useSettingsStore.getState();
+          if (!settings.ttsEnabled || settings.ttsProviderId === 'browser-native-tts') return false;
+          if (!speechAction.text?.trim()) return false;
+          const audioId = speechAction.audioId || `tts_${speechAction.id}`;
+          const providerConfig = settings.ttsProvidersConfig?.[settings.ttsProviderId];
+          try {
+            const resp = await fetch('/api/generate/tts', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                text: speechAction.text,
+                audioId,
+                ttsProviderId: settings.ttsProviderId,
+                ttsVoice: settings.ttsVoice,
+                ttsSpeed: settings.ttsSpeed,
+                ttsApiKey: providerConfig?.apiKey || undefined,
+                ttsBaseUrl: providerConfig?.serverBaseUrl || providerConfig?.baseUrl || undefined,
+              }),
+            });
+            if (!resp.ok) return false;
+            const data = await resp.json();
+            if (!data?.success || !data?.base64 || !data?.format) return false;
+
+            const dataUrl = `data:audio/${data.format};base64,${data.base64}`;
+            speechAction.audioId = audioId;
+            speechAction.audioUrl = dataUrl;
+
+            // Cache locally for this browser session to avoid repeated synth calls.
+            const binary = atob(data.base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            await db.audioFiles.put({
+              id: audioId,
+              blob: new Blob([bytes], { type: `audio/${data.format}` }),
+              format: data.format,
+              createdAt: Date.now(),
+            });
+            return true;
+          } catch {
+            return false;
+          }
+        };
+
         this.audioPlayer
           .play(speechAction.audioId || '', speechAction.audioUrl)
-          .then((audioStarted) => {
+          .then(async (audioStarted) => {
             if (!audioStarted) {
+              const hydratedFromDb = await tryHydrateSpeechAudioFromClassroomDb();
+              if (hydratedFromDb) {
+                const replayedFromDb = await this.audioPlayer.play(
+                  speechAction.audioId || '',
+                  speechAction.audioUrl,
+                );
+                if (replayedFromDb) return;
+              }
+              const regenerated = await tryRegenerateSpeechAudio();
+              if (regenerated) {
+                const replayed = await this.audioPlayer.play(
+                  speechAction.audioId || '',
+                  speechAction.audioUrl,
+                );
+                if (replayed) return;
+              }
               // No pre-generated audio — try browser-native TTS if selected
               const settings = useSettingsStore.getState();
               if (

@@ -146,7 +146,7 @@ export async function generateAndStoreTTS(
   audioId: string,
   text: string,
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<{ blob: Blob; format: string }> {
   const settings = useSettingsStore.getState();
   if (settings.ttsProviderId === 'browser-native-tts') return;
 
@@ -192,6 +192,44 @@ export async function generateAndStoreTTS(
     format: data.format,
     createdAt: Date.now(),
   });
+  return { blob, format: data.format };
+}
+
+async function uploadSpeechAudioForScene(
+  classroomId: string,
+  audioId: string,
+  blob: Blob,
+): Promise<string | null> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+  const session = await getSessionSafe(supabase);
+  const token = session?.access_token;
+  if (!token) return null;
+
+  const ext = blob.type.includes('wav')
+    ? 'wav'
+    : blob.type.includes('mpeg') || blob.type.includes('mp3')
+      ? 'mp3'
+      : blob.type.includes('ogg')
+        ? 'ogg'
+        : blob.type.includes('webm')
+          ? 'webm'
+          : 'bin';
+  const file = new File([blob], `${audioId}.${ext}`, { type: blob.type || 'audio/mpeg' });
+  const form = new FormData();
+  form.append('file', file);
+  form.append('classroomId', classroomId);
+
+  const res = await fetch('/api/classroom/media-upload', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: form,
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json?.success || !json?.src) return null;
+  return String(json.src);
 }
 
 /** Generate TTS for all speech actions in a scene. Returns result. */
@@ -213,7 +251,19 @@ async function generateTTSForScene(
     const audioId = `tts_${action.id}`;
     action.audioId = audioId;
     try {
-      await generateAndStoreTTS(audioId, action.text, signal);
+      const { blob } = await generateAndStoreTTS(audioId, action.text, signal);
+      try {
+        const uploadedUrl = await uploadSpeechAudioForScene(scene.stageId, audioId, blob);
+        if (uploadedUrl) {
+          action.audioUrl = uploadedUrl;
+        }
+      } catch (uploadErr) {
+        log.warn('Failed to upload scene speech audio; keeping local cache only.', {
+          stageId: scene.stageId,
+          audioId,
+          error: uploadErr instanceof Error ? uploadErr.message : String(uploadErr),
+        });
+      }
     } catch (error) {
       failedCount++;
       lastError = error instanceof Error ? error.message : `TTS failed for action ${action.id}`;

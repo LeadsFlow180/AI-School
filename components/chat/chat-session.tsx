@@ -300,8 +300,20 @@ export function ChatSessionComponent({
                   {(() => {
                     const agentId = message.metadata?.agentId;
                     if (agentId) {
+                      const senderName = message.metadata?.senderName;
+                      const i18nKey = `settings.agentNames.${agentId}`;
                       const i18nName = t(`settings.agentNames.${agentId}`);
-                      if (i18nName !== `settings.agentNames.${agentId}`) return i18nName;
+                      // Reason: keep classroom-specific tutor names (DB saved) instead of
+                      // overriding them with static translated defaults.
+                      if (
+                        senderName &&
+                        senderName.trim().length > 0 &&
+                        i18nName !== i18nKey &&
+                        senderName !== i18nName
+                      ) {
+                        return senderName;
+                      }
+                      if (i18nName !== i18nKey) return i18nName;
                     }
                     return message.metadata?.senderName || t('chat.unknown');
                   })()}

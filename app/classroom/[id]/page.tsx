@@ -18,6 +18,7 @@ import { ClassroomTourOverlay } from '@/components/stage/classroom-tour-overlay'
 import type { Scene } from '@/lib/types/stage';
 import type { Action } from '@/lib/types/action';
 import type { Slide } from '@/lib/types/slides';
+import { db } from '@/lib/utils/database';
 
 const log = createLogger('Classroom');
 const MIN_LOADING_SCENE_MS = 3400;
@@ -61,6 +62,36 @@ function getStageFreshness(stage: Stage | null, scenes: Scene[]): number {
   const stageUpdated = typeof stage?.updatedAt === 'number' ? stage.updatedAt : 0;
   const sceneUpdated = scenes.reduce((max, s) => Math.max(max, s.updatedAt || 0), 0);
   return Math.max(stageUpdated, sceneUpdated);
+}
+
+function hasTutorConfig(stage: Stage | null): boolean {
+  const maybe = stage as
+    | (Stage & {
+        tutorConfig?: {
+          voicePreset?: { providerId?: string; voiceId?: string };
+        };
+      })
+    | null;
+  return !!(
+    maybe?.tutorConfig?.voicePreset?.providerId &&
+    maybe?.tutorConfig?.voicePreset?.voiceId
+  );
+}
+
+function countSpeechAudioUrls(scenes: Scene[]): number {
+  let count = 0;
+  for (const scene of scenes) {
+    const actions = scene.actions || [];
+    for (const action of actions) {
+      if (action.type === 'speech') {
+        const speech = action as Action & { audioUrl?: string };
+        if (typeof speech.audioUrl === 'string' && speech.audioUrl.trim().length > 0) {
+          count++;
+        }
+      }
+    }
+  }
+  return count;
 }
 
 function ensureGammaSpeechActions(scene: Scene): Scene {
@@ -444,7 +475,16 @@ export default function ClassroomDetailPage() {
             const serverStage = serverJson.classroom.stage as Stage;
             const serverScenes = (serverJson.classroom.scenes || []) as Scene[];
             const serverFreshness = getStageFreshness(serverStage, serverScenes);
-            if (serverFreshness >= localFreshness) {
+            const localAudioCount = countSpeechAudioUrls(localScenes);
+            const serverAudioCount = countSpeechAudioUrls(serverScenes);
+            const preferServerTutorSnapshot =
+              !hasTutorConfig(localStage) && hasTutorConfig(serverStage);
+            const preferServerAudioSnapshot = serverAudioCount > localAudioCount;
+            if (
+              serverFreshness >= localFreshness ||
+              preferServerTutorSnapshot ||
+              preferServerAudioSnapshot
+            ) {
               useStageStore.getState().setStage(serverStage);
               useStageStore.setState({
                 scenes: serverScenes,
@@ -599,7 +639,7 @@ export default function ClassroomDetailPage() {
         const settingsState = useSettingsStore.getState();
         const teacherId =
           selectedIds.find((id) => registry.getAgent(id)?.role === 'teacher') || selectedIds[0] || 'default-1';
-        registry.updateAgent(teacherId, {
+        const tutorUpdates = {
           ...(tutorCfg.name ? { name: tutorCfg.name } : {}),
           ...(tutorCfg.avatar ? { avatar: tutorCfg.avatar } : {}),
           ...(tutorCfg.voicePreset
@@ -610,7 +650,20 @@ export default function ClassroomDetailPage() {
                 },
               }
             : {}),
+        };
+        // Reason: keep tutor identity consistent even if selected presenter list
+        // was restored without teacher as first id (public/no-login flow).
+        if (!selectedIds.includes('default-1')) {
+          settingsState.setSelectedAgentIds(['default-1', ...selectedIds]);
+        }
+        registry.updateAgent(teacherId, {
+          ...tutorUpdates,
         });
+        if (teacherId !== 'default-1') {
+          registry.updateAgent('default-1', {
+            ...tutorUpdates,
+          });
+        }
         if (tutorCfg.voicePreset?.providerId && tutorCfg.voicePreset?.voiceId) {
           settingsState.setTTSProvider(
             tutorCfg.voicePreset.providerId as import('@/lib/audio/types').TTSProviderId,
@@ -618,6 +671,100 @@ export default function ClassroomDetailPage() {
           settingsState.setTTSVoice(tutorCfg.voicePreset.voiceId);
         }
       }
+
+      // New-tab resilience: hydrate missing speech audio in background so
+      // classroom loading UI is never blocked by TTS network calls.
+      void (async () => {
+        try {
+          const settingsState = useSettingsStore.getState();
+          if (settingsState.ttsEnabled && settingsState.ttsProviderId !== 'browser-native-tts') {
+            const scenesToHydrate = useStageStore.getState().scenes || [];
+            const providerConfig = settingsState.ttsProvidersConfig?.[settingsState.ttsProviderId];
+            let hydratedAny = false;
+            let hydratedCount = 0;
+            const MAX_HYDRATE_ACTIONS = 8;
+
+            for (const scene of scenesToHydrate) {
+              if (!Array.isArray(scene.actions) || scene.actions.length === 0) continue;
+              for (const action of scene.actions) {
+                if (hydratedCount >= MAX_HYDRATE_ACTIONS) break;
+                if (action.type !== 'speech' || !action.text?.trim()) continue;
+                const speechAction = action as Action & {
+                  type: 'speech';
+                  text: string;
+                  audioId?: string;
+                  audioUrl?: string;
+                };
+                if (speechAction.audioUrl?.trim()) continue;
+                const audioId = speechAction.audioId || `tts_${speechAction.id}`;
+                speechAction.audioId = audioId;
+                const existing = await db.audioFiles.get(audioId);
+                if (existing) continue;
+
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 6000);
+                const ttsResp = await fetch('/api/generate/tts', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    text: speechAction.text,
+                    audioId,
+                    ttsProviderId: settingsState.ttsProviderId,
+                    ttsVoice: settingsState.ttsVoice,
+                    ttsSpeed: settingsState.ttsSpeed,
+                    ttsApiKey: providerConfig?.apiKey || undefined,
+                    ttsBaseUrl: providerConfig?.serverBaseUrl || providerConfig?.baseUrl || undefined,
+                  }),
+                  signal: controller.signal,
+                }).catch(() => null);
+                clearTimeout(timeout);
+                if (!ttsResp?.ok) continue;
+                const ttsJson = await ttsResp.json().catch(() => ({}));
+                if (!ttsJson?.success || !ttsJson?.base64 || !ttsJson?.format) continue;
+                speechAction.audioUrl = `data:audio/${ttsJson.format};base64,${ttsJson.base64}`;
+                try {
+                  const binary = atob(ttsJson.base64);
+                  const bytes = new Uint8Array(binary.length);
+                  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                  await db.audioFiles.put({
+                    id: audioId,
+                    blob: new Blob([bytes], { type: `audio/${ttsJson.format}` }),
+                    format: ttsJson.format,
+                    createdAt: Date.now(),
+                  });
+                } catch {
+                  // keep audioUrl even if local cache put fails
+                }
+                hydratedAny = true;
+                hydratedCount++;
+              }
+              if (hydratedCount >= MAX_HYDRATE_ACTIONS) break;
+            }
+
+            if (hydratedAny) {
+              useStageStore.setState({ scenes: [...scenesToHydrate] });
+              // Persist regenerated speech audio URLs so future browser/tab loads
+              // read them directly from DB instead of re-generating repeatedly.
+              try {
+                const currentStage = useStageStore.getState().stage as
+                  | (Stage & { audioHydratedAt?: number })
+                  | null;
+                if (currentStage) {
+                  useStageStore.getState().setStage({
+                    ...currentStage,
+                    audioHydratedAt: Date.now(),
+                  });
+                }
+                await useStageStore.getState().saveToStorage();
+              } catch (persistErr) {
+                log.warn('Failed to persist hydrated speech audio URLs:', persistErr);
+              }
+            }
+          }
+        } catch (speechHydrateErr) {
+          log.warn('Failed to hydrate classroom speech audio on load:', speechHydrateErr);
+        }
+      })();
     } catch (error) {
       log.error('Failed to load classroom:', error);
       setError(error instanceof Error ? error.message : 'Failed to load classroom');

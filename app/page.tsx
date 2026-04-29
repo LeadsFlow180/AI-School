@@ -62,6 +62,7 @@ import type { QuizQuestion, Scene, Stage } from '@/lib/types/stage';
 import type { Action } from '@/lib/types/action';
 import type { TutorVoicePreset } from '@/lib/types/tutor-voice';
 import type { TTSProviderId } from '@/lib/audio/types';
+import { db } from '@/lib/utils/database';
 
 const log = createLogger('Home');
 
@@ -72,6 +73,41 @@ const RECENT_OPEN_STORAGE_KEY = 'recentClassroomsOpen';
 const REQUIREMENT_DRAFT_STORAGE_KEY = 'requirementDraft';
 const MAX_TUTOR_AVATAR_UPLOAD_BYTES = 2 * 1024 * 1024;
 const MAX_TUTOR_REFERENCE_AUDIO_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+async function uploadSpeechAudioForClassroom(
+  classroomId: string,
+  audioId: string,
+  blob: Blob,
+): Promise<string | null> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+  const session = await getSessionSafe(supabase);
+  const token = session?.access_token;
+  if (!token) return null;
+
+  const ext = blob.type.includes('wav')
+    ? 'wav'
+    : blob.type.includes('mpeg') || blob.type.includes('mp3')
+      ? 'mp3'
+      : blob.type.includes('ogg')
+        ? 'ogg'
+        : blob.type.includes('webm')
+          ? 'webm'
+          : 'bin';
+  const file = new File([blob], `${audioId}.${ext}`, { type: blob.type || 'audio/mpeg' });
+  const form = new FormData();
+  form.append('file', file);
+  form.append('classroomId', classroomId);
+
+  const res = await fetch('/api/classroom/media-upload', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json?.success || !json?.src) return null;
+  return String(json.src);
+}
 
 interface FormState {
   pdfFile: File | null;
@@ -556,15 +592,22 @@ function HomePage() {
   const classroomsLoadSeqRef = useRef(0);
   const RECENTS_PER_PAGE = 8;
 
-  const verifyAdminStatus = async (accessToken: string) => {
-    const res = await fetch('/api/auth/admin-status', {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-    });
-    if (!res.ok) return false;
-    const json = await res.json();
-    return !!json?.success && !!json?.isAdmin;
+  const verifyAdminStatus = async (_accessToken: string) => {
+    const supabase = getSupabaseClient();
+    if (!supabase) return false;
+    const session = await getSessionSafe(supabase);
+    const userId = session?.user?.id;
+    if (!userId) return false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { data, error } = await supabase
+        .from('admin_users')
+        .select('user_id')
+        .eq('user_id', userId)
+        .maybeSingle();
+      if (!error) return !!data;
+      await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+    }
+    return false;
   };
 
   const updateAgent = useAgentRegistry((s) => s.updateAgent);
@@ -673,6 +716,130 @@ function HomePage() {
     }
   }, [isAuthenticated, isAdminUser]);
 
+  const savePreferredTutorToDb = useCallback(
+    async (preferredTutor: TutorVoicePreset | null) => {
+      const supabase = getSupabaseClient();
+      if (!supabase || !isAuthenticated || !isAdminUser) return;
+      const session = await getSessionSafe(supabase);
+      const token = session?.access_token;
+      if (!token) return;
+      await fetch('/api/admin/tutor-preference', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          preferredTutor: preferredTutor
+            ? {
+                id: preferredTutor.id,
+                name: preferredTutor.name,
+                title: preferredTutor.title,
+                description: preferredTutor.description,
+                avatar: preferredTutor.avatar,
+                providerId: preferredTutor.providerId,
+                providerVoiceId: preferredTutor.providerVoiceId,
+              }
+            : null,
+        }),
+      });
+    },
+    [isAuthenticated, isAdminUser],
+  );
+
+  const loadPreferredTutorFromDb = useCallback(async () => {
+    const supabase = getSupabaseClient();
+    if (!supabase || !isAuthenticated || !isAdminUser) return null;
+    const session = await getSessionSafe(supabase);
+    const token = session?.access_token;
+    if (!token) return null;
+    const res = await fetch('/api/admin/tutor-preference', {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json?.success || !json?.preferredTutor) return null;
+    const preferred = json.preferredTutor as Record<string, unknown>;
+    const providerId = String(preferred.providerId || '');
+    const providerVoiceId = String(preferred.providerVoiceId || '');
+    if (!providerId || !providerVoiceId) return null;
+    return {
+      id: String(preferred.id || `${providerId}::${providerVoiceId}`),
+      name: String(preferred.name || preferred.title || 'AI Tutor'),
+      title: String(preferred.title || preferred.name || 'AI Tutor'),
+      description:
+        preferred.description !== undefined && preferred.description !== null
+          ? String(preferred.description)
+          : null,
+      providerId,
+      providerVoiceId,
+      referenceUrl: null,
+      avatar:
+        preferred.avatar !== undefined && preferred.avatar !== null ? String(preferred.avatar) : null,
+    } as TutorVoicePreset;
+  }, [isAuthenticated, isAdminUser]);
+
+  const loadTutorPreferenceFromLatestClassroom = useCallback(async () => {
+    const supabase = getSupabaseClient();
+    if (!supabase || !isAuthenticated || !isAdminUser) return;
+    try {
+      const session = await getSessionSafe(supabase);
+      const userId = session?.user?.id;
+      if (!userId) return;
+
+      const { data, error } = await supabase
+        .from('classrooms')
+        .select('stage_data, updated_at')
+        .eq('user_id', userId)
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error || !data?.stage_data) return;
+
+      const stageData = data.stage_data as
+        | {
+            tutorConfig?: {
+              name?: string;
+              avatar?: string;
+              description?: string;
+              voicePreset?: {
+                id?: string;
+                name?: string;
+                providerId?: string;
+                voiceId?: string;
+              };
+            };
+          }
+        | undefined;
+      const tutor = stageData?.tutorConfig;
+      const voicePreset = tutor?.voicePreset;
+      if (!voicePreset?.providerId || !voicePreset?.voiceId) return;
+
+      const asPreset: TutorVoicePreset = {
+        id: voicePreset.id || `${voicePreset.providerId}::${voicePreset.voiceId}`,
+        name: tutor?.name || voicePreset.name || 'AI Tutor',
+        title: tutor?.name || voicePreset.name || 'AI Tutor',
+        description: tutor?.description || null,
+        providerId: voicePreset.providerId,
+        providerVoiceId: voicePreset.voiceId,
+        referenceUrl: null,
+        avatar: tutor?.avatar || null,
+      };
+
+      setForm((prev) => ({
+        ...prev,
+        tutorName: asPreset.name || prev.tutorName,
+        tutorTitle: asPreset.title || prev.tutorTitle,
+        tutorDescription: asPreset.description || prev.tutorDescription,
+        tutorAvatar: asPreset.avatar || prev.tutorAvatar,
+        tutorVoicePresetId: asPreset.id,
+      }));
+      applyTutorToPresenters(asPreset);
+    } catch (err) {
+      log.warn('Failed to restore tutor preference from latest classroom.', err);
+    }
+  }, [applyTutorToPresenters, isAuthenticated, isAdminUser]);
+
   const handleCreateCustomVoice = useCallback(async () => {
     if (!form.tutorName.trim() || !form.tutorVoiceReferenceUrl.trim()) {
       toast.error('Tutor name and uploaded reference audio are required.');
@@ -749,6 +916,7 @@ function HomePage() {
           tutorAvatar: createdVoice.avatar || prev.tutorAvatar,
         }));
         applyTutorToPresenters(createdVoice);
+        void savePreferredTutorToDb(createdVoice);
       } else {
         applyTutorToPresenters();
       }
@@ -759,7 +927,7 @@ function HomePage() {
     } finally {
       setIsCreatingVoice(false);
     }
-  }, [applyTutorToPresenters, form, loadCustomVoices]);
+  }, [applyTutorToPresenters, form, loadCustomVoices, savePreferredTutorToDb]);
 
   const handleTutorAvatarUpload = useCallback((file: File | null) => {
     if (!file) return;
@@ -1147,8 +1315,30 @@ function HomePage() {
 
   useEffect(() => {
     if (!authReady) return;
-    void loadCustomVoices();
-  }, [authReady, loadCustomVoices]);
+    void (async () => {
+      await loadCustomVoices();
+      const preferredTutor = await loadPreferredTutorFromDb();
+      if (preferredTutor) {
+        setForm((prev) => ({
+          ...prev,
+          tutorName: preferredTutor.name || prev.tutorName,
+          tutorTitle: preferredTutor.title || prev.tutorTitle,
+          tutorDescription: preferredTutor.description || prev.tutorDescription,
+          tutorAvatar: preferredTutor.avatar || prev.tutorAvatar,
+          tutorVoicePresetId: preferredTutor.id,
+        }));
+        applyTutorToPresenters(preferredTutor);
+        return;
+      }
+      await loadTutorPreferenceFromLatestClassroom();
+    })();
+  }, [
+    authReady,
+    loadCustomVoices,
+    loadPreferredTutorFromDb,
+    loadTutorPreferenceFromLatestClassroom,
+    applyTutorToPresenters,
+  ]);
 
   useEffect(() => {
     if (!authReady) return;
@@ -1424,9 +1614,39 @@ function HomePage() {
 
       if (last.status === 'completed' && last.gammaUrl) {
         if (gammaRunRef.current !== runId) return;
+        const settings = useSettingsStore.getState();
+        const selectedTeacherAgent =
+          selectedAgentIds
+            .map((id) => getAgent(id))
+            .find((agent) => agent?.role === 'teacher') || getAgent('default-1');
+        const teacherVoiceConfig = selectedTeacherAgent?.voiceConfig;
+        const selectedVoicePreset =
+          customVoices.find((v) => v.id === form.tutorVoicePresetId) ||
+          customVoices.find(
+            (v) =>
+              v.providerId === teacherVoiceConfig?.providerId &&
+              v.providerVoiceId === teacherVoiceConfig?.voiceId,
+          );
+        if (selectedVoicePreset) {
+          applyTutorToPresenters(selectedVoicePreset);
+        } else {
+          applyTutorToPresenters();
+        }
         const now = Date.now();
         const stageId = nanoid(10);
-        const stage: Stage = {
+        const stage: Stage & {
+          tutorConfig?: {
+            name: string;
+            avatar: string;
+            description?: string;
+            voicePreset?: {
+              id: string;
+              name: string;
+              providerId: string;
+              voiceId: string;
+            };
+          };
+        } = {
           id: stageId,
           name: form.requirement.trim().slice(0, 120) || 'Gamma Presentation',
           description: 'Generated via Gamma AI',
@@ -1434,6 +1654,27 @@ function HomePage() {
           updatedAt: now,
           language: form.language,
           style: 'professional',
+        };
+        stage.tutorConfig = {
+          name: selectedVoicePreset?.name || selectedTeacherAgent?.name || form.tutorName || 'AI Tutor',
+          avatar:
+            selectedVoicePreset?.avatar || selectedTeacherAgent?.avatar || form.tutorAvatar || AVATAR_OPTIONS[1],
+          description:
+            selectedVoicePreset?.description || selectedVoicePreset?.title || form.tutorDescription || '',
+          ...((selectedVoicePreset || teacherVoiceConfig)
+            ? {
+                voicePreset: {
+                  id:
+                    selectedVoicePreset?.id ||
+                    `${teacherVoiceConfig?.providerId || 'tts'}::${teacherVoiceConfig?.voiceId || 'default'}`,
+                  name: selectedVoicePreset?.name || selectedTeacherAgent?.name || form.tutorName || 'AI Tutor',
+                  providerId:
+                    selectedVoicePreset?.providerId || teacherVoiceConfig?.providerId || 'browser-native-tts',
+                  voiceId:
+                    selectedVoicePreset?.providerVoiceId || teacherVoiceConfig?.voiceId || 'default',
+                },
+              }
+            : {}),
         };
         const exportBaseUrl = `/api/gamma/export/${encodeURIComponent(startData.generationId)}`;
         const pageCountHint = Math.max(1, Math.min(50, Math.floor(last.pageCount ?? 1)));
@@ -1603,6 +1844,85 @@ function HomePage() {
           scene.order = index + 1;
         });
 
+        // Pre-generate Gamma scene speech audio with the same selected tutor voice.
+        // Reason: without audioId/audio in DB, playback can become silent and only use timing fallback.
+        if (settings.ttsEnabled) {
+          const tutorVoicePreset = stage.tutorConfig?.voicePreset;
+          const effectiveProviderId = (tutorVoicePreset?.providerId ||
+            settings.ttsProviderId) as TTSProviderId;
+          const effectiveVoiceId = tutorVoicePreset?.voiceId || settings.ttsVoice;
+          const effectiveProviderConfig = settings.ttsProvidersConfig?.[effectiveProviderId];
+
+          if (effectiveProviderId !== 'browser-native-tts' && effectiveVoiceId) {
+            let gammaTTSFailures = 0;
+            for (const scene of scenes) {
+              const speechActions = (scene.actions || []).filter(
+                (a): a is Action & { type: 'speech'; text: string } => a.type === 'speech' && !!a.text,
+              );
+              for (const action of speechActions) {
+                const audioId = `tts_${action.id}`;
+                action.audioId = audioId;
+                try {
+                  const ttsResp = await fetch('/api/generate/tts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      text: action.text,
+                      audioId,
+                      ttsProviderId: effectiveProviderId,
+                      ttsVoice: effectiveVoiceId,
+                      ttsSpeed: settings.ttsSpeed,
+                      ttsApiKey: effectiveProviderConfig?.apiKey || undefined,
+                      ttsBaseUrl:
+                        effectiveProviderConfig?.serverBaseUrl ||
+                        effectiveProviderConfig?.baseUrl ||
+                        undefined,
+                    }),
+                  });
+                  if (!ttsResp.ok) {
+                    gammaTTSFailures++;
+                    continue;
+                  }
+                  const ttsData = await ttsResp.json();
+                  if (!ttsData?.success || !ttsData?.base64 || !ttsData?.format) {
+                    gammaTTSFailures++;
+                    continue;
+                  }
+                  if (ttsData.ttsDebug) {
+                    log.info('[TTS Debug][Gamma]', ttsData.ttsDebug);
+                  }
+                  const binary = atob(ttsData.base64);
+                  const bytes = new Uint8Array(binary.length);
+                  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                  const blob = new Blob([bytes], { type: `audio/${ttsData.format}` });
+                  await db.audioFiles.put({
+                    id: audioId,
+                    blob,
+                    format: ttsData.format,
+                    createdAt: Date.now(),
+                  });
+                  try {
+                    const uploadedUrl = await uploadSpeechAudioForClassroom(stage.id, audioId, blob);
+                    if (uploadedUrl) {
+                      action.audioUrl = uploadedUrl;
+                    }
+                  } catch (gammaUploadErr) {
+                    log.warn('[gamma] failed to upload tutor speech clip', gammaUploadErr);
+                  }
+                } catch (gammaTTSError) {
+                  gammaTTSFailures++;
+                  log.warn('[gamma] failed to pre-generate tutor speech', gammaTTSError);
+                }
+              }
+            }
+            if (gammaTTSFailures > 0) {
+              toast.warning(
+                'Some tutor speech clips could not be generated. Replaying those lines may use fallback timing.',
+              );
+            }
+          }
+        }
+
         const stageStore = useStageStore.getState();
         stageStore.setStage(stage);
         scenes.forEach((scene) => stageStore.addScene(scene));
@@ -1679,7 +1999,7 @@ function HomePage() {
 
     try {
       setProfileCardOpen(false);
-      const { error } = await supabase.auth.signOut({ scope: 'global' });
+      const { error } = await supabase.auth.signOut({ scope: 'local' });
       if (error) {
         throw error;
       }
@@ -1688,8 +2008,12 @@ function HomePage() {
       setAuthUserEmail('');
       toast.success('Logged out successfully.');
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unable to log out.';
-      toast.error(`Logout failed: ${message}`);
+      // Keep UX stable even when Supabase endpoints are temporarily unreachable.
+      log.warn('Logout network issue; clearing local auth state.', err);
+      setIsAuthenticated(false);
+      setIsAdminUser(false);
+      setAuthUserEmail('');
+      toast.success('Logged out locally.');
     } finally {
       // Force-clear auth caches so UI cannot remain in a stale logged-in state.
       try {
@@ -2175,6 +2499,7 @@ function HomePage() {
                           );
                           updateForm('tutorAvatar', voice.avatar || form.tutorAvatar);
                           applyTutorToPresenters(voice);
+                          void savePreferredTutorToDb(voice);
                         }
                       }}
                       className="h-8 rounded-md border border-border bg-background px-2 text-xs"

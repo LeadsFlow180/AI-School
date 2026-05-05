@@ -118,7 +118,11 @@ export async function POST(req: NextRequest) {
         ((metadataObj?.data as Record<string, unknown> | undefined)?.path as string) ||
         (metadataData?.[0]?.path as string) ||
         null;
-      referenceUrl = customVoice?.reference_url || metadataRef || null;
+      const rawReferenceUrl = customVoice?.reference_url || metadataRef || null;
+      referenceUrl = typeof rawReferenceUrl === 'string' ? rawReferenceUrl.trim() : null;
+      if (!referenceUrl) {
+        referenceUrl = null;
+      }
     }
 
     if (referenceUrl) {
@@ -229,11 +233,47 @@ export async function POST(req: NextRequest) {
 
     return apiSuccess({ audioId, base64, format, ttsDebug });
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const statusFromError =
+      typeof error === 'object' &&
+      error !== null &&
+      'status' in error &&
+      typeof (error as { status?: unknown }).status === 'number'
+        ? Number((error as { status: number }).status)
+        : 0;
+    const normalized = message.toLowerCase();
+    const isConfigError =
+      normalized.includes('api key required') ||
+      normalized.includes('missing voice_clone_synthesize_url') ||
+      normalized.includes('unknown tts provider') ||
+      normalized.includes('unsupported tts provider') ||
+      normalized.includes('reference url required');
+    const isUpstreamSynthesisFailure =
+      normalized.includes('synthesis failed') ||
+      normalized.includes('cuda error') ||
+      normalized.includes('device-side assert') ||
+      normalized.includes('too many concurrent') ||
+      normalized.includes('retry shortly') ||
+      normalized.includes('rate limit');
+
+    if (isConfigError) {
+      log.warn('TTS generation config error:', message);
+      return apiError('INVALID_REQUEST', 400, message);
+    }
+    if (statusFromError > 0) {
+      log.warn('TTS upstream status error:', { status: statusFromError, message });
+      return apiError('UPSTREAM_ERROR', statusFromError, message);
+    }
+    if (isUpstreamSynthesisFailure) {
+      log.warn('TTS synthesis upstream failure:', message);
+      return apiError('UPSTREAM_ERROR', 502, message);
+    }
+
     log.error('TTS generation error:', error);
     return apiError(
       'GENERATION_FAILED',
       500,
-      error instanceof Error ? error.message : String(error),
+      message,
     );
   }
 }

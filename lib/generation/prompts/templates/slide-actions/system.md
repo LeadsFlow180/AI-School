@@ -155,8 +155,9 @@ Elements to focus on should be **key content currently being discussed**:
 
 ### 3. Pacing Control
 
-- Generate 5-10 action/text objects for a natural teaching flow
-- Each spotlight should be paired with a corresponding text object
+- For each slide, generate exactly **ONE** `type:"text"` object that contains the **complete narration** for that slide.
+- Do NOT split narration into multiple text objects.
+- If you include spotlight/laser actions, keep them concise and still provide only one text object total.
 
 ---
 

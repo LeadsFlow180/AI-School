@@ -22,6 +22,7 @@ import {
 import { getCurrentModelConfig } from '@/lib/utils/model-config';
 import { db } from '@/lib/utils/database';
 import { MAX_PDF_CONTENT_CHARS, MAX_VISION_IMAGES } from '@/lib/constants/generation';
+import { splitLongSpeechActions } from '@/lib/audio/tts-utils';
 import { nanoid } from 'nanoid';
 import type { Stage } from '@/lib/types/stage';
 import type { SceneOutline, PdfImage, ImageMapping } from '@/lib/types/generation';
@@ -809,6 +810,9 @@ function GenerationPreviewContent() {
           settings.ttsProviderId) as import('@/lib/audio/types').TTSProviderId;
         const effectiveVoiceId = tutorVoicePreset?.voiceId || settings.ttsVoice;
         const effectiveProviderConfig = settings.ttsProvidersConfig?.[effectiveProviderId];
+        // Keep one logical narration per slide, but split oversized TTS payloads
+        // into smaller speech actions to avoid upstream timeout (524) on cloned voices.
+        data.scene.actions = splitLongSpeechActions(data.scene.actions || [], effectiveProviderId);
         const speechActions = (data.scene.actions || []).filter(
           (a: { type: string; text?: string }) => a.type === 'speech' && a.text,
         );

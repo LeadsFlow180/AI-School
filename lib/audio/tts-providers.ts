@@ -116,6 +116,31 @@ function joinUrl(base: string, path: string): string {
   return `${normalizedBase}${normalizedPath}`;
 }
 
+function buildSynthesizeCandidateUrls(apiUrl: string): string[] {
+  const trimmed = apiUrl.trim();
+  if (!trimmed) return [];
+
+  const normalized = trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
+  const lower = normalized.toLowerCase();
+  const isDirectSynthesize = lower.endsWith('/synthesize');
+
+  // Reason: Some deployments return HTTP 200 on root "/" with an index payload.
+  // If we try root first, that successful non-audio response prevents reaching the
+  // real synth endpoint. Always prioritize /synthesize forms.
+  const synthBase = isDirectSynthesize ? normalized : `${normalized}/synthesize`;
+  const direct = isDirectSynthesize ? normalized : joinUrl(normalized, '/synthesize');
+
+  return Array.from(
+    new Set([
+      direct,
+      synthBase,
+      synthBase.endsWith('/') ? synthBase : `${synthBase}/`,
+      // Keep original URL only when caller already provided a synth endpoint.
+      ...(isDirectSynthesize ? [normalized, `${normalized}/`] : []),
+    ]),
+  );
+}
+
 function parseDataUrl(dataUrl: string): { mimeType: string; bytes: Uint8Array } {
   const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
   if (!match) {
@@ -134,17 +159,61 @@ function getFormatFromMime(mimeType: string): string {
   return 'wav';
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw Object.assign(new Error(`TTS request timed out after ${timeoutMs}ms`), { status: 524 });
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function parseRetryAfterSeconds(headers: Headers, body: unknown): number {
+  const retryAfter = headers.get('retry-after');
+  if (retryAfter) {
+    const numeric = Number(retryAfter);
+    if (!Number.isNaN(numeric) && numeric > 0) return Math.floor(numeric);
+    const dateMs = Date.parse(retryAfter);
+    if (!Number.isNaN(dateMs)) {
+      const seconds = Math.ceil((dateMs - Date.now()) / 1000);
+      if (seconds > 0) return seconds;
+    }
+  }
+
+  const bodyRetry = Number((body as { retry_after_seconds?: unknown } | null)?.retry_after_seconds || 0);
+  return Number.isFinite(bodyRetry) && bodyRetry > 0 ? Math.floor(bodyRetry) : 0;
+}
+
 export async function generateClonedTutorTTS(
   config: ClonedTutorSynthesizeConfig,
   text: string,
 ): Promise<TTSGenerationResult> {
-  const payloadBody = JSON.stringify({
+  const language = config.language || process.env.VOICE_CLONE_DEFAULT_LANGUAGE || 'en';
+  const speed = Math.min(2, Math.max(0.5, config.speed ?? 1.0));
+  const fullPayload = {
     text,
     referenceUrl: config.referenceUrl,
-    language: config.language || process.env.VOICE_CLONE_DEFAULT_LANGUAGE || 'en',
+    reference_url: config.referenceUrl,
+    referenceAudioUrl: config.referenceUrl,
+    reference_audio_url: config.referenceUrl,
+    language,
     emotion: process.env.VOICE_CLONE_DEFAULT_EMOTION || 'neutral',
     emotion_intensity: Number(process.env.VOICE_CLONE_DEFAULT_EMOTION_INTENSITY || 5),
-    speed: config.speed ?? 1.0,
+    speed,
     pitch: Number(process.env.VOICE_CLONE_DEFAULT_PITCH || 0),
     energy_level: Number(process.env.VOICE_CLONE_DEFAULT_ENERGY_LEVEL || 5),
     expressions_already_added: true,
@@ -154,61 +223,168 @@ export async function generateClonedTutorTTS(
       speaking_style: process.env.VOICE_CLONE_PERSONALITY_STYLE || 'conversational',
       intensity: Number(process.env.VOICE_CLONE_PERSONALITY_INTENSITY || 5),
     },
-  });
-  const candidateUrls = Array.from(
-    new Set([
-      config.apiUrl,
-      config.apiUrl.endsWith('/') ? config.apiUrl.slice(0, -1) : `${config.apiUrl}/`,
-      config.apiUrl.endsWith('/synthesize')
-        ? `${config.apiUrl}/`
-        : joinUrl(config.apiUrl, '/synthesize'),
-    ]),
-  ).filter(Boolean);
+  };
+  const minimalPayload = {
+    text,
+    referenceUrl: config.referenceUrl,
+    reference_url: config.referenceUrl,
+    referenceAudioUrl: config.referenceUrl,
+    reference_audio_url: config.referenceUrl,
+    language,
+    speed,
+  };
+  const altMinimalPayload = {
+    text,
+    referenceUrl: config.referenceUrl,
+    reference_url: config.referenceUrl,
+    referenceAudioUrl: config.referenceUrl,
+    reference_audio_url: config.referenceUrl,
+    language,
+    speed,
+  };
+  const payloadBodies = [
+    JSON.stringify(fullPayload),
+    JSON.stringify(minimalPayload),
+    JSON.stringify(altMinimalPayload),
+  ];
+  const candidateUrls = buildSynthesizeCandidateUrls(config.apiUrl);
 
   let response: Response | null = null;
   let textBody = '';
+  let jsonBody: Record<string, unknown> = {};
   let attemptedUrl = config.apiUrl;
-  for (const url of candidateUrls) {
-    attemptedUrl = url;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
-      },
-      body: payloadBody,
-    });
-    const body = await res.text();
-    response = res;
-    textBody = body;
-    if (res.ok) break;
-    // Retry on common route-shape mismatch statuses.
-    if (res.status !== 404 && res.status !== 405 && res.status !== 308 && res.status !== 307) {
-      break;
+  const maxRetries = Number(process.env.TTS_503_MAX_RETRIES || 2);
+  const maxTimeoutRetries = Number(process.env.TTS_524_MAX_RETRIES || 0);
+  const minBackoffMs = Number(process.env.TTS_503_MIN_BACKOFF_MS || 2000);
+  const maxBackoffMs = Number(process.env.TTS_503_MAX_BACKOFF_MS || 10000);
+  const requestTimeoutMs = Number(process.env.TTS_UPSTREAM_TIMEOUT_MS || 180000);
+  for (const payloadBody of payloadBodies) {
+    for (const url of candidateUrls) {
+      attemptedUrl = url;
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        let res: Response;
+        try {
+          res = await fetchWithTimeout(
+            url,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+              },
+              body: payloadBody,
+            },
+            requestTimeoutMs,
+          );
+        } catch (err) {
+          const status =
+            typeof err === 'object' &&
+            err !== null &&
+            'status' in err &&
+            typeof (err as { status?: unknown }).status === 'number'
+              ? Number((err as { status: number }).status)
+              : 0;
+          if (status === 524 && attempt < maxTimeoutRetries) {
+            const backoffBaseMs = Math.min(maxBackoffMs, minBackoffMs * 2 ** attempt);
+            const jitter = Math.floor(Math.random() * 300);
+            await sleep(backoffBaseMs + jitter);
+            continue;
+          }
+          throw err;
+        }
+        const body = await res.text().catch(() => '');
+        let parsedBody: Record<string, unknown> = {};
+        try {
+          parsedBody = body ? (JSON.parse(body) as Record<string, unknown>) : {};
+        } catch {
+          parsedBody = {};
+        }
+        response = res;
+        textBody = body;
+        jsonBody = parsedBody;
+        if (res.ok) break;
+
+        const retryBudget = res.status === 524 ? maxTimeoutRetries : maxRetries;
+        if ((res.status === 503 || res.status === 524) && attempt < retryBudget) {
+          const retryAfterSec = Math.max(2, parseRetryAfterSeconds(res.headers, parsedBody));
+          const retryFromHeader = retryAfterSec * 1000;
+          const backoffBaseMs = Math.min(maxBackoffMs, minBackoffMs * 2 ** attempt);
+          const backoffMs = Math.max(retryFromHeader, backoffBaseMs);
+          const jitter = Math.floor(Math.random() * 300);
+          await sleep(backoffMs + jitter);
+          continue;
+        }
+
+        if (res.status === 503 || res.status === 524) {
+          throw Object.assign(new Error(String(parsedBody.error || body || 'TTS overloaded or timed out')), {
+            status: res.status,
+          });
+        }
+
+        // Retry on common route-shape mismatch statuses.
+        if (res.status === 404 || res.status === 405 || res.status === 308 || res.status === 307) {
+          break;
+        }
+
+        throw Object.assign(
+          new Error(
+            String(parsedBody.error || body || `Custom voice synthesize request failed: HTTP ${res.status}`),
+          ),
+          { status: res.status },
+        );
+      }
+
+      if (response?.ok) break;
+
+      // For route-shape mismatch statuses, continue to next URL/payload candidate.
+      if (
+        response &&
+        response.status !== 404 &&
+        response.status !== 405 &&
+        response.status !== 308 &&
+        response.status !== 307
+      ) {
+        break;
+      }
     }
+    if (response?.ok) break;
   }
 
   if (!response) {
     throw new Error('Custom voice synthesize request failed: no response received.');
   }
 
-  let payload: {
+  const payload: {
     success?: boolean;
     data?: { audioUrl?: string };
     metadata?: Record<string, unknown>;
     error?: string;
-  } = {};
-  try {
-    payload = textBody ? (JSON.parse(textBody) as typeof payload) : {};
-  } catch {
-    payload = {};
+  } = jsonBody as {
+    success?: boolean;
+    data?: { audioUrl?: string };
+    metadata?: Record<string, unknown>;
+    error?: string;
+  };
+
+  if (!response.ok) {
+    throw Object.assign(
+      new Error(
+        payload.error ||
+          textBody ||
+          `Custom voice synthesize request failed: HTTP ${response.status} at ${attemptedUrl}`,
+      ),
+      { status: response.status },
+    );
   }
 
-  if (!response.ok || !payload.success || !payload.data?.audioUrl) {
-    throw new Error(
-      payload.error ||
-        textBody ||
-        `Custom voice synthesize request failed: HTTP ${response.status} at ${attemptedUrl}`,
+  if (!payload.success || !payload.data?.audioUrl) {
+    throw Object.assign(
+      new Error(
+        payload.error ||
+          textBody ||
+          `Custom voice synthesize request failed: invalid payload at ${attemptedUrl}`,
+      ),
+      { status: response.status || 502 },
     );
   }
 
@@ -222,9 +398,11 @@ export async function generateClonedTutorTTS(
     };
   }
 
-  const externalResponse = await fetch(audioUrl);
+  const externalResponse = await fetchWithTimeout(audioUrl, {}, requestTimeoutMs);
   if (!externalResponse.ok) {
-    throw new Error(`Failed to download synthesized audio: HTTP ${externalResponse.status}`);
+    throw Object.assign(new Error(`Failed to download synthesized audio: HTTP ${externalResponse.status}`), {
+      status: externalResponse.status,
+    });
   }
   const arrayBuffer = await externalResponse.arrayBuffer();
   const mimeType = externalResponse.headers.get('content-type') || 'audio/wav';

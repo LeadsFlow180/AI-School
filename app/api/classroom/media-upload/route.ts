@@ -48,12 +48,22 @@ export async function POST(request: NextRequest) {
       .eq('user_id', userData.user.id)
       .maybeSingle();
     if (adminErr) {
-      return NextResponse.json(
-        { success: false, error: 'Failed to verify admin status.' },
-        { status: 500 },
-      );
+      const normalized = String(adminErr.message || '').toLowerCase();
+      const missingAdminTable =
+        adminErr.code === 'PGRST205' ||
+        normalized.includes('could not find the table') ||
+        normalized.includes('relation') ||
+        normalized.includes('does not exist');
+      if (!missingAdminTable) {
+        return NextResponse.json(
+          { success: false, error: 'Failed to verify admin status.' },
+          { status: 500 },
+        );
+      }
+      // Reason: some deployments intentionally skip admin_users table.
+      // In that case, accept any valid authenticated user token.
     }
-    if (!adminRow) {
+    if (!adminRow && !adminErr) {
       return NextResponse.json({ success: false, error: 'Admin access required.' }, { status: 403 });
     }
 

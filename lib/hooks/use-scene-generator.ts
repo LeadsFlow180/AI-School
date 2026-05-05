@@ -141,6 +141,41 @@ async function fetchSceneActions(
   return response.json();
 }
 
+function getEffectiveTTSRequestConfig(): {
+  providerId: TTSProviderId;
+  voiceId: string;
+  speed: number;
+  apiKey?: string;
+  baseUrl?: string;
+} {
+  const settings = useSettingsStore.getState();
+  const stage = useStageStore.getState().stage as
+    | (Stage & {
+        tutorConfig?: {
+          voicePreset?: { providerId?: string; voiceId?: string };
+        };
+      })
+    | null;
+  const tutorPreset = stage?.tutorConfig?.voicePreset;
+  const fallbackProviderConfig = settings.ttsProvidersConfig?.[settings.ttsProviderId];
+  const effectiveProviderId = (tutorPreset?.providerId || settings.ttsProviderId) as TTSProviderId;
+  const effectiveVoiceId = tutorPreset?.voiceId || settings.ttsVoice;
+  const effectiveProviderConfig = settings.ttsProvidersConfig?.[effectiveProviderId];
+
+  return {
+    providerId: effectiveProviderId,
+    voiceId: effectiveVoiceId,
+    speed: settings.ttsSpeed,
+    apiKey: effectiveProviderConfig?.apiKey || fallbackProviderConfig?.apiKey || undefined,
+    baseUrl:
+      effectiveProviderConfig?.serverBaseUrl ||
+      effectiveProviderConfig?.baseUrl ||
+      fallbackProviderConfig?.serverBaseUrl ||
+      fallbackProviderConfig?.baseUrl ||
+      undefined,
+  };
+}
+
 /** Generate TTS for one speech action and store in IndexedDB */
 export async function generateAndStoreTTS(
   audioId: string,
@@ -150,18 +185,18 @@ export async function generateAndStoreTTS(
   const settings = useSettingsStore.getState();
   if (settings.ttsProviderId === 'browser-native-tts') return;
 
-  const ttsProviderConfig = settings.ttsProvidersConfig?.[settings.ttsProviderId];
+  const ttsRequest = getEffectiveTTSRequestConfig();
   const response = await fetch('/api/generate/tts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       text,
       audioId,
-      ttsProviderId: settings.ttsProviderId,
-      ttsVoice: settings.ttsVoice,
-      ttsSpeed: settings.ttsSpeed,
-      ttsApiKey: ttsProviderConfig?.apiKey || undefined,
-      ttsBaseUrl: ttsProviderConfig?.baseUrl || undefined,
+      ttsProviderId: ttsRequest.providerId,
+      ttsVoice: ttsRequest.voiceId,
+      ttsSpeed: ttsRequest.speed,
+      ttsApiKey: ttsRequest.apiKey,
+      ttsBaseUrl: ttsRequest.baseUrl,
     }),
     signal,
   });
@@ -237,7 +272,7 @@ async function generateTTSForScene(
   scene: Scene,
   signal?: AbortSignal,
 ): Promise<{ success: boolean; failedCount: number; error?: string }> {
-  const providerId = useSettingsStore.getState().ttsProviderId;
+  const providerId = getEffectiveTTSRequestConfig().providerId;
   scene.actions = splitLongSpeechActions(scene.actions || [], providerId);
   const speechActions = scene.actions.filter(
     (a): a is SpeechAction => a.type === 'speech' && !!a.text,

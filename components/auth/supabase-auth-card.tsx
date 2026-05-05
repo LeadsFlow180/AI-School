@@ -22,6 +22,28 @@ export function SupabaseAuthCard({ onAuthenticated }: SupabaseAuthCardProps) {
 
   const isSupabaseConfigured = !!supabase;
 
+  const verifyAdminStatus = async (token: string) => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const res = await fetch('/api/auth/admin-status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token }),
+          credentials: 'omit',
+          cache: 'no-store',
+        });
+        if (res.ok) {
+          const json = (await res.json()) as { isAdmin?: boolean };
+          return !!json.isAdmin;
+        }
+      } catch {
+        // Retry below.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+    }
+    return false;
+  };
+
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
@@ -37,31 +59,27 @@ export function SupabaseAuthCard({ onAuthenticated }: SupabaseAuthCardProps) {
 
     setLoading(true);
     try {
+      const normalizedEmail = email.trim().toLowerCase();
       const { data, error } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
+        email: normalizedEmail,
         password,
       });
       if (error) throw error;
 
       const userId = data.user?.id;
+      const accessToken = data.session?.access_token;
       if (!userId) {
         throw new Error('Login succeeded but user id is missing.');
       }
-
-      // Reason: Only allow admin users to access this app login flow.
-      const { data: adminRow, error: adminError } = await supabase
-        .from('admin_users')
-        .select('user_id')
-        .eq('user_id', userId)
-        .maybeSingle();
-
-      if (adminError) {
-        await supabase.auth.signOut();
-        throw new Error(`Admin verification failed: ${adminError.message}`);
+      if (!accessToken) {
+        await supabase.auth.signOut({ scope: 'local' });
+        throw new Error('Login succeeded but session token is missing. Please try again.');
       }
 
-      if (!adminRow) {
-        await supabase.auth.signOut();
+      // Reason: Only allow admin users to access this app login flow.
+      const isAdmin = await verifyAdminStatus(accessToken);
+      if (!isAdmin) {
+        await supabase.auth.signOut({ scope: 'local' });
         throw new Error('Access denied. Your account is not an admin user.');
       }
 

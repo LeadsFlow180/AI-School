@@ -592,19 +592,37 @@ function HomePage() {
   const classroomsLoadSeqRef = useRef(0);
   const RECENTS_PER_PAGE = 8;
 
-  const verifyAdminStatus = async (_accessToken: string) => {
+  const verifyAdminStatus = async (accessToken: string) => {
     const supabase = getSupabaseClient();
-    if (!supabase) return false;
-    const session = await getSessionSafe(supabase);
-    const userId = session?.user?.id;
-    if (!userId) return false;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    if (!supabase || !accessToken) return false;
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const res = await fetch('/api/auth/admin-status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: accessToken }),
+          credentials: 'omit',
+          cache: 'no-store',
+        });
+        if (res.ok) {
+          const json = (await res.json()) as { isAdmin?: boolean };
+          return !!json.isAdmin;
+        }
+      } catch {
+        // Fallback to direct query below when local API route is transiently unavailable.
+      }
+
+      const session = await getSessionSafe(supabase);
+      const userId = session?.user?.id;
+      if (!userId) return false;
       const { data, error } = await supabase
         .from('admin_users')
         .select('user_id')
         .eq('user_id', userId)
         .maybeSingle();
       if (!error) return !!data;
+
       await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
     }
     return false;
@@ -1315,6 +1333,13 @@ function HomePage() {
 
   useEffect(() => {
     if (!authReady) return;
+    if (!isAuthenticated) {
+      router.replace('/auth');
+    }
+  }, [authReady, isAuthenticated, router]);
+
+  useEffect(() => {
+    if (!authReady) return;
     void (async () => {
       await loadCustomVoices();
       const preferredTutor = await loadPreferredTutorFromDb();
@@ -1383,12 +1408,20 @@ function HomePage() {
       // If logged in, also delete remote classroom row from Supabase.
       const supabase = getSupabaseClient();
       if (isAuthenticated && supabase) {
-        const { error: remoteDeleteError } = await supabase
-          .from('classrooms')
-          .delete()
-          .eq('id', id);
-        if (remoteDeleteError) {
-          throw remoteDeleteError;
+        const session = await getSessionSafe(supabase);
+        const token = session?.access_token;
+        if (!token) {
+          throw new Error('Missing session token for classroom delete.');
+        }
+        const remoteDeleteRes = await fetch(`/api/classroom?id=${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+        if (!remoteDeleteRes.ok) {
+          const remoteDeleteJson = await remoteDeleteRes.json().catch(() => ({}));
+          throw new Error(remoteDeleteJson?.error || 'Failed to delete remote classroom.');
         }
       }
 
@@ -2036,6 +2069,10 @@ function HomePage() {
       }
     }
   };
+
+  if (authReady && !isAuthenticated) {
+    return null;
+  }
 
   return (
     <div className="relative min-h-[100dvh] w-full bg-[linear-gradient(to_bottom,rgba(250,250,250,1),rgba(244,244,245,0.95))] dark:bg-[linear-gradient(to_bottom,rgba(9,9,11,1),rgba(15,23,42,0.95))] flex flex-col items-center p-3 pt-20 sm:p-4 sm:pt-20 md:p-8 md:pt-16 overflow-x-hidden">

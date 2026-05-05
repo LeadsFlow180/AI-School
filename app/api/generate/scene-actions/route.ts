@@ -31,6 +31,34 @@ const log = createLogger('Scene Actions API');
 
 export const maxDuration = 60;
 
+function consolidateSlideSpeechActions(actions: import('@/lib/types/action').Action[]) {
+  const speechActions = actions.filter(
+    (a): a is SpeechAction => a.type === 'speech' && typeof a.text === 'string' && a.text.trim().length > 0,
+  );
+  if (speechActions.length <= 1) return actions;
+
+  const nonSpeech = actions.filter((a) => a.type !== 'speech');
+  const mergedText = speechActions
+    .map((a) => a.text.trim())
+    .filter(Boolean)
+    .join('\n\n');
+  if (!mergedText) return nonSpeech;
+
+  const discussionIndex = nonSpeech.findIndex((a) => a.type === 'discussion');
+  const mergedSpeech: SpeechAction = {
+    ...speechActions[0],
+    type: 'speech',
+    text: mergedText,
+  };
+
+  if (discussionIndex >= 0) {
+    const head = nonSpeech.slice(0, discussionIndex);
+    const tail = nonSpeech.slice(discussionIndex);
+    return [...head, mergedSpeech, ...tail];
+  }
+  return [mergedSpeech, ...nonSpeech];
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -128,7 +156,10 @@ export async function POST(req: NextRequest) {
     // ── Generate actions ──
     log.info(`Generating actions: "${outline.title}" (${outline.type}) [model=${modelString}]`);
 
-    const actions = await generateSceneActions(outline, content, aiCall, ctx, agents, userProfile);
+    let actions = await generateSceneActions(outline, content, aiCall, ctx, agents, userProfile);
+    if (outline.type === 'slide') {
+      actions = consolidateSlideSpeechActions(actions);
+    }
 
     log.info(`Generated ${actions.length} actions for: "${outline.title}"`);
 

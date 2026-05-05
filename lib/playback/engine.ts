@@ -23,7 +23,7 @@
  *                                 └────────────────────┘
  */
 
-import type { Scene } from '@/lib/types/stage';
+import type { Scene, Stage } from '@/lib/types/stage';
 import type { Action, SpeechAction, DiscussionAction } from '@/lib/types/action';
 import type {
   EngineMode,
@@ -37,8 +37,11 @@ import type { AudioPlayer } from '@/lib/utils/audio-player';
 import { ActionEngine } from '@/lib/action/engine';
 import { useCanvasStore } from '@/lib/store/canvas';
 import { useSettingsStore } from '@/lib/store/settings';
+import { useStageStore } from '@/lib/store/stage';
 import { createLogger } from '@/lib/logger';
 import { db } from '@/lib/utils/database';
+import { getSessionSafe, getSupabaseClient } from '@/lib/supabase/client';
+import type { TTSProviderId } from '@/lib/audio/types';
 
 const log = createLogger('PlaybackEngine');
 
@@ -86,6 +89,8 @@ export class PlaybackEngine {
   private classroomAudioUrlIndex: Map<string, string> | null = null;
   private classroomAudioIndexStageId: string | null = null;
   private classroomAudioIndexPromise: Promise<void> | null = null;
+  private ttsRegenerationByKey: Map<string, string> = new Map();
+  private ttsRegenerationFailures: Map<string, number> = new Map();
 
   constructor(
     scenes: Scene[],
@@ -395,6 +400,114 @@ export class PlaybackEngine {
     this.callbacks.onModeChange?.(mode);
   }
 
+  private resolveEffectiveTTSRequest(): {
+    providerId: TTSProviderId;
+    voiceId: string;
+    speed: number;
+    apiKey?: string;
+    baseUrl?: string;
+  } | null {
+    const settings = useSettingsStore.getState();
+    if (!settings.ttsEnabled || settings.ttsProviderId === 'browser-native-tts') return null;
+
+    const stage = useStageStore.getState().stage as
+      | (Stage & {
+          tutorConfig?: {
+            voicePreset?: { providerId?: string; voiceId?: string };
+          };
+        })
+      | null;
+    const preset = stage?.tutorConfig?.voicePreset;
+    const fallbackProviderConfig = settings.ttsProvidersConfig?.[settings.ttsProviderId];
+    const providerId = (preset?.providerId || settings.ttsProviderId) as TTSProviderId;
+    const voiceId = preset?.voiceId || settings.ttsVoice;
+    const providerConfig = settings.ttsProvidersConfig?.[providerId];
+    if (!providerId || !voiceId) return null;
+
+    return {
+      providerId,
+      voiceId,
+      speed: settings.ttsSpeed,
+      apiKey: providerConfig?.apiKey || fallbackProviderConfig?.apiKey || undefined,
+      baseUrl:
+        providerConfig?.serverBaseUrl ||
+        providerConfig?.baseUrl ||
+        fallbackProviderConfig?.serverBaseUrl ||
+        fallbackProviderConfig?.baseUrl ||
+        undefined,
+    };
+  }
+
+  private buildSpeechReuseKey(text: string, providerId: string, voiceId: string, speed: number): string {
+    return `${providerId}::${voiceId}::${speed}::${text.trim().toLowerCase()}`;
+  }
+
+  private async uploadRegeneratedSpeechAudio(stageId: string, audioId: string, blob: Blob): Promise<string | null> {
+    try {
+      const supabase = getSupabaseClient();
+      if (!supabase) return null;
+      const session = await getSessionSafe(supabase);
+      const token = session?.access_token;
+      if (!token) return null;
+
+      const ext = blob.type.includes('wav')
+        ? 'wav'
+        : blob.type.includes('mpeg') || blob.type.includes('mp3')
+          ? 'mp3'
+          : blob.type.includes('ogg')
+            ? 'ogg'
+            : blob.type.includes('webm')
+              ? 'webm'
+              : 'bin';
+      const file = new File([blob], `${audioId}.${ext}`, { type: blob.type || 'audio/mpeg' });
+      const form = new FormData();
+      form.append('file', file);
+      form.append('classroomId', stageId);
+
+      const res = await fetch('/api/classroom/media-upload', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.success || !json?.src) return null;
+      return String(json.src);
+    } catch {
+      return null;
+    }
+  }
+
+  private persistRegeneratedSpeechAudio(
+    sceneId: string,
+    actionId: string,
+    audioId: string,
+    audioUrl: string,
+  ): void {
+    try {
+      const state = useStageStore.getState();
+      if (!state.stage) return;
+      const nextScenes = (state.scenes || []).map((scene) => {
+        if (scene.id !== sceneId) return scene;
+        const nextActions = (scene.actions || []).map((action) => {
+          if (action.id !== actionId || action.type !== 'speech') return action;
+          return {
+            ...action,
+            audioId,
+            audioUrl,
+          };
+        });
+        return {
+          ...scene,
+          actions: nextActions,
+        };
+      });
+      useStageStore.setState({ scenes: nextScenes });
+      void state.saveToStorage();
+    } catch {
+      // best-effort persistence only
+    }
+  }
+
   private restoreSavedLectureState(): void {
     if (this.savedSceneIndex !== null && this.savedActionIndex !== null) {
       this.sceneIndex = this.savedSceneIndex;
@@ -550,11 +663,26 @@ export class PlaybackEngine {
         };
 
         const tryRegenerateSpeechAudio = async (): Promise<boolean> => {
-          const settings = useSettingsStore.getState();
-          if (!settings.ttsEnabled || settings.ttsProviderId === 'browser-native-tts') return false;
+          const ttsRequest = this.resolveEffectiveTTSRequest();
+          if (!ttsRequest) return false;
           if (!speechAction.text?.trim()) return false;
           const audioId = speechAction.audioId || `tts_${speechAction.id}`;
-          const providerConfig = settings.ttsProvidersConfig?.[settings.ttsProviderId];
+          const reuseKey = this.buildSpeechReuseKey(
+            speechAction.text,
+            ttsRequest.providerId,
+            ttsRequest.voiceId,
+            ttsRequest.speed,
+          );
+          const cachedDataUrl = this.ttsRegenerationByKey.get(reuseKey);
+          if (cachedDataUrl) {
+            speechAction.audioId = audioId;
+            speechAction.audioUrl = cachedDataUrl;
+            return true;
+          }
+          const lastFailedAt = this.ttsRegenerationFailures.get(reuseKey) || 0;
+          if (Date.now() - lastFailedAt < 120_000) {
+            return false;
+          }
           try {
             const resp = await fetch('/api/generate/tts', {
               method: 'POST',
@@ -562,16 +690,22 @@ export class PlaybackEngine {
               body: JSON.stringify({
                 text: speechAction.text,
                 audioId,
-                ttsProviderId: settings.ttsProviderId,
-                ttsVoice: settings.ttsVoice,
-                ttsSpeed: settings.ttsSpeed,
-                ttsApiKey: providerConfig?.apiKey || undefined,
-                ttsBaseUrl: providerConfig?.serverBaseUrl || providerConfig?.baseUrl || undefined,
+                ttsProviderId: ttsRequest.providerId,
+                ttsVoice: ttsRequest.voiceId,
+                ttsSpeed: ttsRequest.speed,
+                ttsApiKey: ttsRequest.apiKey,
+                ttsBaseUrl: ttsRequest.baseUrl,
               }),
             });
-            if (!resp.ok) return false;
+            if (!resp.ok) {
+              this.ttsRegenerationFailures.set(reuseKey, Date.now());
+              return false;
+            }
             const data = await resp.json();
-            if (!data?.success || !data?.base64 || !data?.format) return false;
+            if (!data?.success || !data?.base64 || !data?.format) {
+              this.ttsRegenerationFailures.set(reuseKey, Date.now());
+              return false;
+            }
 
             const dataUrl = `data:audio/${data.format};base64,${data.base64}`;
             speechAction.audioId = audioId;
@@ -581,14 +715,34 @@ export class PlaybackEngine {
             const binary = atob(data.base64);
             const bytes = new Uint8Array(binary.length);
             for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            const blob = new Blob([bytes], { type: `audio/${data.format}` });
             await db.audioFiles.put({
               id: audioId,
-              blob: new Blob([bytes], { type: `audio/${data.format}` }),
+              blob,
               format: data.format,
               createdAt: Date.now(),
             });
+
+            const currentSceneId = this.scenes[this.sceneIndex]?.id;
+            const currentStageId = this.scenes[this.sceneIndex]?.stageId;
+            const uploadedUrl =
+              currentStageId && audioId ? await this.uploadRegeneratedSpeechAudio(currentStageId, audioId, blob) : null;
+            if (uploadedUrl) {
+              speechAction.audioUrl = uploadedUrl;
+            }
+            this.ttsRegenerationByKey.set(reuseKey, speechAction.audioUrl || dataUrl);
+            this.ttsRegenerationFailures.delete(reuseKey);
+            if (currentSceneId) {
+              this.persistRegeneratedSpeechAudio(
+                currentSceneId,
+                speechAction.id,
+                audioId,
+                speechAction.audioUrl || dataUrl,
+              );
+            }
             return true;
           } catch {
+            this.ttsRegenerationFailures.set(reuseKey, Date.now());
             return false;
           }
         };
@@ -613,18 +767,10 @@ export class PlaybackEngine {
                 );
                 if (replayed) return;
               }
-              // No pre-generated audio — try browser-native TTS if selected
-              const settings = useSettingsStore.getState();
-              if (
-                settings.ttsEnabled &&
-                settings.ttsProviderId === 'browser-native-tts' &&
-                typeof window !== 'undefined' &&
-                window.speechSynthesis
-              ) {
-                this.playBrowserTTS(speechAction);
-              } else {
-                scheduleReadingTimer();
-              }
+              // No pre-generated audio and server regeneration failed.
+              // Keep playback progression without switching to a different voice
+              // so classroom voice identity remains consistent with cloned tutor.
+              scheduleReadingTimer();
             }
           })
           .catch((err) => {

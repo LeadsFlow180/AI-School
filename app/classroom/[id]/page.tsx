@@ -19,6 +19,7 @@ import type { Scene } from '@/lib/types/stage';
 import type { Action } from '@/lib/types/action';
 import type { Slide } from '@/lib/types/slides';
 import { db } from '@/lib/utils/database';
+import { splitLongSpeechActions } from '@/lib/audio/tts-utils';
 
 const log = createLogger('Classroom');
 const MIN_LOADING_SCENE_MS = 3400;
@@ -92,6 +93,110 @@ function countSpeechAudioUrls(scenes: Scene[]): number {
     }
   }
   return count;
+}
+
+function splitLongSpeechInScenes(
+  scenes: Scene[],
+  providerId: string,
+): { scenes: Scene[]; changed: boolean } {
+  let changed = false;
+  const nextScenes = scenes.map((scene) => {
+    const prevActions = scene.actions || [];
+    const nextActions = splitLongSpeechActions(prevActions, providerId);
+    if (nextActions.length !== prevActions.length) {
+      changed = true;
+      return {
+        ...scene,
+        actions: nextActions,
+      };
+    }
+    return scene;
+  });
+  return { scenes: nextScenes, changed };
+}
+
+function buildSpeechReuseKey(
+  text: string,
+  providerId: string,
+  voiceId: string,
+  speed: number,
+): string {
+  return `${providerId}::${voiceId}::${speed}::${text.trim().toLowerCase()}`;
+}
+
+function resolveEffectiveClassroomTTSPayload(stage: Stage | null): {
+  providerId: string;
+  voiceId: string;
+  speed: number;
+  apiKey?: string;
+  baseUrl?: string;
+} | null {
+  const settings = useSettingsStore.getState();
+  if (!settings.ttsEnabled || settings.ttsProviderId === 'browser-native-tts') return null;
+
+  const stageWithTutor = stage as
+    | (Stage & {
+        tutorConfig?: {
+          voicePreset?: { providerId?: string; voiceId?: string };
+        };
+      })
+    | null;
+  const preset = stageWithTutor?.tutorConfig?.voicePreset;
+  const fallbackProviderConfig = settings.ttsProvidersConfig?.[settings.ttsProviderId];
+  const providerId = preset?.providerId || settings.ttsProviderId;
+  const voiceId = preset?.voiceId || settings.ttsVoice;
+  const providerConfig = settings.ttsProvidersConfig?.[providerId];
+
+  if (!providerId || !voiceId) return null;
+  return {
+    providerId,
+    voiceId,
+    speed: settings.ttsSpeed,
+    apiKey: providerConfig?.apiKey || fallbackProviderConfig?.apiKey || undefined,
+    baseUrl:
+      providerConfig?.serverBaseUrl ||
+      providerConfig?.baseUrl ||
+      fallbackProviderConfig?.serverBaseUrl ||
+      fallbackProviderConfig?.baseUrl ||
+      undefined,
+  };
+}
+
+async function uploadHydratedSpeechAudio(
+  classroomId: string,
+  audioId: string,
+  blob: Blob,
+): Promise<string | null> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+  const session = await getSessionSafe(supabase);
+  const token = session?.access_token;
+  if (!token) return null;
+
+  const ext = blob.type.includes('wav')
+    ? 'wav'
+    : blob.type.includes('mpeg') || blob.type.includes('mp3')
+      ? 'mp3'
+      : blob.type.includes('ogg')
+        ? 'ogg'
+        : blob.type.includes('webm')
+          ? 'webm'
+          : 'bin';
+  const file = new File([blob], `${audioId}.${ext}`, { type: blob.type || 'audio/mpeg' });
+  const form = new FormData();
+  form.append('file', file);
+  form.append('classroomId', classroomId);
+
+  const res = await fetch('/api/classroom/media-upload', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: form,
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json?.success || !json?.src) return null;
+  return String(json.src);
 }
 
 function ensureGammaSpeechActions(scene: Scene): Scene {
@@ -672,17 +777,49 @@ export default function ClassroomDetailPage() {
         }
       }
 
+      // For cloned/custom voices, split oversized speech text into smaller
+      // speech actions so TTS requests don't timeout (524) on long payloads.
+      {
+        const settingsState = useSettingsStore.getState();
+        const splitProviderId =
+          tutorCfg?.voicePreset?.providerId || settingsState.ttsProviderId || 'browser-native-tts';
+        const currentScenes = useStageStore.getState().scenes || [];
+        const splitResult = splitLongSpeechInScenes(currentScenes, splitProviderId);
+        if (splitResult.changed) {
+          useStageStore.setState({ scenes: splitResult.scenes });
+          await useStageStore.getState().saveToStorage();
+        }
+      }
+
       // New-tab resilience: hydrate missing speech audio in background so
       // classroom loading UI is never blocked by TTS network calls.
       void (async () => {
         try {
-          const settingsState = useSettingsStore.getState();
-          if (settingsState.ttsEnabled && settingsState.ttsProviderId !== 'browser-native-tts') {
+          const stageState = useStageStore.getState().stage || null;
+          const ttsPayload = resolveEffectiveClassroomTTSPayload(stageState);
+          if (ttsPayload) {
             const scenesToHydrate = useStageStore.getState().scenes || [];
-            const providerConfig = settingsState.ttsProvidersConfig?.[settingsState.ttsProviderId];
             let hydratedAny = false;
             let hydratedCount = 0;
             const MAX_HYDRATE_ACTIONS = 8;
+            const generatedByKey = new Map<string, { persistedUrl?: string }>();
+
+            for (const scene of scenesToHydrate) {
+              for (const action of scene.actions || []) {
+                if (action.type !== 'speech' || !action.text?.trim()) continue;
+                const speechAction = action as Action & { type: 'speech'; text: string; audioUrl?: string };
+                if (!speechAction.audioUrl?.trim()) continue;
+                generatedByKey.set(
+                  buildSpeechReuseKey(
+                    speechAction.text,
+                    ttsPayload.providerId,
+                    ttsPayload.voiceId,
+                    ttsPayload.speed,
+                  ),
+                  { persistedUrl: speechAction.audioUrl },
+                );
+              }
+            }
 
             for (const scene of scenesToHydrate) {
               if (!Array.isArray(scene.actions) || scene.actions.length === 0) continue;
@@ -700,6 +837,19 @@ export default function ClassroomDetailPage() {
                 speechAction.audioId = audioId;
                 const existing = await db.audioFiles.get(audioId);
                 if (existing) continue;
+                const reuseKey = buildSpeechReuseKey(
+                  speechAction.text,
+                  ttsPayload.providerId,
+                  ttsPayload.voiceId,
+                  ttsPayload.speed,
+                );
+                const cachedGeneration = generatedByKey.get(reuseKey);
+                if (cachedGeneration?.persistedUrl) {
+                  speechAction.audioUrl = cachedGeneration.persistedUrl;
+                  hydratedAny = true;
+                  hydratedCount++;
+                  continue;
+                }
 
                 const controller = new AbortController();
                 const timeout = setTimeout(() => controller.abort(), 6000);
@@ -709,11 +859,11 @@ export default function ClassroomDetailPage() {
                   body: JSON.stringify({
                     text: speechAction.text,
                     audioId,
-                    ttsProviderId: settingsState.ttsProviderId,
-                    ttsVoice: settingsState.ttsVoice,
-                    ttsSpeed: settingsState.ttsSpeed,
-                    ttsApiKey: providerConfig?.apiKey || undefined,
-                    ttsBaseUrl: providerConfig?.serverBaseUrl || providerConfig?.baseUrl || undefined,
+                    ttsProviderId: ttsPayload.providerId,
+                    ttsVoice: ttsPayload.voiceId,
+                    ttsSpeed: ttsPayload.speed,
+                    ttsApiKey: ttsPayload.apiKey,
+                    ttsBaseUrl: ttsPayload.baseUrl,
                   }),
                   signal: controller.signal,
                 }).catch(() => null);
@@ -721,20 +871,38 @@ export default function ClassroomDetailPage() {
                 if (!ttsResp?.ok) continue;
                 const ttsJson = await ttsResp.json().catch(() => ({}));
                 if (!ttsJson?.success || !ttsJson?.base64 || !ttsJson?.format) continue;
-                speechAction.audioUrl = `data:audio/${ttsJson.format};base64,${ttsJson.base64}`;
+                let generatedBlob: Blob | null = null;
                 try {
                   const binary = atob(ttsJson.base64);
                   const bytes = new Uint8Array(binary.length);
                   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                  generatedBlob = new Blob([bytes], { type: `audio/${ttsJson.format}` });
                   await db.audioFiles.put({
                     id: audioId,
-                    blob: new Blob([bytes], { type: `audio/${ttsJson.format}` }),
+                    blob: generatedBlob,
                     format: ttsJson.format,
                     createdAt: Date.now(),
                   });
                 } catch {
-                  // keep audioUrl even if local cache put fails
+                  generatedBlob = null;
                 }
+                try {
+                  if (generatedBlob) {
+                    const uploadedUrl = await uploadHydratedSpeechAudio(classroomId, audioId, generatedBlob);
+                    if (uploadedUrl) {
+                      speechAction.audioUrl = uploadedUrl;
+                    } else {
+                      speechAction.audioUrl = `data:audio/${ttsJson.format};base64,${ttsJson.base64}`;
+                    }
+                  } else {
+                    speechAction.audioUrl = `data:audio/${ttsJson.format};base64,${ttsJson.base64}`;
+                  }
+                } catch {
+                  speechAction.audioUrl = `data:audio/${ttsJson.format};base64,${ttsJson.base64}`;
+                }
+                generatedByKey.set(reuseKey, {
+                  persistedUrl: speechAction.audioUrl,
+                });
                 hydratedAny = true;
                 hydratedCount++;
               }

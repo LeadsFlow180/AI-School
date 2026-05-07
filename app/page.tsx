@@ -24,6 +24,9 @@ import {
   Database,
   UserRound,
   LogOut,
+  ShieldCheck,
+  Sparkles,
+  Wand2,
 } from 'lucide-react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { createLogger } from '@/lib/logger';
@@ -46,6 +49,7 @@ import {
   listStages,
   deleteStageData,
   getFirstSlideByStages,
+  saveStageData,
 } from '@/lib/utils/stage-storage';
 import { ThumbnailSlide } from '@/components/slide-renderer/components/ThumbnailSlide';
 import type { Slide } from '@/lib/types/slides';
@@ -63,6 +67,7 @@ import type { Action } from '@/lib/types/action';
 import type { TutorVoicePreset } from '@/lib/types/tutor-voice';
 import type { TTSProviderId } from '@/lib/audio/types';
 import { db } from '@/lib/utils/database';
+import { createDefaultSlideContent } from '@/lib/api/stage-api-defaults';
 
 const log = createLogger('Home');
 
@@ -73,6 +78,14 @@ const RECENT_OPEN_STORAGE_KEY = 'recentClassroomsOpen';
 const REQUIREMENT_DRAFT_STORAGE_KEY = 'requirementDraft';
 const MAX_TUTOR_AVATAR_UPLOAD_BYTES = 2 * 1024 * 1024;
 const MAX_TUTOR_REFERENCE_AUDIO_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+function sortRecentsClassrooms(items: StageListItem[]): StageListItem[] {
+  return [...items].sort((a, b) => {
+    if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
+    if (a.createdAt !== b.createdAt) return b.createdAt - a.createdAt;
+    return a.id.localeCompare(b.id);
+  });
+}
 
 async function uploadSpeechAudioForClassroom(
   classroomId: string,
@@ -590,6 +603,7 @@ function HomePage() {
   const toolbarRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const classroomsLoadSeqRef = useRef(0);
+  const recentsRefreshScheduledAtRef = useRef(0);
   const RECENTS_PER_PAGE = 8;
 
   const verifyAdminStatus = async (accessToken: string) => {
@@ -1122,30 +1136,36 @@ function HomePage() {
 
       try {
         const loadLocalFallback = async (reason: string) => {
-          const localList = await listStages();
+          const localList = sortRecentsClassrooms(await listStages());
           if (isLatest()) {
             setRecentsSource('local');
             setTotalClassroomsCount(localList.length);
+            setRecentPage(targetPage);
           }
           console.info(
             `[Recents] Using local IndexedDB fallback (${reason}). Loaded ${localList.length} classrooms.`,
           );
-          if (localList.length > 0) {
-            const slides = await getFirstSlideByStages(localList.map((c) => c.id));
-            applyClassrooms(localList, slides);
-          } else {
-            applyClassrooms(localList, {});
+          // Render list immediately; do thumbnail work in background so Recents opens fast.
+          applyClassrooms(localList, {});
+          const pageStart = Math.max(0, (targetPage - 1) * RECENTS_PER_PAGE);
+          const pageEnd = pageStart + RECENTS_PER_PAGE;
+          const visibleIds = localList.slice(pageStart, pageEnd).map((c) => c.id);
+          if (visibleIds.length > 0) {
+            void (async () => {
+              try {
+                const slides = await getFirstSlideByStages(visibleIds);
+                if (!isLatest()) return;
+                setThumbnails((prev) => ({ ...prev, ...slides }));
+              } catch (thumbErr) {
+                log.warn('Failed to load local Recents thumbnails:', thumbErr);
+              }
+            })();
           }
         };
 
         const supabase = getSupabaseClient();
         if (isAuthenticated && isAdminUser && supabase) {
-          // Clear immediately so we never show the previous page while this page is loading.
-          if (isLatest()) {
-            setRecentsSource('remote');
-            setThumbnails({});
-            setClassrooms([]);
-          }
+          if (isLatest()) setRecentsSource('remote');
           const session = await getSessionSafe(supabase);
           const currentUserId = session?.user?.id;
 
@@ -1183,17 +1203,19 @@ function HomePage() {
               }
               setTotalClassroomsCount(nextTotal ?? rows.length);
             }
-            const list: StageListItem[] = rows.map((row) => {
-              const scenes = Array.isArray(row.scenes_data) ? row.scenes_data : [];
-              return {
-                id: row.id,
-                name: row.name || 'Untitled Stage',
-                description: row.description ?? '',
-                sceneCount: scenes.length,
-                createdAt: Date.parse(row.created_at) || Date.now(),
-                updatedAt: Date.parse(row.updated_at) || Date.now(),
-              };
-            });
+            const list: StageListItem[] = sortRecentsClassrooms(
+              rows.map((row) => {
+                const scenes = Array.isArray(row.scenes_data) ? row.scenes_data : [];
+                return {
+                  id: row.id,
+                  name: row.name || 'Untitled Stage',
+                  description: row.description ?? '',
+                  sceneCount: scenes.length,
+                  createdAt: Date.parse(row.created_at) || Date.now(),
+                  updatedAt: Date.parse(row.updated_at) || Date.now(),
+                };
+              }),
+            );
             // Apply classroom titles immediately; thumbnails will be filled one-by-one
             // so the user sees content much sooner.
             if (isLatest()) {
@@ -1242,16 +1264,26 @@ function HomePage() {
       } catch (err) {
         log.error('Failed to load classrooms:', err);
         try {
-          const localList = await listStages();
+          const localList = sortRecentsClassrooms(await listStages());
           if (isLatest()) {
             setRecentsSource('local');
             setTotalClassroomsCount(localList.length);
+            setRecentPage(targetPage);
           }
-          if (localList.length > 0) {
-            const slides = await getFirstSlideByStages(localList.map((c) => c.id));
-            applyClassrooms(localList, slides);
-          } else {
-            applyClassrooms(localList, {});
+          applyClassrooms(localList, {});
+          const pageStart = Math.max(0, (targetPage - 1) * RECENTS_PER_PAGE);
+          const pageEnd = pageStart + RECENTS_PER_PAGE;
+          const visibleIds = localList.slice(pageStart, pageEnd).map((c) => c.id);
+          if (visibleIds.length > 0) {
+            void (async () => {
+              try {
+                const slides = await getFirstSlideByStages(visibleIds);
+                if (!isLatest()) return;
+                setThumbnails((prev) => ({ ...prev, ...slides }));
+              } catch (thumbErr) {
+                log.warn('Failed to load fallback Recents thumbnails:', thumbErr);
+              }
+            })();
           }
         } catch (fallbackErr) {
           log.error('Failed to recover Recents from local IndexedDB fallback:', fallbackErr);
@@ -1367,15 +1399,23 @@ function HomePage() {
 
   useEffect(() => {
     if (!authReady) return;
-    const handleRefresh = () => {
+    const scheduleRecentsRefresh = () => {
+      const now = Date.now();
+      // # Reason: focus/pageshow/visibility often fire together on back navigation.
+      // Coalesce near-simultaneous events into one reload to avoid UI jumpiness.
+      if (now - recentsRefreshScheduledAtRef.current < 500) return;
+      recentsRefreshScheduledAtRef.current = now;
       void loadClassrooms(recentPage);
     };
+    const handleRefresh = () => {
+      scheduleRecentsRefresh();
+    };
     const handlePageShow = () => {
-      void loadClassrooms(recentPage);
+      scheduleRecentsRefresh();
     };
     const handleVisibility = () => {
       if (!document.hidden) {
-        void loadClassrooms(recentPage);
+        scheduleRecentsRefresh();
       }
     };
     window.addEventListener('focus', handleRefresh);
@@ -2058,6 +2098,77 @@ function HomePage() {
     }
   };
 
+  const ensureGuidanceClassroom = useCallback(async (): Promise<string> => {
+    const guidanceId = 'Q_aCAqhuTq';
+
+    try {
+      const existingRes = await fetch(`/api/classroom?id=${encodeURIComponent(guidanceId)}`, {
+        cache: 'no-store',
+      });
+      if (existingRes.ok) {
+        const existingJson = await existingRes.json().catch(() => null);
+        if (existingJson?.success && existingJson?.classroom) {
+          return guidanceId;
+        }
+      }
+    } catch (error) {
+      log.warn('Guidance classroom existence check failed; attempting recreation:', error);
+    }
+
+    const now = Date.now();
+    const stage: Stage = {
+      id: guidanceId,
+      name: 'Guidance Classroom',
+      description: 'Built-in guided classroom used for the onboarding tour.',
+      createdAt: now,
+      updatedAt: now,
+      language: locale,
+      style: 'presentation',
+      agentIds: ['default-1', 'default-2', 'default-3'],
+    };
+    const sceneId = `scene_${nanoid(8)}`;
+    const scene: Scene = {
+      id: sceneId,
+      stageId: guidanceId,
+      type: 'slide',
+      title: 'Welcome to Guidance',
+      order: 0,
+      content: createDefaultSlideContent(),
+      actions: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    await saveStageData(guidanceId, {
+      stage,
+      scenes: [scene],
+      currentSceneId: sceneId,
+      chats: [],
+    });
+
+    try {
+      await syncClassroomToSupabase({
+        stage,
+        scenes: [scene],
+        chats: [],
+      });
+    } catch (error) {
+      log.warn('Failed to sync recreated guidance classroom to Supabase:', error);
+    }
+
+    return guidanceId;
+  }, [locale]);
+
+  const handleOpenGuidance = useCallback(async () => {
+    try {
+      const guidanceId = await ensureGuidanceClassroom();
+      router.push(`/classroom/${encodeURIComponent(guidanceId)}?tour=1`);
+    } catch (error) {
+      log.error('Failed to open guidance classroom:', error);
+      toast.error('Unable to open guidance classroom right now. Please try again.');
+    }
+  }, [ensureGuidanceClassroom, router]);
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
@@ -2075,11 +2186,11 @@ function HomePage() {
   }
 
   return (
-    <div className="relative min-h-[100dvh] w-full bg-[linear-gradient(to_bottom,rgba(250,250,250,1),rgba(244,244,245,0.95))] dark:bg-[linear-gradient(to_bottom,rgba(9,9,11,1),rgba(15,23,42,0.95))] flex flex-col items-center p-3 pt-20 sm:p-4 sm:pt-20 md:p-8 md:pt-16 overflow-x-hidden">
+    <div className="relative min-h-[100dvh] w-full bg-[radial-gradient(circle_at_12%_8%,rgba(99,102,241,0.22),transparent_34%),radial-gradient(circle_at_90%_12%,rgba(6,182,212,0.22),transparent_30%),radial-gradient(circle_at_50%_120%,rgba(124,58,237,0.16),transparent_45%),linear-gradient(to_bottom,#f8fafc,#eaf0ff_45%,#f8fafc)] dark:bg-[radial-gradient(circle_at_12%_8%,rgba(129,140,248,0.34),transparent_40%),radial-gradient(circle_at_90%_12%,rgba(34,211,238,0.28),transparent_34%),radial-gradient(circle_at_50%_120%,rgba(167,139,250,0.24),transparent_45%),linear-gradient(to_bottom,#020617,#0b1227_45%,#020617)] flex flex-col items-center p-3 pt-20 sm:p-4 sm:pt-20 md:p-8 md:pt-16 overflow-x-hidden">
       {/* ═══ Top-right pill (unchanged) ═══ */}
       <div
         ref={toolbarRef}
-        className="fixed top-2 inset-x-2 sm:top-4 sm:right-4 sm:inset-x-auto z-50 flex items-center justify-between sm:justify-start gap-1 bg-white/90 dark:bg-zinc-900/85 backdrop-blur-xl px-2 py-1.5 sm:px-2.5 rounded-full border border-zinc-200/80 dark:border-zinc-700/60 shadow-sm"
+        className="fixed top-2 inset-x-2 sm:top-4 sm:right-4 sm:inset-x-auto z-50 flex items-center justify-between sm:justify-start gap-1 bg-white/74 dark:bg-slate-900/72 backdrop-blur-2xl px-2 py-1.5 sm:px-2.5 rounded-full border border-white/90 dark:border-slate-700/80 shadow-[0_18px_40px_-26px_rgba(30,41,59,0.85)] ring-1 ring-white/50 dark:ring-white/10"
       >
         {/* Language Selector */}
         <div className="relative">
@@ -2191,7 +2302,7 @@ function HomePage() {
 
         <button
           type="button"
-          onClick={() => router.push('/classroom/Q_aCAqhuTq?tour=1')}
+          onClick={() => void handleOpenGuidance()}
           className="flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs font-semibold text-violet-700 bg-violet-50/75 border border-violet-200/80 transition-all hover:bg-violet-100 dark:text-violet-200 dark:bg-violet-900/30 dark:border-violet-700/70 dark:hover:bg-violet-800/40"
         >
           <BookOpen className="size-3.5 shrink-0" />
@@ -2290,12 +2401,10 @@ function HomePage() {
       {/* ═══ Background Decor ═══ */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div
-          className="absolute top-0 left-1/4 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl animate-pulse"
-          style={{ animationDuration: '4s' }}
+          className="absolute -top-24 left-[10%] w-[30rem] h-[30rem] bg-indigo-300/14 dark:bg-indigo-500/16 rounded-full blur-3xl"
         />
         <div
-          className="absolute bottom-0 right-1/4 w-96 h-96 bg-purple-500/10 rounded-full blur-3xl animate-pulse"
-          style={{ animationDuration: '6s' }}
+          className="absolute -bottom-20 right-[8%] w-[28rem] h-[28rem] bg-sky-300/14 dark:bg-cyan-400/14 rounded-full blur-3xl"
         />
       </div>
       <KidsParallaxBackground />
@@ -2328,24 +2437,53 @@ function HomePage() {
           className="h-12 md:h-16 mb-2 -ml-2 md:-ml-3"
         />
 
-        {/* ── Slogan ── */}
+        <motion.p
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.16 }}
+          className="text-[11px] sm:text-xs font-medium tracking-[0.12em] uppercase text-zinc-500/90 dark:text-zinc-400 mb-2"
+        >
+          Allen Girls Adventure
+        </motion.p>
+
+        {/* ── Hero heading ── */}
         <motion.h1
           initial={{ opacity: 0, y: 6 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.2 }}
-          className="text-center text-xl sm:text-2xl md:text-3xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-2"
+          className="text-center text-2xl sm:text-3xl md:text-[2.35rem] font-medium tracking-tight text-zinc-900 dark:text-zinc-100 mb-2"
         >
-          Create interactive classrooms in minutes
+          Create beautiful interactive classrooms with ease
         </motion.h1>
 
         <motion.p
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.25 }}
-          className="text-sm md:text-[15px] text-muted-foreground/85 mb-6 sm:mb-8 text-center max-w-[680px] px-1"
+          className="text-sm md:text-[15px] text-muted-foreground/80 mb-5 sm:mb-6 text-center max-w-[700px] px-1 leading-relaxed"
         >
-          {t('home.slogan')}
+          Plan engaging lessons, shape the learning flow, and let AI help you bring each classroom
+          to life in a calm, simple workflow.
         </motion.p>
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.28 }}
+          className="mb-5 sm:mb-6 flex flex-wrap items-center justify-center gap-2"
+        >
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-zinc-200/80 bg-white/92 px-3 py-1 text-[11px] font-normal text-zinc-700 dark:border-slate-700 dark:bg-slate-900/65 dark:text-zinc-200">
+            <Sparkles className="size-3 text-indigo-400" />
+            Clean classroom visuals
+          </span>
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-zinc-200/80 bg-white/92 px-3 py-1 text-[11px] font-normal text-zinc-700 dark:border-slate-700 dark:bg-slate-900/65 dark:text-zinc-200">
+            <Wand2 className="size-3 text-sky-400" />
+            Smooth content generation
+          </span>
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-zinc-200/80 bg-white/92 px-3 py-1 text-[11px] font-normal text-zinc-700 dark:border-slate-700 dark:bg-slate-900/65 dark:text-zinc-200">
+            <ShieldCheck className="size-3 text-violet-400" />
+            Gentle, reliable workflow
+          </span>
+        </motion.div>
 
         {/* ── Unified input area ── */}
         <motion.div
@@ -2354,9 +2492,9 @@ function HomePage() {
           transition={{ delay: 0.35 }}
           className="w-full"
         >
-          <div className="w-full rounded-2xl sm:rounded-3xl border border-zinc-200/80 dark:border-zinc-700/60 bg-white/95 dark:bg-zinc-900/90 backdrop-blur-xl shadow-md transition-shadow focus-within:shadow-lg">
-            <div className="px-3 sm:px-4 pt-3">
-              <span className="inline-flex items-center rounded-full border border-zinc-300/80 dark:border-zinc-600/70 bg-zinc-100/90 dark:bg-zinc-800/70 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-zinc-700 dark:text-zinc-300">
+          <div className="relative overflow-hidden w-full rounded-2xl sm:rounded-3xl border border-white/90 dark:border-slate-700/70 bg-white/88 dark:bg-slate-900/78 backdrop-blur-xl shadow-[0_24px_70px_-38px_rgba(30,41,59,0.7)] ring-1 ring-white/70 dark:ring-white/10 transition-all duration-300 focus-within:shadow-[0_28px_76px_-32px_rgba(30,41,59,0.72)]">
+            <div className="px-4 sm:px-5 pt-4">
+              <span className="inline-flex items-center rounded-full border border-zinc-200/80 dark:border-slate-700/70 bg-white/90 dark:bg-slate-900/70 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.08em] text-zinc-600 dark:text-zinc-300">
                 AI Classroom Studio
               </span>
             </div>
@@ -2376,22 +2514,27 @@ function HomePage() {
                   ? t('upload.requirementPlaceholder')
                   : 'Login as admin to enter prompt and generate classroom.'
               }
-              className="w-full resize-none border-0 bg-transparent px-3.5 sm:px-5 pt-2 pb-2 text-[14px] leading-relaxed placeholder:text-muted-foreground/50 focus:outline-none min-h-[128px] sm:min-h-[150px] max-h-[320px]"
+              className="w-full resize-none border-0 bg-transparent px-4 sm:px-5 pt-3 pb-2 text-[14px] leading-relaxed placeholder:text-muted-foreground/60 focus:outline-none min-h-[132px] sm:min-h-[152px] max-h-[320px]"
               value={form.requirement}
               onChange={(e) => updateForm('requirement', e.target.value)}
               onKeyDown={handleKeyDown}
               rows={4}
               disabled={!isAuthenticated || !isAdminUser}
             />
+            <div className="px-4 sm:px-5 pb-2">
+              <p className="text-[11px] text-muted-foreground/75">
+                Example: "Teach me Python basics in 30 minutes" or "Explain Fourier Transform on whiteboard".
+              </p>
+            </div>
 
             {/* Toolbar row */}
-            <div className="px-3 pb-1 flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-x-4 gap-y-2">
+            <div className="px-4 pb-2 flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-x-4 gap-y-2 border-t border-border/50 pt-3">
               <div className="grid grid-cols-1 min-[420px]:grid-cols-2 gap-2 w-full sm:w-auto sm:flex sm:flex-wrap sm:items-center">
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="h-8 gap-1.5 border-border/80 bg-background/70 text-xs font-medium shadow-none hover:bg-accent rounded-lg w-full sm:w-auto"
+                  className="h-8 gap-1.5 border-border/80 bg-background/80 text-xs font-medium shadow-none hover:bg-accent rounded-md w-full sm:w-auto"
                   onClick={goToCreatorProfile}
                 >
                   <UserRound className="size-3.5" />
@@ -2401,7 +2544,7 @@ function HomePage() {
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="h-8 gap-1.5 border-border/80 bg-background/70 text-xs font-medium shadow-none hover:bg-accent rounded-lg w-full sm:w-auto"
+                  className="h-8 gap-1.5 border-border/80 bg-background/80 text-xs font-medium shadow-none hover:bg-accent rounded-md w-full sm:w-auto"
                   onClick={() => {
                     // Persist immediately so text is not lost if the debounced draft write has not run yet.
                     try {
@@ -2430,22 +2573,21 @@ function HomePage() {
             </div>
 
             {isAuthenticated && isAdminUser && (
-              <div className="mx-3 mb-2 rounded-xl border border-zinc-200/80 dark:border-zinc-700/60 bg-zinc-50/80 dark:bg-zinc-900/50 p-3 space-y-2">
+              <div className="mx-4 mb-3 rounded-xl border border-zinc-200/80 dark:border-zinc-700/60 bg-zinc-50/60 dark:bg-zinc-900/40 p-3.5 space-y-3">
                 <div className="flex items-center justify-between gap-2">
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-[0.08em] text-zinc-700 dark:text-zinc-300">
                       Tutor Voice Cloning
                     </p>
-                    <p className="text-[11px] text-muted-foreground">
-                      Save tutor voice reference with avatar, title and description for presenter
-                      reuse.
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      Save a reusable tutor profile with voice reference and avatar.
                     </p>
                   </div>
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="h-7 text-xs"
+                    className="h-7 text-xs rounded-md"
                     disabled={isCreatingVoice}
                     onClick={() => void handleCreateCustomVoice()}
                   >
@@ -2453,24 +2595,30 @@ function HomePage() {
                   </Button>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  <input
-                    value={form.tutorName}
-                    onChange={(e) => updateForm('tutorName', e.target.value)}
-                    placeholder="Tutor name (shown in presenters list)"
-                    className="h-9 rounded-md border border-border bg-background px-2 text-xs"
-                  />
-                  <input
-                    value={form.tutorTitle}
-                    onChange={(e) => updateForm('tutorTitle', e.target.value)}
-                    placeholder="Tutor title"
-                    className="h-9 rounded-md border border-border bg-background px-2 text-xs"
-                  />
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                  <label className="text-[11px] text-muted-foreground/90 flex flex-col gap-1">
+                    Tutor Name
+                    <input
+                      value={form.tutorName}
+                      onChange={(e) => updateForm('tutorName', e.target.value)}
+                      placeholder="Shown in presenter list"
+                      className="h-9 rounded-md border border-border/80 bg-background/90 px-2.5 text-xs text-foreground"
+                    />
+                  </label>
+                  <label className="text-[11px] text-muted-foreground/90 flex flex-col gap-1">
+                    Tutor Title
+                    <input
+                      value={form.tutorTitle}
+                      onChange={(e) => updateForm('tutorTitle', e.target.value)}
+                      placeholder="e.g. Python Coach"
+                      className="h-9 rounded-md border border-border/80 bg-background/90 px-2.5 text-xs text-foreground"
+                    />
+                  </label>
                   <UITextarea
                     value={form.tutorDescription}
                     onChange={(e) => updateForm('tutorDescription', e.target.value)}
                     placeholder="Tutor description"
-                    className="min-h-[64px] text-xs"
+                    className="min-h-[64px] text-xs border-border/80 bg-background/90"
                   />
                   <label className="text-xs text-muted-foreground flex flex-col gap-1">
                     Reference Audio (Upload)
@@ -2483,7 +2631,7 @@ function HomePage() {
                         void handleTutorReferenceAudioUpload(file);
                         e.currentTarget.value = '';
                       }}
-                      className="h-9 rounded-md border border-border bg-background px-2 py-1 text-xs file:mr-2 file:border-0 file:bg-transparent file:text-xs file:font-medium"
+                      className="h-9 rounded-md border border-border/80 bg-background/90 px-2.5 py-1 text-xs file:mr-2 file:rounded-md file:border file:border-border/50 file:bg-muted/35 file:px-2 file:py-0.5 file:text-xs file:font-medium"
                     />
                     <span className="text-[10px] text-muted-foreground/80 truncate">
                       {isUploadingReferenceAudio
@@ -2495,7 +2643,7 @@ function HomePage() {
                   </label>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                   <label className="text-xs text-muted-foreground flex flex-col gap-1">
                     Tutor Avatar
                     <input
@@ -2506,7 +2654,7 @@ function HomePage() {
                         handleTutorAvatarUpload(file);
                         e.currentTarget.value = '';
                       }}
-                      className="h-8 rounded-md border border-border bg-background px-2 py-1 text-xs file:mr-2 file:border-0 file:bg-transparent file:text-xs file:font-medium"
+                      className="h-8 rounded-md border border-border/80 bg-background/90 px-2.5 py-1 text-xs file:mr-2 file:rounded-md file:border file:border-border/50 file:bg-muted/35 file:px-2 file:py-0.5 file:text-xs file:font-medium"
                     />
                     <span className="text-[10px] text-muted-foreground/80 truncate">
                       {form.tutorAvatar.startsWith('data:image/png')
@@ -2539,7 +2687,7 @@ function HomePage() {
                           void savePreferredTutorToDb(voice);
                         }
                       }}
-                      className="h-8 rounded-md border border-border bg-background px-2 text-xs"
+                      className="h-8 rounded-md border border-border/80 bg-background/90 px-2.5 text-xs text-foreground"
                     >
                       <option value="">No preset selected</option>
                       {customVoices.map((voice) => (
@@ -2557,7 +2705,7 @@ function HomePage() {
             )}
 
             {/* Toolbar row */}
-            <div className="px-3 pb-3 flex flex-wrap sm:flex-nowrap items-end gap-2">
+            <div className="px-4 pb-4 flex flex-wrap sm:flex-nowrap items-end gap-2">
               <div className="min-w-0 w-full sm:flex-1">
                 <GenerationToolbar
                   language={form.language}
@@ -2603,7 +2751,7 @@ function HomePage() {
                 className={cn(
                   'h-10 rounded-xl flex items-center justify-center gap-1.5 transition-all px-4 min-w-[130px] w-[calc(100%-3rem)] min-[420px]:w-auto sm:w-auto sm:shrink-0',
                   canGenerateNow
-                    ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 hover:opacity-95 shadow-sm cursor-pointer'
+                    ? 'bg-gradient-to-r from-indigo-600 via-violet-600 to-sky-600 text-white hover:brightness-110 shadow-[0_16px_34px_-18px_rgba(79,70,229,0.85)] cursor-pointer'
                     : 'bg-muted text-muted-foreground/40 cursor-not-allowed',
                 )}
               >
@@ -2635,9 +2783,9 @@ function HomePage() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.5 }}
-          className="relative z-30 mt-8 sm:mt-10 w-full max-w-6xl flex flex-col items-center pointer-events-auto rounded-2xl sm:rounded-3xl border border-white/55 bg-white/65 px-3 sm:px-5 py-4 sm:py-5 shadow-[0_24px_50px_-32px_rgba(15,23,42,0.45)] backdrop-blur-xl dark:border-slate-700/70 dark:bg-slate-900/55"
+          className="relative z-30 mt-8 sm:mt-10 w-full max-w-6xl flex flex-col items-center pointer-events-auto rounded-2xl sm:rounded-3xl border border-white/90 bg-white/84 px-3 sm:px-5 py-4 sm:py-5 shadow-[0_28px_64px_-36px_rgba(15,23,42,0.72)] ring-1 ring-white/65 backdrop-blur-xl dark:border-slate-700/70 dark:bg-slate-900/74 dark:ring-white/10"
         >
-          {/* Trigger — divider-line with centered text */}
+          {/* Trigger / header */}
           <button
             onClick={() => {
               const next = !recentOpen;
@@ -2648,23 +2796,32 @@ function HomePage() {
                 /* ignore */
               }
             }}
-            className="group w-full flex items-center gap-4 py-2.5 cursor-pointer"
+            className="group w-full rounded-2xl border border-border/50 bg-white/70 dark:bg-slate-900/45 px-3.5 py-3 flex items-center justify-between gap-3 text-left transition-colors hover:border-border"
           >
-            <div className="flex-1 h-px bg-border/40 group-hover:bg-border/70 transition-colors" />
-            <span className="shrink-0 inline-flex items-center gap-2 rounded-full border border-violet-200/70 bg-violet-50/80 px-3 py-1.5 text-[13px] font-semibold text-violet-700 dark:border-violet-700/60 dark:bg-violet-900/30 dark:text-violet-200 transition-colors select-none">
-              <Clock className="size-3.5 text-violet-500" />
-              {t('classroom.recentClassrooms')}
-              <span className="inline-flex items-center justify-center rounded-full bg-violet-600 px-1.5 py-0.5 text-[10px] tabular-nums text-white">
-                {isRecentsLoading && classrooms.length === 0 ? '...' : totalRecentItems}
+            <div className="min-w-0">
+              <div className="inline-flex items-center gap-2 text-sm font-semibold text-foreground">
+                <Clock className="size-4 text-violet-500" />
+                <span>{t('classroom.recentClassrooms')}</span>
+                <span className="inline-flex items-center justify-center rounded-full bg-violet-600 px-1.5 py-0.5 text-[10px] tabular-nums text-white">
+                  {isRecentsLoading && classrooms.length === 0 ? '...' : totalRecentItems}
+                </span>
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {recentsSource === 'remote' ? 'Synced from cloud storage' : 'Loaded from local cache'}
+              </p>
+            </div>
+            <div className="inline-flex items-center gap-2 shrink-0">
+              <span className="rounded-full border border-border/60 bg-background/70 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                {totalRecentPages > 1 ? `Page ${recentPage}/${totalRecentPages}` : 'Single page'}
               </span>
               <motion.div
                 animate={{ rotate: recentOpen ? 180 : 0 }}
-                transition={{ duration: 0.3, ease: 'easeInOut' }}
+                transition={{ duration: 0.25, ease: 'easeInOut' }}
+                className="rounded-full border border-border/60 bg-background/70 p-1"
               >
-                <ChevronDown className="size-3.5 text-violet-500" />
+                <ChevronDown className="size-3.5 text-muted-foreground" />
               </motion.div>
-            </span>
-            <div className="flex-1 h-px bg-border/40 group-hover:bg-border/70 transition-colors" />
+            </div>
           </button>
 
           {/* Expandable content */}
@@ -2733,12 +2890,12 @@ function HomePage() {
                         setRecentPage(nextPage);
                         void loadClassrooms(nextPage);
                       }}
-                      className="h-8 rounded-full px-3 text-xs"
+                      className="h-8 rounded-lg px-3 text-xs border-border/70 bg-background/75"
                     >
                       <ChevronLeft className="size-3.5" />
                       <span className="hidden sm:inline ml-1">Prev</span>
                     </Button>
-                    <span className="rounded-full border border-violet-200/70 bg-violet-50 px-2.5 sm:px-3 py-1 text-[11px] sm:text-xs font-semibold text-violet-700 dark:border-violet-700/60 dark:bg-violet-900/30 dark:text-violet-200 whitespace-nowrap">
+                    <span className="rounded-lg border border-border/70 bg-background/75 px-2.5 sm:px-3 py-1 text-[11px] sm:text-xs font-semibold text-foreground/85 whitespace-nowrap">
                       Page {recentPage} of {totalRecentPages}
                     </span>
                     <Button
@@ -2751,7 +2908,7 @@ function HomePage() {
                         setRecentPage(nextPage);
                         void loadClassrooms(nextPage);
                       }}
-                      className="h-8 rounded-full px-3 text-xs"
+                      className="h-8 rounded-lg px-3 text-xs border-border/70 bg-background/75"
                     >
                       <span className="hidden sm:inline mr-1">Next</span>
                       <ChevronRight className="size-3.5" />
@@ -2765,7 +2922,7 @@ function HomePage() {
       )}
 
       {/* Footer — flows with content, at the very end */}
-      <div className="mt-auto pt-12 pb-4 text-center text-xs text-muted-foreground/40">
+      <div className="mt-auto pt-12 pb-4 text-center text-xs text-muted-foreground/55">
         Allen Girls Adventure Open Source Project
       </div>
     </div>
@@ -3100,13 +3257,13 @@ function ClassroomCard({
 
   return (
     <div
-      className="group cursor-pointer rounded-2xl border border-white/70 bg-white/80 p-2 shadow-[0_12px_30px_-24px_rgba(15,23,42,0.85)] transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_18px_40px_-24px_rgba(59,130,246,0.45)] dark:border-slate-700/70 dark:bg-slate-900/70"
+      className="group cursor-pointer rounded-2xl border border-white/90 bg-white/86 p-2.5 shadow-[0_12px_28px_-22px_rgba(15,23,42,0.65)] ring-1 ring-white/60 transition-all duration-300 hover:-translate-y-1 hover:shadow-[0_20px_40px_-22px_rgba(79,70,229,0.3)] dark:border-slate-700/70 dark:bg-slate-900/74 dark:ring-white/10"
       onClick={confirmingDelete ? undefined : onClick}
     >
       {/* Thumbnail — large radius, no border, subtle bg */}
       <div
         ref={thumbRef}
-        className="relative w-full aspect-[16/9] rounded-xl bg-slate-100 dark:bg-slate-800/80 overflow-hidden transition-transform duration-300 group-hover:scale-[1.015]"
+        className="relative w-full aspect-[16/9] rounded-xl bg-slate-100 dark:bg-slate-800/80 overflow-hidden ring-1 ring-black/5 dark:ring-white/10 transition-transform duration-300 group-hover:scale-[1.015]"
       >
         {slide ? (
           <ThumbnailSlide
@@ -3181,13 +3338,18 @@ function ClassroomCard({
       </div>
 
       {/* Info — outside the thumbnail */}
-      <div className="mt-2.5 px-1">
-        <span className="mb-1.5 inline-flex items-center rounded-full border border-violet-200/70 bg-violet-50 px-2 py-0.5 text-[11px] font-semibold text-violet-700 dark:border-violet-700/60 dark:bg-violet-900/30 dark:text-violet-200">
-          {classroom.sceneCount} {t('classroom.slides')} · {formatDate(classroom.updatedAt)}
-        </span>
+      <div className="mt-2.5 px-1.5">
+        <div className="mb-1.5 flex items-center justify-between gap-2">
+          <span className="inline-flex items-center rounded-md border border-violet-200/80 bg-violet-50/90 px-2 py-0.5 text-[11px] font-semibold text-violet-700 dark:border-violet-700/60 dark:bg-violet-900/30 dark:text-violet-200">
+            {classroom.sceneCount} {t('classroom.slides')}
+          </span>
+          <span className="text-[11px] text-muted-foreground whitespace-nowrap">
+            {formatDate(classroom.updatedAt)}
+          </span>
+        </div>
         <Tooltip>
           <TooltipTrigger asChild>
-            <p className="font-semibold text-[15px] truncate text-foreground/90 min-w-0">
+            <p className="font-semibold text-[14px] leading-snug line-clamp-2 text-foreground/90 min-w-0 min-h-[2.4em]">
               {classroom.name}
             </p>
           </TooltipTrigger>

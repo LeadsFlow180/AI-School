@@ -42,6 +42,7 @@ import { createLogger } from '@/lib/logger';
 import { db } from '@/lib/utils/database';
 import { getSessionSafe, getSupabaseClient } from '@/lib/supabase/client';
 import type { TTSProviderId } from '@/lib/audio/types';
+import { requestTTSWithJobPolling } from '@/lib/audio/tts-job-client';
 
 const log = createLogger('PlaybackEngine');
 
@@ -684,10 +685,8 @@ export class PlaybackEngine {
             return false;
           }
           try {
-            const resp = await fetch('/api/generate/tts', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
+            const data = await requestTTSWithJobPolling(
+              {
                 text: speechAction.text,
                 audioId,
                 ttsProviderId: ttsRequest.providerId,
@@ -695,13 +694,9 @@ export class PlaybackEngine {
                 ttsSpeed: ttsRequest.speed,
                 ttsApiKey: ttsRequest.apiKey,
                 ttsBaseUrl: ttsRequest.baseUrl,
-              }),
-            });
-            if (!resp.ok) {
-              this.ttsRegenerationFailures.set(reuseKey, Date.now());
-              return false;
-            }
-            const data = await resp.json();
+              },
+              { maxWaitMs: 90_000, intervalMs: 1_500 },
+            );
             if (!data?.success || !data?.base64 || !data?.format) {
               this.ttsRegenerationFailures.set(reuseKey, Date.now());
               return false;

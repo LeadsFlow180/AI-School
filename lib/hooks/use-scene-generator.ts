@@ -13,6 +13,8 @@ import type { TTSProviderId } from '@/lib/audio/types';
 import { splitLongSpeechActions } from '@/lib/audio/tts-utils';
 import { generateMediaForOutlines, reconcileGeneratedImageSources } from '@/lib/media/media-orchestrator';
 import { createLogger } from '@/lib/logger';
+import { getSessionSafe, getSupabaseClient } from '@/lib/supabase/client';
+import { requestTTSWithJobPolling } from '@/lib/audio/tts-job-client';
 
 const log = createLogger('SceneGenerator');
 const MAX_STEP_RETRIES = 2;
@@ -186,10 +188,9 @@ export async function generateAndStoreTTS(
   if (settings.ttsProviderId === 'browser-native-tts') return;
 
   const ttsRequest = getEffectiveTTSRequestConfig();
-  const response = await fetch('/api/generate/tts', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+  if (signal?.aborted) throw new Error('TTS request aborted');
+  const data = await requestTTSWithJobPolling(
+    {
       text,
       audioId,
       ttsProviderId: ttsRequest.providerId,
@@ -197,20 +198,13 @@ export async function generateAndStoreTTS(
       ttsSpeed: ttsRequest.speed,
       ttsApiKey: ttsRequest.apiKey,
       ttsBaseUrl: ttsRequest.baseUrl,
-    }),
-    signal,
-  });
-
-  const data = await response
-    .json()
-    .catch(() => ({ success: false, error: response.statusText || 'Invalid TTS response' }));
-  if (!response.ok || !data.success || !data.base64 || !data.format) {
-    const err = new Error(
-      data.details || data.error || `TTS request failed: HTTP ${response.status}`,
-    );
+    },
+    { maxWaitMs: 120_000, intervalMs: 1_500 },
+  ).catch((error) => {
+    const err = error instanceof Error ? error : new Error(String(error));
     log.warn('TTS failed for', audioId, ':', err);
     throw err;
-  }
+  });
   if (data.ttsDebug) {
     log.info('[TTS Debug]', data.ttsDebug);
   }

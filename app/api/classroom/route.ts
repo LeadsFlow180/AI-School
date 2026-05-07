@@ -10,6 +10,15 @@ import {
 } from '@/lib/server/classroom-storage';
 import type { Scene, Stage } from '@/lib/types/stage';
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    }),
+  ]);
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -64,18 +73,28 @@ export async function GET(request: NextRequest) {
     // service-role access to read by id even when client-side RLS blocks.
     const supabaseAdmin = getSupabaseAdminClient();
     if (supabaseAdmin) {
-      const { data, error } = await supabaseAdmin
-        .from('classrooms')
-        .select('id, stage_data, scenes_data, created_at')
-        .eq('id', id)
-        .maybeSingle();
+      const result = await withTimeout(
+        supabaseAdmin
+          .from('classrooms')
+          .select('id, stage_data, scenes_data, created_at')
+          .eq('id', id)
+          .maybeSingle(),
+        2500,
+        'classroom Supabase lookup',
+      ).catch(() => null);
 
-      if (!error && data?.id && data.stage_data && Array.isArray(data.scenes_data)) {
+      if (
+        result &&
+        !result.error &&
+        result.data?.id &&
+        result.data.stage_data &&
+        Array.isArray(result.data.scenes_data)
+      ) {
         const classroom = {
-          id: data.id,
-          stage: data.stage_data as Stage,
-          scenes: data.scenes_data as Scene[],
-          createdAt: data.created_at || new Date().toISOString(),
+          id: result.data.id,
+          stage: result.data.stage_data as Stage,
+          scenes: result.data.scenes_data as Scene[],
+          createdAt: result.data.created_at || new Date().toISOString(),
         };
         return apiSuccess({ classroom });
       }

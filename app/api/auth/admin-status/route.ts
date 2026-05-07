@@ -2,9 +2,21 @@ import { type NextRequest } from 'next/server';
 import { apiError, apiSuccess, API_ERROR_CODES } from '@/lib/server/api-response';
 import { getSupabaseAdminClient } from '@/lib/server/supabase-admin';
 
+let adminStatusSupabaseUnavailableUntil = 0;
+const ADMIN_STATUS_OUTAGE_COOLDOWN_MS = 30_000;
+
 function extractBearerToken(request: NextRequest) {
   const authHeader = request.headers.get('authorization') || '';
   return authHeader.startsWith('Bearer ') ? authHeader.slice('Bearer '.length).trim() : '';
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    }),
+  ]);
 }
 
 async function extractTokenFromRequest(request: NextRequest) {
@@ -35,38 +47,44 @@ async function handleAdminStatus(request: NextRequest) {
       return apiSuccess({ isAdmin: false });
     }
 
-    const { data: userData, error: userErr } = await adminClient.auth.getUser(token);
-    if (userErr || !userData.user) {
-      return apiSuccess({ isAdmin: false });
+    if (Date.now() < adminStatusSupabaseUnavailableUntil) {
+      return apiSuccess({ isAdmin: false, temporarilyUnavailable: true });
     }
 
-    const { data: adminRow, error: adminErr } = await adminClient
-      .from('admin_users')
-      .select('user_id')
-      .eq('user_id', userData.user.id)
-      .maybeSingle();
+    const userResult = await withTimeout(adminClient.auth.getUser(token), 2500, 'admin auth user lookup').catch(
+      () => {
+        adminStatusSupabaseUnavailableUntil = Date.now() + ADMIN_STATUS_OUTAGE_COOLDOWN_MS;
+        return null;
+      },
+    );
+    if (!userResult || userResult.error || !userResult.data.user) {
+      return apiSuccess({ isAdmin: false });
+    }
+    const user = userResult.data.user;
 
-    if (adminErr) {
-      return apiError(
-        API_ERROR_CODES.INTERNAL_ERROR,
-        500,
-        'Failed to verify admin status.',
-        adminErr.message,
-      );
+    const adminResult = await withTimeout(
+      adminClient.from('admin_users').select('user_id').eq('user_id', user.id).maybeSingle(),
+      2500,
+      'admin row lookup',
+    ).catch(() => {
+      adminStatusSupabaseUnavailableUntil = Date.now() + ADMIN_STATUS_OUTAGE_COOLDOWN_MS;
+      return null;
+    });
+
+    if (!adminResult || adminResult.error) {
+      return apiSuccess({ isAdmin: false, userId: user.id, email: user.email });
     }
 
     return apiSuccess({
-      isAdmin: !!adminRow,
-      userId: userData.user.id,
-      email: userData.user.email,
+      isAdmin: !!adminResult.data,
+      userId: user.id,
+      email: user.email,
     });
   } catch (error) {
-    return apiError(
-      API_ERROR_CODES.INTERNAL_ERROR,
-      500,
-      'Failed to verify admin status.',
-      error instanceof Error ? error.message : String(error),
-    );
+    return apiSuccess({
+      isAdmin: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 

@@ -2,6 +2,30 @@
 
 ## Active
 
+- [x] 2026-05-07 - Classroom `/edit` layout: slide strip always visible (mobile horizontal scroller + sticky bar), tall slide canvas (`min-h` with `dvh` caps, no `aspect-video`), tools panel below with bounded scroll; desktop sidebar full height + scrollable list; taller slide chips/list rows.
+- [x] 2026-05-07 - Refine classroom `/edit` `EditCanvasActionPanel`: monochrome list rows + shadcn Button/Input, calmer status banners, single primary emphasis on finalize; neutral canvas background.
+- [x] 2026-05-07 - Classroom canvas edit (`/classroom/[id]/edit`): show same rich-text toolbar in the left Slides sidebar when a text or shape-with-text element is selected; extract shared `SlideTextRichToolbar` used by canvas overlay and sidebar (`embedded` layout).
+- [x] 2026-05-07 - Expand classroom slide text edit floating toolbar: bold/italic/underline/strike, align left/center/right, bullet & numbered lists, indent in/out, sub/superscript, highlight swatches; ensure ProseMirror align/list/indent/backcolor/sub/sup apply after toolbar blur via `autoSelectAll` where needed.
+- [x] 2026-05-07 - Classroom slide text edit: add preset text color swatches and custom color picker on selected text box toolbar (`TextElementOperate`), using existing ProseMirror `color` / forecolor command.
+- [x] 2026-05-07 - Speed up Home Recents local-mode loading by rendering classroom list immediately and deferring thumbnail generation for only the visible page to background (non-blocking).
+- [x] 2026-05-07 - Smooth auth mascot password animation with eyelid transition and eyelash details when password is shown.
+- [x] 2026-05-07 - Add auth password visibility toggle with eye/eye-off icon and cute animated SVG mascot that looks around while hidden and covers/closes eyes when password is shown.
+- [x] 2026-05-07 - Harden Supabase-offline behavior by adding aborting fetch timeout to server Supabase admin client and a short `/api/auth/admin-status` outage cooldown, so slow/down Supabase returns fast but recovers automatically when available.
+- [x] 2026-05-07 - Reduce slow Supabase timeout impact on classroom open by adding short server-side timeouts/fallbacks to `/api/auth/admin-status` and `/api/classroom` GET, preventing 10s connect timeouts from blocking responses.
+- [x] 2026-05-07 - Speed up opening classrooms from Home Recents by rendering cached IndexedDB classroom data immediately, moving server freshness/audio snapshot refresh to background, and reducing fixed classroom loading hold time.
+- [x] 2026-05-06 - Simplify `/rag` visuals to a clean minimal style after over-styled pass: remove flashy gradients/glass effects, normalize card surfaces/buttons, and keep straightforward readable document list states.
+- [x] 2026-05-06 - Refresh `/rag` page UI with a cleaner premium layout: polished page shell, improved header hierarchy, upgraded upload CTA styling, and clearer indexed-document empty/loading/list states while preserving existing behavior.
+- [x] 2026-05-06 - Further polish Home AI Classroom Studio panel with softer visual grouping and clearer form readability (helper prompt hint, section dividers, explicit tutor field labels, and calmer upload/input styling) without changing behavior.
+- [x] 2026-05-06 - Improve Home Recents UX with a clearer professional header (source status + page context), cleaner pagination controls, and better card information hierarchy (separate slides/date + two-line title readability).
+- [x] 2026-05-06 - Refine Home visual language to a cleaner professional style by reducing decorative intensity, simplifying hero badges, tightening typography hierarchy, and using calmer glass surfaces for prompt/recents containers.
+- [x] 2026-05-06 - Add async TTS job flow to avoid long-request timeouts: `/api/generate/tts` now supports job creation + status polling (`jobId`), and key classroom/playback/scene-generation callers poll job completion instead of blocking one long synchronous request.
+- [x] 2026-05-06 - Fix Guidance Book broken hardcoded classroom link by auto-recreating static guidance classroom `Q_aCAqhuTq` when missing, then opening `/classroom/[id]?tour=1`.
+- [x] 2026-05-06 - Intensify premium glass + gradient home styling with richer layered glows, stronger glass shells/rings, gradient CTA treatment, and elevated recents/card surfaces.
+- [x] 2026-05-06 - Further elevate home page visual quality with stronger premium UI treatment: feature chips with icons, capability highlight cards, refined recents header rails, and more polished recents card surfaces.
+- [x] 2026-05-06 - Refresh home page visual design with a more professional premium look: stronger gradient backdrop, polished glassmorphism hero/prompt card, improved typography, and upgraded recents container styling.
+- [x] 2026-05-05 - Stabilize Home Recents ordering by applying deterministic tie-break sort (`updatedAt`, `createdAt`, `id`) so slide/card positions no longer appear random across reloads.
+- [x] 2026-05-05 - Prevent Recents position disturbance after returning from classroom by avoiding pre-fetch list clearing and coalescing focus/pageshow/visibility-triggered reloads into one refresh.
+- [x] 2026-05-05 - Clarify cloned TTS upstream runtime failures by mapping synth `500` responses containing `Errno 5` / I/O-signature messages to `UPSTREAM_ERROR` (502) in `/api/generate/tts`.
 - [x] 2026-05-04 - Delete classroom now performs server-side cleanup via `DELETE /api/classroom?id=...`, removing associated Supabase Storage audio/image objects under classroom prefix before deleting classroom row; home delete flow updated to call this API with bearer token.
 - [x] 2026-05-04 - Restrict home prompt/tutor-creation access to authenticated users by redirecting unauthenticated visits on `/` to `/auth`, while keeping `/classroom/[id]` publicly viewable for students.
 - [x] 2026-05-04 - Fix `media-upload` 500/admin-table fragility by allowing authenticated-user fallback when `admin_users` table is missing, and persist runtime-regenerated speech audio back to classroom storage/DB from playback engine so new tabs/devices reuse stored cloned voice URLs instead of re-requesting TTS.

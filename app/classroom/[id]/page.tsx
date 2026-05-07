@@ -19,10 +19,11 @@ import type { Scene } from '@/lib/types/stage';
 import type { Action } from '@/lib/types/action';
 import type { Slide } from '@/lib/types/slides';
 import { db } from '@/lib/utils/database';
+import { requestTTSWithJobPolling } from '@/lib/audio/tts-job-client';
 import { splitLongSpeechActions } from '@/lib/audio/tts-utils';
 
 const log = createLogger('Classroom');
-const MIN_LOADING_SCENE_MS = 3400;
+const MIN_LOADING_SCENE_MS = 900;
 
 function getGammaGenerationIdFromUrl(url?: string): string | null {
   if (!url) return null;
@@ -564,44 +565,48 @@ export default function ClassroomDetailPage() {
 
       await loadFromStorage(classroomId);
 
-      // Always try server classroom for freshness. Local IndexedDB can be stale
-      // across tabs/devices; server copy is the source of truth after edit sync.
-      try {
-        const localStage = useStageStore.getState().stage || null;
-        const localScenes = useStageStore.getState().scenes || [];
-        const localFreshness = getStageFreshness(localStage, localScenes);
+      const cachedStage = useStageStore.getState().stage || null;
+      if (cachedStage) {
+        // Reason: recent classrooms should open from IndexedDB immediately.
+        // Fresh server/audio snapshots are useful, but must not block first paint.
+        void (async () => {
+          try {
+            const localStage = useStageStore.getState().stage || null;
+            const localScenes = useStageStore.getState().scenes || [];
+            const localFreshness = getStageFreshness(localStage, localScenes);
 
-        const serverRes = await fetch(`/api/classroom?id=${encodeURIComponent(classroomId)}`, {
-          cache: 'no-store',
-        });
-        if (serverRes.ok) {
-          const serverJson = await serverRes.json();
-          if (serverJson.success && serverJson.classroom) {
-            const serverStage = serverJson.classroom.stage as Stage;
-            const serverScenes = (serverJson.classroom.scenes || []) as Scene[];
-            const serverFreshness = getStageFreshness(serverStage, serverScenes);
-            const localAudioCount = countSpeechAudioUrls(localScenes);
-            const serverAudioCount = countSpeechAudioUrls(serverScenes);
-            const preferServerTutorSnapshot =
-              !hasTutorConfig(localStage) && hasTutorConfig(serverStage);
-            const preferServerAudioSnapshot = serverAudioCount > localAudioCount;
-            if (
-              serverFreshness >= localFreshness ||
-              preferServerTutorSnapshot ||
-              preferServerAudioSnapshot
-            ) {
-              useStageStore.getState().setStage(serverStage);
-              useStageStore.setState({
-                scenes: serverScenes,
-                currentSceneId: serverScenes[0]?.id ?? null,
-              });
-              // Keep local cache in sync with fresh server data.
-              await useStageStore.getState().saveToStorage();
+            const serverRes = await fetch(`/api/classroom?id=${encodeURIComponent(classroomId)}`, {
+              cache: 'no-store',
+            });
+            if (serverRes.ok) {
+              const serverJson = await serverRes.json();
+              if (serverJson.success && serverJson.classroom) {
+                const serverStage = serverJson.classroom.stage as Stage;
+                const serverScenes = (serverJson.classroom.scenes || []) as Scene[];
+                const serverFreshness = getStageFreshness(serverStage, serverScenes);
+                const localAudioCount = countSpeechAudioUrls(localScenes);
+                const serverAudioCount = countSpeechAudioUrls(serverScenes);
+                const preferServerTutorSnapshot =
+                  !hasTutorConfig(localStage) && hasTutorConfig(serverStage);
+                const preferServerAudioSnapshot = serverAudioCount > localAudioCount;
+                if (
+                  serverFreshness >= localFreshness ||
+                  preferServerTutorSnapshot ||
+                  preferServerAudioSnapshot
+                ) {
+                  useStageStore.getState().setStage(serverStage);
+                  useStageStore.setState({
+                    scenes: serverScenes,
+                    currentSceneId: serverScenes[0]?.id ?? null,
+                  });
+                  await useStageStore.getState().saveToStorage();
+                }
+              }
             }
+          } catch (refreshErr) {
+            log.warn('Server refresh check failed, continuing with local snapshot:', refreshErr);
           }
-        }
-      } catch (refreshErr) {
-        log.warn('Server refresh check failed, continuing with local snapshot:', refreshErr);
+        })();
       }
 
       // If IndexedDB had no data, try server-side storage (API-generated classrooms)
@@ -851,25 +856,29 @@ export default function ClassroomDetailPage() {
                   continue;
                 }
 
-                const controller = new AbortController();
-                const timeout = setTimeout(() => controller.abort(), 6000);
-                const ttsResp = await fetch('/api/generate/tts', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    text: speechAction.text,
-                    audioId,
-                    ttsProviderId: ttsPayload.providerId,
-                    ttsVoice: ttsPayload.voiceId,
-                    ttsSpeed: ttsPayload.speed,
-                    ttsApiKey: ttsPayload.apiKey,
-                    ttsBaseUrl: ttsPayload.baseUrl,
-                  }),
-                  signal: controller.signal,
-                }).catch(() => null);
-                clearTimeout(timeout);
-                if (!ttsResp?.ok) continue;
-                const ttsJson = await ttsResp.json().catch(() => ({}));
+                let ttsJson:
+                  | {
+                      success: true;
+                      base64: string;
+                      format: string;
+                    }
+                  | null = null;
+                try {
+                  ttsJson = await requestTTSWithJobPolling(
+                    {
+                      text: speechAction.text,
+                      audioId,
+                      ttsProviderId: ttsPayload.providerId,
+                      ttsVoice: ttsPayload.voiceId,
+                      ttsSpeed: ttsPayload.speed,
+                      ttsApiKey: ttsPayload.apiKey,
+                      ttsBaseUrl: ttsPayload.baseUrl,
+                    },
+                    { maxWaitMs: 90_000, intervalMs: 1_500 },
+                  );
+                } catch {
+                  ttsJson = null;
+                }
                 if (!ttsJson?.success || !ttsJson?.base64 || !ttsJson?.format) continue;
                 let generatedBlob: Blob | null = null;
                 try {

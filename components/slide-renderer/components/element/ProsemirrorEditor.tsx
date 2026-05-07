@@ -215,10 +215,10 @@ export const ProsemirrorEditor = forwardRef<ProsemirrorEditorRef, ProsemirrorEdi
               value: item.value,
             });
           } else if (item.command === 'backcolor' && item.value) {
+            autoSelectAll(editorView.current);
             const mark = editorView.current.state.schema.marks.backcolor.create({
               backcolor: item.value,
             });
-            autoSelectAll(editorView.current);
             addMark(editorView.current, mark);
           } else if (item.command === 'bold') {
             autoSelectAll(editorView.current);
@@ -245,11 +245,13 @@ export const ProsemirrorEditor = forwardRef<ProsemirrorEditorRef, ProsemirrorEdi
               editorView.current.dispatch,
             );
           } else if (item.command === 'subscript') {
+            autoSelectAll(editorView.current);
             toggleMark(editorView.current.state.schema.marks.subscript)(
               editorView.current.state,
               editorView.current.dispatch,
             );
           } else if (item.command === 'superscript') {
+            autoSelectAll(editorView.current);
             toggleMark(editorView.current.state.schema.marks.superscript)(
               editorView.current.state,
               editorView.current.dispatch,
@@ -268,12 +270,17 @@ export const ProsemirrorEditor = forwardRef<ProsemirrorEditorRef, ProsemirrorEdi
               editorView.current.dispatch,
             );
           } else if (item.command === 'align' && item.value) {
+            // # Reason: toolbar clicks blur the editor — expand empty selection so alignment applies to the text block.
+            autoSelectAll(editorView.current);
             alignmentCommand(editorView.current, item.value);
           } else if (item.command === 'indent' && item.value) {
+            autoSelectAll(editorView.current);
             indentCommand(editorView.current, +item.value);
           } else if (item.command === 'textIndent' && item.value) {
+            autoSelectAll(editorView.current);
             textIndentCommand(editorView.current, +item.value);
           } else if (item.command === 'bulletList') {
+            autoSelectAll(editorView.current);
             const listStyleType = item.value || '';
             const { bullet_list: bulletList, list_item: listItem } =
               editorView.current.state.schema.nodes;
@@ -288,6 +295,7 @@ export const ProsemirrorEditor = forwardRef<ProsemirrorEditorRef, ProsemirrorEdi
               textStyle,
             )(editorView.current.state, editorView.current.dispatch);
           } else if (item.command === 'orderedList') {
+            autoSelectAll(editorView.current);
             const listStyleType = item.value || '';
             const { ordered_list: orderedList, list_item: listItem } =
               editorView.current.state.schema.nodes;

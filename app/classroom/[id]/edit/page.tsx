@@ -13,6 +13,9 @@ import type { Scene } from '@/lib/types/stage';
 import type { Action } from '@/lib/types/action';
 import type { PPTElement } from '@/lib/types/slides';
 import { nanoid } from 'nanoid';
+import { cn } from '@/lib/utils';
+import { SlideTextRichToolbar } from '@/components/slide-renderer/Editor/Canvas/Operate/SlideTextRichToolbar';
+import { EditCanvasActionPanel } from '@/components/classroom/edit-canvas-action-panel';
 
 export default function ClassroomEditCanvasPage() {
   const params = useParams();
@@ -38,9 +41,16 @@ export default function ClassroomEditCanvasPage() {
   const [isConvertingOcr, setIsConvertingOcr] = useState(false);
   const [imageUrlInput, setImageUrlInput] = useState('');
   const [isReplacingImage, setIsReplacingImage] = useState(false);
+  const [finalizeSaveNotice, setFinalizeSaveNotice] = useState<string | null>(null);
   const imageUploadInputRef = useRef<HTMLInputElement | null>(null);
   const scriptSyncGuardRef = useRef(false);
   const persistDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!finalizeSaveNotice) return;
+    const t = window.setTimeout(() => setFinalizeSaveNotice(null), 8000);
+    return () => window.clearTimeout(t);
+  }, [finalizeSaveNotice]);
 
   useEffect(() => {
     let active = true;
@@ -184,6 +194,16 @@ export default function ClassroomEditCanvasPage() {
       if (slideScenes.length > 0) setCurrentSceneId(slideScenes[0].id);
     }
   }, [selectedScene, slideScenes, setCurrentSceneId]);
+
+  /** Active canvas text target for sidebar rich-text tools (matches ProseMirror `elementId`). */
+  const slideRichTextTarget = useMemo(() => {
+    if (!handleElementId || !selectedScene || selectedScene.content.type !== 'slide') return null;
+    const el = selectedScene.content.canvas.elements.find((e) => e.id === handleElementId);
+    if (!el) return null;
+    if (el.type === 'text') return { id: el.id, defaultColor: el.defaultColor };
+    if (el.type === 'shape' && el.text) return { id: el.id, defaultColor: el.text.defaultColor };
+    return null;
+  }, [handleElementId, selectedScene]);
 
   const editableBlocks = useMemo(() => {
     if (!selectedScene || selectedScene.content.type !== 'slide') return [];
@@ -483,13 +503,17 @@ export default function ClassroomEditCanvasPage() {
 
     if (textOverlays.length === 0) return;
 
+    setFinalizeSaveNotice(null);
     setIsFinalizing(true);
     try {
       const canvas = document.createElement('canvas');
       canvas.width = 1000;
       canvas.height = 563;
       const ctx = canvas.getContext('2d');
-      if (!ctx) return;
+      if (!ctx) {
+        setError('Could not access canvas to finalize the slide image.');
+        return;
+      }
 
       const background = new Image();
       background.crossOrigin = 'anonymous';
@@ -549,7 +573,12 @@ export default function ClassroomEditCanvasPage() {
         },
         updatedAt: Date.now(),
       });
+      await persistStageNow();
+      setFinalizeSaveNotice(
+        'Your changes have been saved. Overlay text was merged into the slide image and temporary text boxes were removed.',
+      );
     } catch (e) {
+      setFinalizeSaveNotice(null);
       setError(e instanceof Error ? e.message : 'Failed to finalize slide edits');
     } finally {
       setIsFinalizing(false);
@@ -759,137 +788,132 @@ export default function ClassroomEditCanvasPage() {
         </div>
       ) : (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
-          {/* Slide list */}
-          <aside className="max-h-[38vh] border-b border-slate-200 bg-white overflow-auto lg:max-h-none lg:w-[260px] lg:border-b-0 lg:border-r">
-            <div className="border-b border-slate-200 p-3 sm:p-4">
-              <div className="text-xs font-bold uppercase tracking-widest text-slate-500">Slides</div>
+          {/* Slide list: sticky strip on mobile (always visible); full sidebar on lg */}
+          <aside className="z-30 shrink-0 border-b border-slate-200/90 bg-white/95 backdrop-blur-md dark:border-slate-800 dark:bg-slate-950/90 lg:z-10 lg:flex lg:h-full lg:min-h-0 lg:w-[min(280px,32vw)] lg:flex-col lg:border-b-0 lg:border-r lg:bg-white lg:backdrop-blur-none dark:lg:bg-slate-950">
+            <div className="hidden border-b border-slate-200 px-3 py-2.5 lg:block sm:px-4">
+              <div className="text-[11px] font-bold uppercase tracking-widest text-slate-500">Slides</div>
             </div>
-            <div className="flex gap-2 overflow-x-auto p-2 lg:block lg:overflow-visible">
+
+            {/* Mobile: horizontal slide strip — taller cards, easier to scan */}
+            <div className="sticky top-0 flex snap-x snap-mandatory gap-2.5 overflow-x-auto px-3 py-3 [-webkit-overflow-scrolling:touch] [scrollbar-width:thin] lg:hidden">
               {slideScenes.length === 0 ? (
-                <div className="text-sm text-slate-600 p-3">No slide scenes available for editing.</div>
+                <div className="py-2 text-xs text-slate-500">No slides</div>
               ) : (
                 slideScenes.map((scene) => {
                   const isActive = scene.id === currentSceneId;
                   return (
                     <button
                       key={scene.id}
+                      type="button"
                       onClick={() => setCurrentSceneId(scene.id)}
-                      className={[
-                        'min-w-[180px] rounded-xl border px-3 py-2 text-left transition-colors lg:mb-2 lg:w-full lg:min-w-0',
+                      className={cn(
+                        'flex min-h-[92px] min-w-[168px] max-w-[220px] shrink-0 snap-start flex-col justify-center rounded-xl border px-3 py-2.5 text-left shadow-sm transition-colors',
                         isActive
-                          ? 'border-emerald-300 bg-emerald-50 text-emerald-900'
-                          : 'border-transparent hover:border-slate-200 bg-transparent text-slate-800',
-                      ].join(' ')}
+                          ? 'border-emerald-400/80 bg-emerald-50 text-emerald-950 ring-1 ring-emerald-500/25 dark:bg-emerald-950/40 dark:text-emerald-50'
+                          : 'border-slate-200/80 bg-white text-slate-800 hover:border-slate-300 dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-100',
+                      )}
                     >
-                      <div className="text-[11px] font-bold text-slate-500">
+                      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">
                         Slide {scene.order}
                       </div>
-                      <div className="text-sm font-semibold truncate">{scene.title}</div>
+                      <div className="mt-1 line-clamp-3 text-[13px] font-semibold leading-snug">{scene.title}</div>
                     </button>
                   );
                 })
               )}
             </div>
+
+            {/* Desktop: vertical slide list */}
+            <div className="hidden min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto p-2 lg:flex">
+              {slideScenes.length === 0 ? (
+                <div className="p-3 text-sm text-slate-600">No slide scenes available for editing.</div>
+              ) : (
+                slideScenes.map((scene) => {
+                  const isActive = scene.id === currentSceneId;
+                  return (
+                    <button
+                      key={scene.id}
+                      type="button"
+                      onClick={() => setCurrentSceneId(scene.id)}
+                      className={cn(
+                        'w-full rounded-xl border px-3 py-3 text-left transition-colors',
+                        isActive
+                          ? 'border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-600/50 dark:bg-emerald-950/50 dark:text-emerald-50'
+                          : 'border-transparent hover:border-slate-200 bg-transparent text-slate-800 dark:text-slate-100 dark:hover:border-slate-700',
+                      )}
+                    >
+                      <div className="text-[11px] font-bold text-slate-500 dark:text-slate-400">Slide {scene.order}</div>
+                      <div className="mt-1 line-clamp-4 text-sm font-semibold leading-snug">{scene.title}</div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+
+            {slideRichTextTarget && (
+              <div className="border-t border-slate-200 bg-slate-50/90 p-3 dark:border-slate-700 dark:bg-slate-900/50 sm:p-4 lg:max-h-[min(40vh,320px)] lg:overflow-y-auto">
+                <div className="mb-2 text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">
+                  Text formatting
+                </div>
+                <p className="mb-2 hidden text-[11px] leading-snug text-slate-600 dark:text-slate-400 sm:block">
+                  Selected text box on the canvas.
+                </p>
+                <SlideTextRichToolbar
+                  elementId={slideRichTextTarget.id}
+                  defaultColor={slideRichTextTarget.defaultColor}
+                  embedded
+                />
+              </div>
+            )}
           </aside>
 
-          {/* Canvas editor */}
-          <main className="min-h-0 min-w-0 flex-1 overflow-auto bg-slate-50 p-3 dark:bg-slate-950 sm:p-4">
-            <div className="mb-3 flex flex-wrap gap-2 rounded-xl border border-slate-200 bg-white p-2 sm:p-3">
-              <button
-                type="button"
-                onClick={handleAddSlideTextBox}
-                className="min-h-[40px] w-full rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-emerald-700 sm:w-auto"
-              >
-                Add live text box
-              </button>
-              <button
-                type="button"
-                onClick={handleCreateLiveTextFromSpeech}
-                className="min-h-[40px] w-full rounded-lg bg-violet-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-violet-700 sm:w-auto"
-              >
-                Generate text from narration
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (!selectedScene) return;
-                  applySceneUpdate(selectedScene);
-                }}
-                className="min-h-[40px] w-full rounded-lg bg-fuchsia-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-fuchsia-700 sm:w-auto"
-              >
-                Rebuild AI tutor script
-              </button>
-              <button
-                type="button"
-                disabled={isConvertingOcr}
-                onClick={() => {
-                  void handleConvertImageTextToEditable();
-                }}
-                className="min-h-[40px] w-full rounded-lg bg-amber-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-amber-700 disabled:opacity-50 sm:w-auto"
-              >
-                {isConvertingOcr ? 'Converting OCR...' : 'Convert image text to editable'}
-              </button>
-              <button
-                type="button"
-                disabled={isFinalizing}
-                onClick={() => {
-                  void handleFinalizeReplaceOnImage();
-                }}
-                className="min-h-[40px] w-full rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-50 sm:w-auto"
-              >
-                {isFinalizing ? 'Finalizing...' : 'Finalize replace'}
-              </button>
-              <div className="flex w-full flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1">
-                <input
-                  type="url"
-                  value={imageUrlInput}
-                  onChange={(e) => setImageUrlInput(e.target.value)}
-                  placeholder="Paste image URL to replace selected image"
-                  className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700 sm:w-[320px] sm:max-w-[60vw]"
-                />
-                <button
-                  type="button"
-                  disabled={isReplacingImage || !imageUrlInput.trim()}
-                  onClick={() => {
-                    void handleReplaceImageFromUrl();
+          {/* Canvas first: large min-height, fills flex space — no aspect-video cap */}
+          <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-muted/30 dark:bg-background">
+            <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-3 sm:gap-4 sm:p-4">
+              <div className="relative flex min-h-[min(65dvh,780px)] flex-1 flex-col sm:min-h-[min(62dvh,760px)] lg:min-h-[min(58dvh,720px)]">
+                <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-lg dark:border-slate-800 dark:bg-gray-900">
+                  <div className="min-h-0 flex-1">
+                    <SceneProvider>
+                      {selectedScene ? (
+                        <SceneRenderer scene={selectedScene} mode="autonomous" />
+                      ) : (
+                        <div className="flex h-[min(50dvh,420px)] w-full items-center justify-center text-sm font-semibold text-slate-600">
+                          Select a slide to edit
+                        </div>
+                      )}
+                    </SceneProvider>
+                  </div>
+                </div>
+              </div>
+
+              <div className="max-h-[min(34dvh,320px)] shrink-0 overflow-y-auto overscroll-contain rounded-xl border border-border/40 bg-background/60 shadow-sm dark:bg-background/40 lg:max-h-[min(32vh,400px)]">
+                <EditCanvasActionPanel
+                  onAddTextBox={handleAddSlideTextBox}
+                  onGenerateFromNarration={handleCreateLiveTextFromSpeech}
+                  onRebuildScript={() => {
+                    if (!selectedScene) return;
+                    applySceneUpdate(selectedScene);
                   }}
-                  className="min-h-[40px] w-full rounded-lg bg-cyan-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-cyan-700 disabled:opacity-50 sm:w-auto"
-                >
-                  {isReplacingImage ? 'Replacing...' : 'Replace via URL'}
-                </button>
-                <input
-                  ref={imageUploadInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(e) => {
+                  rebuildDisabled={!selectedScene}
+                  onConvertOcr={() => void handleConvertImageTextToEditable()}
+                  isConvertingOcr={isConvertingOcr}
+                  onFinalizeReplace={handleFinalizeReplaceOnImage}
+                  isFinalizing={isFinalizing}
+                  finalizeSaveNotice={finalizeSaveNotice}
+                  onDismissFinalizeNotice={() => setFinalizeSaveNotice(null)}
+                  imageUrlInput={imageUrlInput}
+                  onImageUrlChange={setImageUrlInput}
+                  onReplaceFromUrl={() => void handleReplaceImageFromUrl()}
+                  isReplacingImage={isReplacingImage}
+                  imageUploadInputRef={imageUploadInputRef}
+                  onImageFileChange={(e) => {
                     const file = e.target.files?.[0];
                     if (!file) return;
                     void handleReplaceImageFromUpload(file);
                     e.currentTarget.value = '';
                   }}
+                  onUploadImageClick={() => imageUploadInputRef.current?.click()}
                 />
-                <button
-                  type="button"
-                  disabled={isReplacingImage}
-                  onClick={() => imageUploadInputRef.current?.click()}
-                  className="min-h-[40px] w-full rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-indigo-700 disabled:opacity-50 sm:w-auto"
-                >
-                  Upload image
-                </button>
-              </div>
-            </div>
-            <div className="flex h-full min-h-[320px] w-full items-center justify-center sm:min-h-[420px]">
-              <div className="relative w-full max-w-full aspect-[16/9] min-h-[220px] overflow-visible rounded-lg bg-white shadow-2xl dark:bg-gray-800 sm:h-full sm:max-h-full">
-                <SceneProvider>
-                  {selectedScene ? (
-                    <SceneRenderer scene={selectedScene} mode="autonomous" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-sm font-semibold text-slate-600">
-                      Select a slide to edit
-                    </div>
-                  )}
-                </SceneProvider>
               </div>
             </div>
           </main>

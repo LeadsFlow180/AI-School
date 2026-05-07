@@ -149,3 +149,18 @@
     transform: translateX(100%);
   }
 }
+
+@keyframes auth-eye-close {
+  0% {
+    transform: translateY(-3px) scaleY(0.35);
+    opacity: 0.3;
+  }
+  55% {
+    transform: translateY(1px) scaleY(1.12);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(0) scaleY(1);
+    opacity: 1;
+  }
+}

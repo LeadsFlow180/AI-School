@@ -16,8 +16,8 @@ const payloadSchema = z.object({
   nonce: z.string().optional(),
   lessonContentId: z.union([z.string(), z.number()]).optional(),
   status: z.string().optional(),
-  details: z.record(z.any()).optional(),
-  quiz: z.record(z.any()).optional(),
+  details: z.record(z.string(), z.any()).optional(),
+  quiz: z.record(z.string(), z.any()).optional(),
   source: z.string(),
 });
 

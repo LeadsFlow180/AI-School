@@ -2,6 +2,7 @@
 
 ## Active
 
+- [x] 2026-05-13 - Fix `pnpm run build` / Next 16 TypeScript failures: exclude `.next/dev/types` duplicate route types; `withTimeout` accepts `PromiseLike` for Supabase builders; Gamma page-image `Response` bodies as `Uint8Array`; scene-outlines-stream split `streamLLM` branches; Zod `z.record` key schema; RAG test routes use `API_ERROR_CODES`; Stage type vs component alias on classroom page; Tesseract OCR lines from `blocks`; motion readonly keyframe spreads; assorted `TTSProviderId` / union casts; `skipLibCheck: true` for broken `@supabase/realtime-js` phoenix path types; remove deprecated `eslint` key from `next.config.ts`.
 - [x] 2026-05-07 - Classroom `/edit` layout: slide strip always visible (mobile horizontal scroller + sticky bar), tall slide canvas (`min-h` with `dvh` caps, no `aspect-video`), tools panel below with bounded scroll; desktop sidebar full height + scrollable list; taller slide chips/list rows.
 - [x] 2026-05-07 - Refine classroom `/edit` `EditCanvasActionPanel`: monochrome list rows + shadcn Button/Input, calmer status banners, single primary emphasis on finalize; neutral canvas background.
 - [x] 2026-05-07 - Classroom canvas edit (`/classroom/[id]/edit`): show same rich-text toolbar in the left Slides sidebar when a text or shape-with-text element is selected; extract shared `SlideTextRichToolbar` used by canvas overlay and sidebar (`embedded` layout).

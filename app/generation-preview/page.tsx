@@ -22,6 +22,7 @@ import {
 import { getCurrentModelConfig } from '@/lib/utils/model-config';
 import { db } from '@/lib/utils/database';
 import { MAX_PDF_CONTENT_CHARS, MAX_VISION_IMAGES } from '@/lib/constants/generation';
+import type { TTSProviderId } from '@/lib/audio/types';
 import { splitLongSpeechActions } from '@/lib/audio/tts-utils';
 import { nanoid } from 'nanoid';
 import type { Stage } from '@/lib/types/stage';
@@ -524,7 +525,7 @@ function GenerationPreviewContent() {
               )
             ) {
               voices.unshift({
-                providerId: preset.providerId,
+                providerId: preset.providerId as TTSProviderId,
                 voiceId: preset.voiceId,
                 voiceName: `${preset.name} (cloned)`,
               });

@@ -9,6 +9,12 @@ import { createLogger } from '@/lib/logger';
 
 const log = createLogger('RAGService');
 
+function vectorDbFromEnv(): RAGConfig['vectorDB'] {
+  const v = process.env.VECTOR_DB;
+  if (v === 'chroma' || v === 'memory' || v === 'supabase' || v === 'file') return v;
+  return 'supabase';
+}
+
 export class RAGService {
   private processor: DocumentProcessor;
   private config: RAGConfig;
@@ -20,7 +26,7 @@ export class RAGService {
       maxRetrievedChunks: 5,
       similarityThreshold: 0.5, // Balanced threshold - selective but not too restrictive for relevant content
       embeddingModel: 'openai',
-      vectorDB: process.env.VECTOR_DB || 'supabase', // Default to supabase, not file
+      vectorDB: vectorDbFromEnv(), // Default to supabase when env unset or invalid
       ...config,
     };
 

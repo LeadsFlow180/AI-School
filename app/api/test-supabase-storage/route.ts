@@ -5,7 +5,7 @@
 
 import { NextRequest } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { apiError, apiSuccess } from '@/lib/server/api-response';
+import { apiError, apiSuccess, API_ERROR_CODES } from '@/lib/server/api-response';
 
 // Initialize Supabase client for storage
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -77,6 +77,6 @@ export async function GET(req: NextRequest) {
       message: hasErrors ? 'Some tests failed' : 'All tests passed',
     });
   } catch (error: any) {
-    return apiError('TEST_FAILED', 500, error.message);
+    return apiError(API_ERROR_CODES.INTERNAL_ERROR, 500, error.message);
   }
 }

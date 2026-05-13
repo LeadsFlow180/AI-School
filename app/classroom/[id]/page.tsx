@@ -1,8 +1,9 @@
 'use client';
 
-import { Stage } from '@/components/stage';
+import { Stage as StageRoot } from '@/components/stage';
 import { ThemeProvider } from '@/lib/hooks/use-theme';
 import { useStageStore } from '@/lib/store';
+import { useSettingsStore } from '@/lib/store/settings';
 import { loadImageMapping } from '@/lib/utils/image-storage';
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
@@ -15,8 +16,8 @@ import { generateMediaForOutlines } from '@/lib/media/media-orchestrator';
 import { getSessionSafe, getSupabaseClient } from '@/lib/supabase/client';
 import { ClassroomLoadingScene } from '@/components/stage/classroom-loading-scene';
 import { ClassroomTourOverlay } from '@/components/stage/classroom-tour-overlay';
-import type { Scene } from '@/lib/types/stage';
-import type { Action } from '@/lib/types/action';
+import type { Scene, Stage } from '@/lib/types/stage';
+import type { Action, SpeechAction } from '@/lib/types/action';
 import type { Slide } from '@/lib/types/slides';
 import { db } from '@/lib/utils/database';
 import { requestTTSWithJobPolling } from '@/lib/audio/tts-job-client';
@@ -216,7 +217,7 @@ function ensureGammaSpeechActions(scene: Scene): Scene {
     );
   };
 
-  const existingSpeech = (scene.actions || []).filter((a): a is Action => a.type === 'speech');
+  const existingSpeech = (scene.actions || []).filter((a): a is SpeechAction => a.type === 'speech');
   const hasSpeech = existingSpeech.length > 0;
   const hasDynamicSpeech = existingSpeech.some((a) => !isGenericGammaLine(a.text));
   if (hasSpeech && hasDynamicSpeech) {
@@ -1076,7 +1077,7 @@ export default function ClassroomDetailPage() {
             </div>
           ) : (
             <>
-              <Stage
+              <StageRoot
                 onRetryOutline={retrySingleOutline}
                 onOpenGuidance={tourOpen ? undefined : () => setTourOpen(true)}
                 onOpenCanvasEdit={

@@ -17,6 +17,35 @@ import { cn } from '@/lib/utils';
 import { SlideTextRichToolbar } from '@/components/slide-renderer/Editor/Canvas/Operate/SlideTextRichToolbar';
 import { EditCanvasActionPanel } from '@/components/classroom/edit-canvas-action-panel';
 
+type TesseractBbox = { x0: number; y0: number; x1: number; y1: number };
+
+type TesseractLineLike = {
+  text?: string;
+  bbox?: TesseractBbox;
+};
+
+function flattenTesseractLines(page: {
+  blocks?: { paragraphs?: { lines?: TesseractLineLike[] }[] }[] | null;
+}): TesseractLineLike[] {
+  if (!page.blocks) return [];
+  return page.blocks.flatMap((block) =>
+    (block.paragraphs ?? []).flatMap((paragraph) => paragraph.lines ?? []),
+  );
+}
+
+function getImageNaturalSize(src: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () =>
+      resolve({
+        width: Math.max(1, img.naturalWidth),
+        height: Math.max(1, img.naturalHeight),
+      });
+    img.onerror = () => resolve({ width: 1, height: 1 });
+    img.src = src;
+  });
+}
+
 export default function ClassroomEditCanvasPage() {
   const params = useParams();
   const router = useRouter();
@@ -598,11 +627,12 @@ export default function ClassroomEditCanvasPage() {
       const result = await worker.recognize(imageElement.src);
       await worker.terminate();
 
-      const lines = (result.data?.lines || []).filter((line) => (line.text || '').trim().length > 0);
+      const lines = flattenTesseractLines(result.data).filter(
+        (line) => (line.text || '').trim().length > 0,
+      );
       if (lines.length === 0) return;
 
-      const ocrW = result.data?.width || 1;
-      const ocrH = result.data?.height || 1;
+      const { width: ocrW, height: ocrH } = await getImageNaturalSize(imageElement.src);
 
       const overlayElements: PPTElement[] = lines.map((line, idx) => {
         const bbox = line.bbox || { x0: 0, y0: 0, x1: 300, y1: 40 };

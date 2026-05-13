@@ -82,9 +82,10 @@ export async function gammaGetGeneration(
   const json = parseJsonSafe(text) as GammaStatusResponse | null;
 
   if (!response.ok) {
+    const errJson = json as unknown as { message?: string };
     const message =
-      json && typeof (json as { message?: string }).message === 'string'
-        ? (json as { message: string }).message
+      errJson && typeof errJson.message === 'string'
+        ? errJson.message
         : text.slice(0, 500) || response.statusText;
     throw new Error(`Gamma API ${response.status}: ${message}`);
   }

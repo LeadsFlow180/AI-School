@@ -250,31 +250,35 @@ export async function POST(req: NextRequest) {
         try {
           startHeartbeat();
 
-          const streamParams = visionImages?.length
-            ? {
-                model: languageModel,
-                system: prompts.system,
-                messages: [
-                  {
-                    role: 'user' as const,
-                    content: buildVisionUserContent(prompts.user, visionImages),
-                  },
-                ],
-                maxOutputTokens: modelInfo?.outputWindow,
-              }
-            : {
-                model: languageModel,
-                system: prompts.system,
-                prompt: prompts.user,
-                maxOutputTokens: modelInfo?.outputWindow,
-              };
-
           let parsedOutlines: SceneOutline[] = [];
           let lastError: string | undefined;
 
           for (let attempt = 1; attempt <= MAX_STREAM_RETRIES + 1; attempt++) {
             try {
-              const result = streamLLM(streamParams, 'scene-outlines-stream');
+              const result = visionImages?.length
+                ? streamLLM(
+                    {
+                      model: languageModel,
+                      system: prompts.system,
+                      messages: [
+                        {
+                          role: 'user' as const,
+                          content: buildVisionUserContent(prompts.user, visionImages),
+                        },
+                      ],
+                      maxOutputTokens: modelInfo?.outputWindow,
+                    },
+                    'scene-outlines-stream',
+                  )
+                : streamLLM(
+                    {
+                      model: languageModel,
+                      system: prompts.system,
+                      prompt: prompts.user,
+                      maxOutputTokens: modelInfo?.outputWindow,
+                    },
+                    'scene-outlines-stream',
+                  );
 
               let fullText = '';
               parsedOutlines = [];

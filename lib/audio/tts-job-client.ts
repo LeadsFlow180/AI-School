@@ -47,10 +47,13 @@ export async function requestTTSWithJobPolling(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...payload, asyncJob: true }),
   });
-  const createJson = (await createResp.json().catch(() => ({}))) as TTSJobCreatePayload & TTSErrorPayload;
-  if (!createResp.ok || !createJson?.success || !createJson?.jobId) {
+  const createJson = (await createResp.json().catch(() => ({}))) as TTSJobCreatePayload | TTSErrorPayload;
+  if (!createResp.ok || !createJson.success || !createJson.jobId) {
+    const errPayload = createJson as TTSErrorPayload;
     const errMsg =
-      createJson?.details || createJson?.error || `Failed to create TTS job: HTTP ${createResp.status}`;
+      errPayload.details ||
+      errPayload.error ||
+      `Failed to create TTS job: HTTP ${createResp.status}`;
     throw new Error(errMsg);
   }
 

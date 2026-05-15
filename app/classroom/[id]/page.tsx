@@ -134,7 +134,7 @@ function resolveEffectiveClassroomTTSPayload(stage: Stage | null): {
   baseUrl?: string;
 } | null {
   const settings = useSettingsStore.getState();
-  if (!settings.ttsEnabled || settings.ttsProviderId === 'browser-native-tts') return null;
+  if (!settings.ttsEnabled) return null;
 
   const stageWithTutor = stage as
     | (Stage & {
@@ -145,11 +145,13 @@ function resolveEffectiveClassroomTTSPayload(stage: Stage | null): {
     | null;
   const preset = stageWithTutor?.tutorConfig?.voicePreset;
   const fallbackProviderConfig = settings.ttsProvidersConfig?.[settings.ttsProviderId];
+  // Reason: tutorConfig voicePreset takes priority over global settings provider.
+  // Check the *effective* provider against browser-native (which cannot be server-generated).
   const providerId = preset?.providerId || settings.ttsProviderId;
   const voiceId = preset?.voiceId || settings.ttsVoice;
-  const providerConfig = settings.ttsProvidersConfig?.[providerId];
 
-  if (!providerId || !voiceId) return null;
+  if (!providerId || !voiceId || providerId === 'browser-native-tts') return null;
+  const providerConfig = settings.ttsProvidersConfig?.[providerId];
   return {
     providerId,
     voiceId,
@@ -493,6 +495,63 @@ async function convertGammaInteractiveScenesToSlides(scenes: Scene[]): Promise<{
   return { scenes: converted, changed };
 }
 
+/**
+ * Extract tutorConfig from a stage and apply it to the agent registry + TTS settings.
+ * Called both during initial classroom load and after background server refresh,
+ * since the refresh can bring a newer tutorConfig that wasn't in local IndexedDB.
+ */
+async function applyTutorConfigFromStage(stage: Stage | null): Promise<void> {
+  const tutorCfg = (
+    stage as
+      | (Stage & {
+          tutorConfig?: {
+            name?: string;
+            avatar?: string;
+            description?: string;
+            voicePreset?: { id: string; name: string; providerId: string; voiceId: string };
+          };
+        })
+      | null
+  )?.tutorConfig;
+  if (!tutorCfg) return;
+
+  const { useAgentRegistry } = await import('@/lib/orchestration/registry/store');
+  const { useSettingsStore } = await import('@/lib/store/settings');
+  const registry = useAgentRegistry.getState();
+  const settingsState = useSettingsStore.getState();
+  const selectedIds = settingsState.selectedAgentIds;
+  const teacherId =
+    selectedIds.find((id) => registry.getAgent(id)?.role === 'teacher') ||
+    selectedIds[0] ||
+    'default-1';
+  const tutorUpdates = {
+    ...(tutorCfg.name ? { name: tutorCfg.name } : {}),
+    ...(tutorCfg.avatar ? { avatar: tutorCfg.avatar } : {}),
+    ...(tutorCfg.voicePreset
+      ? {
+          voiceConfig: {
+            providerId: tutorCfg.voicePreset.providerId as import('@/lib/audio/types').TTSProviderId,
+            voiceId: tutorCfg.voicePreset.voiceId,
+          },
+        }
+      : {}),
+  };
+  // Ensure default-1 is in the selected list so the teacher is always rendered
+  if (!selectedIds.includes('default-1')) {
+    settingsState.setSelectedAgentIds(['default-1', ...selectedIds]);
+  }
+  registry.updateAgent(teacherId, tutorUpdates);
+  if (teacherId !== 'default-1') {
+    registry.updateAgent('default-1', tutorUpdates);
+  }
+  if (tutorCfg.voicePreset?.providerId && tutorCfg.voicePreset?.voiceId) {
+    settingsState.setTTSProvider(
+      tutorCfg.voicePreset.providerId as import('@/lib/audio/types').TTSProviderId,
+    );
+    settingsState.setTTSVoice(tutorCfg.voicePreset.voiceId);
+  }
+}
+
 export default function ClassroomDetailPage() {
   const params = useParams();
   const searchParams = useSearchParams();
@@ -601,6 +660,10 @@ export default function ClassroomDetailPage() {
                     currentSceneId: serverScenes[0]?.id ?? null,
                   });
                   await useStageStore.getState().saveToStorage();
+                  // Reason: background refresh may bring a tutorConfig that was missing in
+                  // IndexedDB (e.g. classroom opened in a new tab). Re-apply to agent registry
+                  // and TTS settings so icon/name/voice reflect the saved tutor immediately.
+                  await applyTutorConfigFromStage(serverStage);
                 }
               }
             }
@@ -728,60 +791,19 @@ export default function ClassroomDetailPage() {
 
       // Re-apply tutor profile saved with this classroom stage so refresh keeps
       // the same tutor name/avatar/voice for this specific classroom.
-      const stageWithTutor = useStageStore.getState().stage as
-        | (Stage & {
-            tutorConfig?: {
-              name?: string;
-              avatar?: string;
-              description?: string;
-              voicePreset?: {
-                id: string;
-                name: string;
-                providerId: string;
-                voiceId: string;
+      // Reason: extracted to applyTutorConfigFromStage so the same logic also runs
+      // after the background server refresh (which may bring a newer tutorConfig).
+      await applyTutorConfigFromStage(useStageStore.getState().stage);
+      // Keep a local reference to tutorCfg for the split-speech step below.
+      const tutorCfg = (
+        useStageStore.getState().stage as
+          | (Stage & {
+              tutorConfig?: {
+                voicePreset?: { providerId?: string; voiceId?: string };
               };
-            };
-          })
-        | null;
-      const tutorCfg = stageWithTutor?.tutorConfig;
-      if (tutorCfg) {
-        const registry = useAgentRegistry.getState();
-        const selectedIds = useSettingsStore.getState().selectedAgentIds;
-        const settingsState = useSettingsStore.getState();
-        const teacherId =
-          selectedIds.find((id) => registry.getAgent(id)?.role === 'teacher') || selectedIds[0] || 'default-1';
-        const tutorUpdates = {
-          ...(tutorCfg.name ? { name: tutorCfg.name } : {}),
-          ...(tutorCfg.avatar ? { avatar: tutorCfg.avatar } : {}),
-          ...(tutorCfg.voicePreset
-            ? {
-                voiceConfig: {
-                  providerId: tutorCfg.voicePreset.providerId as import('@/lib/audio/types').TTSProviderId,
-                  voiceId: tutorCfg.voicePreset.voiceId,
-                },
-              }
-            : {}),
-        };
-        // Reason: keep tutor identity consistent even if selected presenter list
-        // was restored without teacher as first id (public/no-login flow).
-        if (!selectedIds.includes('default-1')) {
-          settingsState.setSelectedAgentIds(['default-1', ...selectedIds]);
-        }
-        registry.updateAgent(teacherId, {
-          ...tutorUpdates,
-        });
-        if (teacherId !== 'default-1') {
-          registry.updateAgent('default-1', {
-            ...tutorUpdates,
-          });
-        }
-        if (tutorCfg.voicePreset?.providerId && tutorCfg.voicePreset?.voiceId) {
-          settingsState.setTTSProvider(
-            tutorCfg.voicePreset.providerId as import('@/lib/audio/types').TTSProviderId,
-          );
-          settingsState.setTTSVoice(tutorCfg.voicePreset.voiceId);
-        }
-      }
+            })
+          | null
+      )?.tutorConfig;
 
       // For cloned/custom voices, split oversized speech text into smaller
       // speech actions so TTS requests don't timeout (524) on long payloads.

@@ -191,6 +191,8 @@
 
 ## Discovered During Work
 
+- [x] 2026-05-15 - Fix new-tab default tutor icon and mute: re-apply tutorConfig (name/avatar/voice) from server stage after background refresh so agent registry stays in sync; fix `resolveEffectiveTTSRequest` early-return to check the *effective* provider (tutorConfig.voicePreset override) rather than global settings provider, preventing custom-cloned-tts from being silenced when global provider is still browser-native-tts.
+
 - [x] 2026-04-15 - Improve Home mobile polish: recents pagination controls, prompt action layout, and compact mascot overlays visible in empty spaces on small screens.
 - [x] 2026-04-15 - Improve Home page small-screen responsiveness: compact top toolbar, tighter hero spacing, mobile-friendly prompt controls stacking, and denser recents card layout.
 - [x] 2026-04-15 - Compact Export dropdown item spacing (3 actions) to reduce menu height and avoid overlap with classroom guide character.

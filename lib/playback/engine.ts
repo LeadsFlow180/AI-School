@@ -409,7 +409,7 @@ export class PlaybackEngine {
     baseUrl?: string;
   } | null {
     const settings = useSettingsStore.getState();
-    if (!settings.ttsEnabled || settings.ttsProviderId === 'browser-native-tts') return null;
+    if (!settings.ttsEnabled) return null;
 
     const stage = useStageStore.getState().stage as
       | (Stage & {
@@ -420,11 +420,14 @@ export class PlaybackEngine {
       | null;
     const preset = stage?.tutorConfig?.voicePreset;
     const fallbackProviderConfig = settings.ttsProvidersConfig?.[settings.ttsProviderId];
+    // Reason: tutorConfig.voicePreset takes priority over global settings provider.
+    // Check the *effective* provider against browser-native so a saved custom-cloned-tts
+    // tutor isn't silenced just because global settings still has browser-native-tts.
     const providerId = (preset?.providerId || settings.ttsProviderId) as TTSProviderId;
     const voiceId = preset?.voiceId || settings.ttsVoice;
-    const providerConfig = settings.ttsProvidersConfig?.[providerId];
-    if (!providerId || !voiceId) return null;
+    if (!providerId || !voiceId || providerId === 'browser-native-tts') return null;
 
+    const providerConfig = settings.ttsProvidersConfig?.[providerId];
     return {
       providerId,
       voiceId,

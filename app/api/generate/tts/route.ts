@@ -17,6 +17,7 @@ import { resolveTTSApiKey, resolveTTSBaseUrl } from '@/lib/server/provider-confi
 import type { TTSProviderId } from '@/lib/audio/types';
 import { createLogger } from '@/lib/logger';
 import { apiError, apiSuccess } from '@/lib/server/api-response';
+import { summarizeTtsErrorMessage } from '@/lib/audio/tts-error-utils';
 import { validateUrlForSSRF } from '@/lib/server/ssrf-guard';
 import { getSupabaseAdminClient } from '@/lib/server/supabase-admin';
 
@@ -260,7 +261,8 @@ async function generateTTSPayload(body: TTSRequestBody) {
 }
 
 function normalizeTtsError(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const message = summarizeTtsErrorMessage(rawMessage);
   const statusFromError =
     typeof error === 'object' &&
     error !== null &&
@@ -268,7 +270,12 @@ function normalizeTtsError(error: unknown) {
     typeof (error as { status?: unknown }).status === 'number'
       ? Number((error as { status: number }).status)
       : 0;
-  const normalized = message.toLowerCase();
+  const normalized = rawMessage.toLowerCase();
+  const isThunderOrHtmlUnreachable =
+    normalized.includes('nothing running here') ||
+    normalized.includes('thundercompute.net') ||
+    normalized.includes('html page instead of audio') ||
+    normalized.includes('voice clone server is not running');
   const isConfigError =
     normalized.includes('api key required') ||
     normalized.includes('missing voice_clone_synthesize_url') ||
@@ -287,6 +294,9 @@ function normalizeTtsError(error: unknown) {
 
   if (isConfigError) {
     return { status: 400, code: 'INVALID_REQUEST', message };
+  }
+  if (isThunderOrHtmlUnreachable) {
+    return { status: 502, code: 'UPSTREAM_ERROR', message };
   }
   if (statusFromError === 500 && isUpstreamSynthesisFailure) {
     return { status: 502, code: 'UPSTREAM_ERROR', message };
@@ -403,7 +413,7 @@ export async function POST(req: NextRequest) {
     return apiSuccess(result);
   } catch (error) {
     const normalized = normalizeTtsError(error);
-    if (normalized.status >= 500) log.error('TTS generation error:', error);
+    if (normalized.status >= 500) log.error('TTS generation error:', normalized.message);
     else log.warn('TTS generation error:', normalized.message);
     return apiError(
       normalized.code as 'INVALID_REQUEST' | 'UPSTREAM_ERROR' | 'GENERATION_FAILED',

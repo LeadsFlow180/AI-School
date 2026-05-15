@@ -577,6 +577,11 @@ export class PlaybackEngine {
       case 'speech': {
         const speechAction = action as SpeechAction;
         this.callbacks.onSpeechStart?.(speechAction.text);
+        const upcomingSpeech = this.findUpcomingSpeechAction();
+        if (upcomingSpeech) {
+          // Warm up the next clip while current speech is playing to reduce boundaries gap.
+          this.audioPlayer.preload(upcomingSpeech.audioId || '', upcomingSpeech.audioUrl);
+        }
 
         // onEnded → processNext; if paused, resume() will call processNext
         this.audioPlayer.onEnded(() => {
@@ -996,5 +1001,28 @@ export class PlaybackEngine {
       this.browserTTSPausedChunks = [];
       window.speechSynthesis?.cancel();
     }
+  }
+
+  /**
+   * Finds the next speech action from the current playback cursor.
+   * Cursor already points to the "next action" because processNext increments
+   * actionIndex before entering the switch block.
+   */
+  private findUpcomingSpeechAction(): SpeechAction | null {
+    let sceneCursor = this.sceneIndex;
+    let actionCursor = this.actionIndex;
+    while (sceneCursor < this.scenes.length) {
+      const actions = this.scenes[sceneCursor]?.actions || [];
+      while (actionCursor < actions.length) {
+        const next = actions[actionCursor];
+        if (next?.type === 'speech') {
+          return next as SpeechAction;
+        }
+        actionCursor += 1;
+      }
+      sceneCursor += 1;
+      actionCursor = 0;
+    }
+    return null;
   }
 }

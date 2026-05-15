@@ -1,3 +1,5 @@
+import { summarizeTtsUpstreamError } from '@/lib/audio/tts-error-utils';
+
 /**
  * TTS (Text-to-Speech) Provider Implementation
  *
@@ -328,7 +330,10 @@ export async function generateClonedTutorTTS(
 
         throw Object.assign(
           new Error(
-            String(parsedBody.error || body || `Custom voice synthesize request failed: HTTP ${res.status}`),
+            summarizeTtsUpstreamError(
+              String(parsedBody.error || body || `Custom voice synthesize request failed: HTTP ${res.status}`),
+              attemptedUrl,
+            ),
           ),
           { status: res.status },
         );
@@ -369,9 +374,12 @@ export async function generateClonedTutorTTS(
   if (!response.ok) {
     throw Object.assign(
       new Error(
-        payload.error ||
-          textBody ||
-          `Custom voice synthesize request failed: HTTP ${response.status} at ${attemptedUrl}`,
+        summarizeTtsUpstreamError(
+          payload.error ||
+            textBody ||
+            `Custom voice synthesize request failed: HTTP ${response.status} at ${attemptedUrl}`,
+          attemptedUrl,
+        ),
       ),
       { status: response.status },
     );
@@ -380,9 +388,12 @@ export async function generateClonedTutorTTS(
   if (!payload.success || !payload.data?.audioUrl) {
     throw Object.assign(
       new Error(
-        payload.error ||
-          textBody ||
-          `Custom voice synthesize request failed: invalid payload at ${attemptedUrl}`,
+        summarizeTtsUpstreamError(
+          payload.error ||
+            textBody ||
+            `Custom voice synthesize request failed: invalid payload at ${attemptedUrl}`,
+          attemptedUrl,
+        ),
       ),
       { status: response.status || 502 },
     );

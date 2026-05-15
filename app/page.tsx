@@ -41,7 +41,6 @@ import { nanoid } from 'nanoid';
 import { storePdfBlob } from '@/lib/utils/image-storage';
 import type { UserRequirements } from '@/lib/types/generation';
 import { useSettingsStore } from '@/lib/store/settings';
-import { useStageStore } from '@/lib/store/stage';
 import { useAgentRegistry } from '@/lib/orchestration/registry/store';
 import { useUserProfileStore, AVATAR_OPTIONS } from '@/lib/store/user-profile';
 import {
@@ -62,12 +61,11 @@ import { clearSupabaseAuthStorage, getSessionSafe, getSupabaseClient } from '@/l
 import { KidsGuideOverlay } from '@/components/stage/kids-guide-overlay';
 import { KidsParallaxBackground } from '@/components/stage/kids-parallax-background';
 import { syncClassroomToSupabase } from '@/lib/supabase/classroom-sync';
-import type { QuizQuestion, Scene, Stage } from '@/lib/types/stage';
-import type { Action } from '@/lib/types/action';
+import type { Scene, Stage } from '@/lib/types/stage';
 import type { TutorVoicePreset } from '@/lib/types/tutor-voice';
 import type { TTSProviderId } from '@/lib/audio/types';
-import { db } from '@/lib/utils/database';
 import { createDefaultSlideContent } from '@/lib/api/stage-api-defaults';
+import type { GenerationSessionState } from '@/app/generation-preview/types';
 
 const log = createLogger('Home');
 
@@ -85,41 +83,6 @@ function sortRecentsClassrooms(items: StageListItem[]): StageListItem[] {
     if (a.createdAt !== b.createdAt) return b.createdAt - a.createdAt;
     return a.id.localeCompare(b.id);
   });
-}
-
-async function uploadSpeechAudioForClassroom(
-  classroomId: string,
-  audioId: string,
-  blob: Blob,
-): Promise<string | null> {
-  const supabase = getSupabaseClient();
-  if (!supabase) return null;
-  const session = await getSessionSafe(supabase);
-  const token = session?.access_token;
-  if (!token) return null;
-
-  const ext = blob.type.includes('wav')
-    ? 'wav'
-    : blob.type.includes('mpeg') || blob.type.includes('mp3')
-      ? 'mp3'
-      : blob.type.includes('ogg')
-        ? 'ogg'
-        : blob.type.includes('webm')
-          ? 'webm'
-          : 'bin';
-  const file = new File([blob], `${audioId}.${ext}`, { type: blob.type || 'audio/mpeg' });
-  const form = new FormData();
-  form.append('file', file);
-  form.append('classroomId', classroomId);
-
-  const res = await fetch('/api/classroom/media-upload', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
-    body: form,
-  });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok || !json?.success || !json?.src) return null;
-  return String(json.src);
 }
 
 interface FormState {
@@ -145,344 +108,14 @@ interface SupabaseClassroomRow {
   updated_at: string;
 }
 
-type GammaJson = {
-  success?: boolean;
-  error?: string;
-  details?: string;
-  generationId?: string;
-  status?: string;
-  gammaUrl?: string;
-  exportUrl?: string;
-  pageCount?: number;
-};
-
-type GammaScriptJson = {
-  success?: boolean;
-  scripts?: Array<{ pageNumber: number; lines: string[] }>;
-  error?: string;
-};
-
-type GammaQuizJson = {
-  success?: boolean;
-  quizzes?: Array<{ afterPageNumber: number; questions: QuizQuestion[] }>;
-  error?: string;
-};
-
-async function loadPdfJsWithWorker() {
-  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
-  const workerUrl = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
-  if (pdfjs.GlobalWorkerOptions?.workerSrc !== workerUrl) {
-    pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
-  }
-  return pdfjs;
-}
-
-async function renderGammaPdfPagesToImages(
-  generationId: string,
-  pageCountHint: number,
-): Promise<{ images: string[]; pageTexts: string[]; pageCount: number }> {
-  const exportUrl = `/api/gamma/export/${encodeURIComponent(generationId)}`;
-  const exportRes = await fetch(exportUrl, { method: 'GET' });
-  if (!exportRes.ok) {
-    throw new Error(`Failed to download Gamma export PDF (${exportRes.status})`);
-  }
-  const pdfBytes = new Uint8Array(await exportRes.arrayBuffer());
-  const pdfjs = await loadPdfJsWithWorker();
-  const loadingTask = pdfjs.getDocument({
-    data: pdfBytes,
-    useWorkerFetch: false,
-    isEvalSupported: false,
-  } as never);
-  const pdf = await loadingTask.promise;
-
-  const pageCount = Math.max(1, Math.min(50, Math.min(pdf.numPages || 1, pageCountHint || 50)));
-  const images: string[] = [];
-  const pageTexts: string[] = [];
-
-  for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
-    try {
-      const page = await pdf.getPage(pageNumber);
-      const textContent = await page.getTextContent();
-      const rawText = textContent.items
-        .map((item) => {
-          if (typeof item === 'object' && item && 'str' in item) {
-            return String((item as { str: string }).str || '');
-          }
-          return '';
-        })
-        .join(' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-      // Keep richer extracted text so narration can cover more complete slide content.
-      pageTexts.push(rawText.slice(0, 2500));
-
-      const viewport = page.getViewport({ scale: 1.5 });
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.floor(viewport.width));
-      canvas.height = Math.max(1, Math.floor(viewport.height));
-      const context = canvas.getContext('2d');
-      if (!context) throw new Error('Could not create canvas context for PDF rendering');
-      await page.render({ canvasContext: context, viewport } as never).promise;
-      images.push(canvas.toDataURL('image/png'));
-    } catch {
-      // Fallback: if browser PDF rendering fails for a page, try server-rendered page image.
-      try {
-        const pageRes = await fetch(
-          `/api/gamma/page-image/${encodeURIComponent(generationId)}/${pageNumber}`,
-          { method: 'GET' },
-        );
-        if (!pageRes.ok) {
-          images.push('');
-          pageTexts.push('');
-          continue;
-        }
-        const blob = await pageRes.blob();
-        const dataUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(String(reader.result || ''));
-          reader.onerror = () =>
-            reject(new Error('Could not convert Gamma page image to data URL'));
-          reader.readAsDataURL(blob);
-        });
-        images.push(dataUrl);
-        pageTexts.push('');
-      } catch {
-        // Keep flow alive: this page will fallback to interactive viewer scene.
-        images.push('');
-        pageTexts.push('');
-      }
-    }
-  }
-
-  return { images, pageTexts, pageCount };
-}
-
-async function generateGammaScriptsByAI(
-  lessonTitle: string,
-  pageTexts: string[],
-  language: 'zh-CN' | 'en-US',
-): Promise<Map<number, string[]>> {
-  const settings = useSettingsStore.getState();
-  const selectedProviderId = settings.providerId;
-  const selectedModelId = settings.modelId;
-  const selectedProvider = settings.providersConfig[selectedProviderId];
-  const aiHeaders = {
-    'Content-Type': 'application/json',
-    'x-model': `${selectedProviderId}:${selectedModelId}`,
-    'x-api-key': selectedProvider?.apiKey || '',
-    'x-base-url': selectedProvider?.baseUrl || '',
-    'x-provider-type': selectedProvider?.type || '',
-    'x-requires-api-key': selectedProvider?.requiresApiKey ? 'true' : 'false',
-  };
-
-  const payload = {
-    lessonTitle,
-    language,
-    slides: pageTexts.map((text, idx) => ({
-      pageNumber: idx + 1,
-      title: `Slide ${idx + 1}`,
-      text: text || '',
-    })),
-  };
-
-  const res = await fetch('/api/gamma/scripts', {
-    method: 'POST',
-    headers: aiHeaders,
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    throw new Error(`Gamma script API failed (${res.status})`);
-  }
-  const json = (await res.json()) as GammaScriptJson;
-  if (!json.success || !Array.isArray(json.scripts)) {
-    throw new Error(json.error || 'Gamma script generation failed');
-  }
-
-  const map = new Map<number, string[]>();
-  for (const s of json.scripts) {
-    if (!Number.isFinite(s.pageNumber) || s.pageNumber < 1) continue;
-    const lines = Array.isArray(s.lines)
-      ? s.lines
-          .map((l) => String(l || '').trim())
-          .filter(Boolean)
-          .slice(0, 6)
-      : [];
-    if (lines.length > 0) map.set(s.pageNumber, lines);
-  }
-  return map;
-}
-
-async function generateGammaQuizzesByAI(
-  lessonTitle: string,
-  pageTexts: string[],
-): Promise<Map<number, QuizQuestion[]>> {
-  const settings = useSettingsStore.getState();
-  const selectedProviderId = settings.providerId;
-  const selectedModelId = settings.modelId;
-  const selectedProvider = settings.providersConfig[selectedProviderId];
-  const aiHeaders = {
-    'Content-Type': 'application/json',
-    'x-model': `${selectedProviderId}:${selectedModelId}`,
-    'x-api-key': selectedProvider?.apiKey || '',
-    'x-base-url': selectedProvider?.baseUrl || '',
-    'x-provider-type': selectedProvider?.type || '',
-    'x-requires-api-key': selectedProvider?.requiresApiKey ? 'true' : 'false',
-  };
-
-  const payload = {
-    lessonTitle,
-    slides: pageTexts.map((text, idx) => ({
-      pageNumber: idx + 1,
-      title: `Slide ${idx + 1}`,
-      text: text || '',
-    })),
-  };
-
-  const res = await fetch('/api/gamma/quizzes', {
-    method: 'POST',
-    headers: aiHeaders,
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    throw new Error(`Gamma quiz API failed (${res.status})`);
-  }
-  const json = (await res.json()) as GammaQuizJson;
-  if (!json.success || !Array.isArray(json.quizzes)) {
-    throw new Error(json.error || 'Gamma quiz generation failed');
-  }
-
-  const map = new Map<number, QuizQuestion[]>();
-  for (const quiz of json.quizzes) {
-    if (!Number.isFinite(quiz.afterPageNumber) || quiz.afterPageNumber < 1) continue;
-    if (!Array.isArray(quiz.questions) || quiz.questions.length === 0) continue;
-    const normalizedQuestions = quiz.questions
-      .map((q) => ({
-        id: q.id || nanoid(10),
-        type: q.type === 'multiple' ? ('multiple' as const) : ('single' as const),
-        question: String(q.question || '').trim(),
-        options: Array.isArray(q.options)
-          ? q.options
-              .map((opt) => ({
-                label: String(opt?.label || '').trim(),
-                value: String(opt?.value || '').trim(),
-              }))
-              .filter((opt) => opt.label && opt.value)
-              .slice(0, 4)
-          : [],
-        answer: Array.isArray(q.answer)
-          ? q.answer
-              .map((a) => String(a || '').trim())
-              .filter(Boolean)
-              .slice(0, 2)
-          : [],
-        analysis:
-          String(q.analysis || '').trim() || 'Review the key concept from the previous slides.',
-        hasAnswer: true,
-        points: Number.isFinite(q.points) ? Math.max(1, Number(q.points)) : 1,
-      }))
-      .filter((q) => q.question.length > 0 && q.options.length >= 2 && q.answer.length >= 1);
-    if (normalizedQuestions.length > 0) {
-      map.set(quiz.afterPageNumber, normalizedQuestions.slice(0, 10));
-    }
-  }
-
-  return map;
-}
-
-function buildGammaPdfPageUrl(baseUrl: string, pageNumber: number): string {
-  if (!baseUrl.trim()) return '';
-  const suffix = `page=${pageNumber}&view=FitH`;
-  return baseUrl.includes('#') ? `${baseUrl}&${suffix}` : `${baseUrl}#${suffix}`;
-}
-
-function buildGammaSlideSpeech(pageNumber: number, pageText?: string): string {
-  const cleaned = (pageText || '').trim();
-  if (!cleaned) {
-    return `For slide ${pageNumber}, we will connect this part to the lesson goal and focus on the most important takeaway before moving on.`;
-  }
-  const normalized = cleaned.replace(/\s+/g, ' ').trim();
-  const snippet = normalized.slice(0, 180);
-  return `On slide ${pageNumber}, notice this key content: ${snippet}. I will break it down step by step and explain why it matters.`;
-}
-
-function buildGammaSlideScript(
-  pageNumber: number,
-  pageText: string,
-  lessonTitle: string,
-): string[] {
-  const cleaned = pageText
-    .replace(/^on slide\s+\d+\s*,?\s*we focus on\s*/i, '')
-    .replace(/^slide\s+\d+\s+focuses on\s*/i, '')
-    .trim();
-  if (!cleaned) {
-    return [
-      `This is slide ${pageNumber} in our lesson on ${lessonTitle}. I will explain the visual content and the key takeaway for this section.`,
-      `As you watch this slide, focus on the main concept and how it connects with the previous part of the lesson.`,
-      `After this explanation, you should be able to summarize the central idea in your own words.`,
-    ];
-  }
-
-  const normalized = cleaned.replace(/\s+/g, ' ').trim();
-  const chunks = normalized
-    .split(/[.?!]\s+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const primary = chunks[0] || normalized.slice(0, 180);
-  const secondary = chunks.slice(1).join('. ').slice(0, 220);
-
-  return [
-    `Slide ${pageNumber} covers: ${primary}.`,
-    secondary
-      ? `In this part, notice that ${secondary}. Think about why this matters before we move on.`
-      : `Pay attention to the examples and structure shown here, because they are important for understanding the next slide.`,
-    `Try to identify one key term or relationship from this slide that you can reuse in the next section.`,
-  ];
-}
-
-async function fetchGammaPageImageDataUrl(
-  generationId: string,
-  pageNumber: number,
-): Promise<string | null> {
-  const pageRes = await fetch(
-    `/api/gamma/page-image/${encodeURIComponent(generationId)}/${pageNumber}`,
-    {
-      method: 'GET',
-    },
-  );
-  if (!pageRes.ok) return null;
-  const blob = await pageRes.blob();
-  const dataUrl = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = () => reject(new Error('Could not convert Gamma page image to data URL'));
-    reader.readAsDataURL(blob);
-  });
-  return dataUrl || null;
-}
-
-async function fillMissingGammaPageImages(
-  generationId: string,
-  images: string[],
-  pageCount: number,
-): Promise<string[]> {
-  const out = [...images];
-  for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
-    if (out[pageNumber - 1]) continue;
-    // Retry twice for transient server/image conversion failures.
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const image = await fetchGammaPageImageDataUrl(generationId, pageNumber);
-        if (image) {
-          out[pageNumber - 1] = image;
-          break;
-        }
-      } catch {
-        // ignore and retry
-      }
-    }
-  }
-  return out;
-}
+const emptyTutorFormFields = {
+  tutorName: '',
+  tutorTitle: '',
+  tutorDescription: '',
+  tutorVoiceReferenceUrl: '',
+  tutorAvatar: '',
+  tutorVoicePresetId: '',
+} as const;
 
 const initialFormState: FormState = {
   pdfFile: null,
@@ -490,12 +123,7 @@ const initialFormState: FormState = {
   language: 'zh-CN',
   webSearch: false,
   enableRAG: false,
-  tutorName: 'AI Tutor',
-  tutorTitle: 'AI Tutor',
-  tutorDescription: '',
-  tutorVoiceReferenceUrl: '',
-  tutorAvatar: AVATAR_OPTIONS[1],
-  tutorVoicePresetId: '',
+  ...emptyTutorFormFields,
 };
 
 function toTutorVoicePreset(raw: Record<string, unknown>): TutorVoicePreset {
@@ -531,8 +159,11 @@ function HomePage() {
   >(undefined);
 
   // Draft cache for requirement text
-  const { cachedValue: cachedRequirement, updateCache: updateRequirementCache } =
-    useDraftCache<string>({ key: REQUIREMENT_DRAFT_STORAGE_KEY });
+  const {
+    cachedValue: cachedRequirement,
+    updateCache: updateRequirementCache,
+    clearCache: clearRequirementCache,
+  } = useDraftCache<string>({ key: REQUIREMENT_DRAFT_STORAGE_KEY });
 
   // Model setup state
   const currentModelId = useSettingsStore((s) => s.modelId);
@@ -593,8 +224,6 @@ function HomePage() {
   const [recentPage, setRecentPage] = useState(1);
   const [recentsSource, setRecentsSource] = useState<'local' | 'remote'>('local');
   const [totalClassroomsCount, setTotalClassroomsCount] = useState(0);
-  const [gammaBusy, setGammaBusy] = useState(false);
-  const gammaRunRef = useRef(0);
   const [gammaSelected, setGammaSelected] = useState(false);
   const [customVoices, setCustomVoices] = useState<TutorVoicePreset[]>([]);
   const [isVoicesLoading, setIsVoicesLoading] = useState(false);
@@ -604,6 +233,10 @@ function HomePage() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const classroomsLoadSeqRef = useRef(0);
   const recentsRefreshScheduledAtRef = useRef(0);
+  const tutorPrefsHydratedRef = useRef(false);
+  const tutorFieldsTouchedRef = useRef(false);
+  const formRef = useRef(form);
+  formRef.current = form;
   const RECENTS_PER_PAGE = 8;
 
   const verifyAdminStatus = async (accessToken: string) => {
@@ -651,8 +284,10 @@ function HomePage() {
 
   const applyTutorToPresenters = useCallback(
     (voice?: TutorVoicePreset) => {
-      const tutorName = voice?.name?.trim() || form.tutorName.trim() || 'AI Tutor';
-      const tutorAvatar = voice?.avatar?.trim() || form.tutorAvatar || '/avatars/teacher.png';
+      const currentForm = formRef.current;
+      const tutorName = voice?.name?.trim() || currentForm.tutorName.trim() || 'AI Tutor';
+      const tutorAvatar =
+        voice?.avatar?.trim() || currentForm.tutorAvatar || '/avatars/teacher.png';
       const teacherAgentId =
         selectedAgentIds.find((id) => getAgent(id)?.role === 'teacher') || 'default-1';
 
@@ -678,16 +313,7 @@ function HomePage() {
         setSelectedAgentIds([teacherAgentId, ...selectedAgentIds]);
       }
     },
-    [
-      form.tutorAvatar,
-      form.tutorName,
-      getAgent,
-      selectedAgentIds,
-      setSelectedAgentIds,
-      setTTSProvider,
-      setTTSVoice,
-      updateAgent,
-    ],
+    [getAgent, selectedAgentIds, setSelectedAgentIds, setTTSProvider, setTTSVoice, updateAgent],
   );
 
   const loadCustomVoices = useCallback(async () => {
@@ -734,12 +360,6 @@ function HomePage() {
       const voices = rawVoices.map((v) => toTutorVoicePreset(v));
 
       setCustomVoices(voices);
-      setForm((prev) => {
-        if (prev.tutorVoicePresetId) return prev;
-        const first = voices[0];
-        if (!first) return prev;
-        return { ...prev, tutorVoicePresetId: first.id };
-      });
     } catch (err) {
       setCustomVoices([]);
       log.warn('Failed to load custom tutor voices (DB only mode).', err);
@@ -1371,31 +991,13 @@ function HomePage() {
   }, [authReady, isAuthenticated, router]);
 
   useEffect(() => {
-    if (!authReady) return;
-    void (async () => {
-      await loadCustomVoices();
-      const preferredTutor = await loadPreferredTutorFromDb();
-      if (preferredTutor) {
-        setForm((prev) => ({
-          ...prev,
-          tutorName: preferredTutor.name || prev.tutorName,
-          tutorTitle: preferredTutor.title || prev.tutorTitle,
-          tutorDescription: preferredTutor.description || prev.tutorDescription,
-          tutorAvatar: preferredTutor.avatar || prev.tutorAvatar,
-          tutorVoicePresetId: preferredTutor.id,
-        }));
-        applyTutorToPresenters(preferredTutor);
-        return;
-      }
-      await loadTutorPreferenceFromLatestClassroom();
-    })();
-  }, [
-    authReady,
-    loadCustomVoices,
-    loadPreferredTutorFromDb,
-    loadTutorPreferenceFromLatestClassroom,
-    applyTutorToPresenters,
-  ]);
+    if (!authReady || !isAuthenticated || !isAdminUser) return;
+    if (tutorPrefsHydratedRef.current) return;
+    tutorPrefsHydratedRef.current = true;
+
+    setForm((prev) => ({ ...prev, ...emptyTutorFormFields }));
+    void loadCustomVoices();
+  }, [authReady, isAuthenticated, isAdminUser, loadCustomVoices]);
 
   useEffect(() => {
     if (!authReady) return;
@@ -1472,7 +1074,27 @@ function HomePage() {
     }
   };
 
+  const markTutorFieldsTouched = () => {
+    tutorFieldsTouchedRef.current = true;
+  };
+
+  const clearTutorFields = useCallback(() => {
+    markTutorFieldsTouched();
+    setForm((prev) => ({ ...prev, ...emptyTutorFormFields }));
+    void savePreferredTutorToDb(null);
+  }, [savePreferredTutorToDb]);
+
   const updateForm = <K extends keyof FormState>(field: K, value: FormState[K]) => {
+    if (
+      field === 'tutorName' ||
+      field === 'tutorTitle' ||
+      field === 'tutorDescription' ||
+      field === 'tutorAvatar' ||
+      field === 'tutorVoiceReferenceUrl' ||
+      field === 'tutorVoicePresetId'
+    ) {
+      markTutorFieldsTouched();
+    }
     setForm((prev) => ({ ...prev, [field]: value }));
     try {
       if (field === 'webSearch') localStorage.setItem(WEB_SEARCH_STORAGE_KEY, String(value));
@@ -1483,6 +1105,11 @@ function HomePage() {
       /* ignore */
     }
   };
+
+  const clearRequirementDraft = useCallback(() => {
+    setForm((prev) => ({ ...prev, requirement: '' }));
+    clearRequirementCache();
+  }, [clearRequirementCache]);
 
   const showSetupToast = (icon: React.ReactNode, title: string, desc: string) => {
     toast.custom(
@@ -1632,6 +1259,7 @@ function HomePage() {
       };
       sessionStorage.setItem('generationSession', JSON.stringify(sessionState));
 
+      clearRequirementDraft();
       router.push('/generation-preview');
     } catch (err) {
       log.error('Error preparing generation:', err);
@@ -1640,7 +1268,6 @@ function HomePage() {
   };
 
   const handleGammaGenerate = async () => {
-    if (gammaBusy) return;
     if (!isAuthenticated || !isAdminUser) {
       toast.error('Admin login required to generate classrooms.');
       router.push('/auth');
@@ -1652,86 +1279,44 @@ function HomePage() {
     }
 
     setError(null);
-    setGammaBusy(true);
-    const runId = Date.now();
-    gammaRunRef.current = runId;
+
     try {
-      const startRes = await fetch('/api/gamma/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: form.requirement.trim(),
-          numCards: 10,
-          exportAs: 'pdf',
-          textMode: 'generate',
-          format: 'presentation',
-        }),
-      });
-      const startData = (await startRes.json()) as GammaJson;
-      if (!startData.success || !startData.generationId) {
-        toast.error(startData.error || 'Could not start Gamma generation');
-        return;
-      }
-      let last: GammaJson = {};
-      for (let i = 0; i < 120; i++) {
-        if (gammaRunRef.current !== runId) return;
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-        const pollRes = await fetch(`/api/gamma/generations/${startData.generationId}`);
-        last = (await pollRes.json()) as GammaJson;
-        if (!last.success) {
-          toast.error(last.error || 'Gamma polling failed');
-          return;
-        }
-        if (last.status === 'completed' || last.status === 'failed') break;
+      const selectedTeacherAgent =
+        selectedAgentIds
+          .map((id) => getAgent(id))
+          .find((agent) => agent?.role === 'teacher') || getAgent('default-1');
+      const teacherVoiceConfig = selectedTeacherAgent?.voiceConfig;
+      const selectedVoicePreset =
+        customVoices.find((v) => v.id === form.tutorVoicePresetId) ||
+        customVoices.find(
+          (v) =>
+            v.providerId === teacherVoiceConfig?.providerId &&
+            v.providerVoiceId === teacherVoiceConfig?.voiceId,
+        );
+      if (selectedVoicePreset) {
+        applyTutorToPresenters(selectedVoicePreset);
+      } else {
+        applyTutorToPresenters();
       }
 
-      if (last.status === 'completed' && last.gammaUrl) {
-        if (gammaRunRef.current !== runId) return;
-        const settings = useSettingsStore.getState();
-        const selectedTeacherAgent =
-          selectedAgentIds
-            .map((id) => getAgent(id))
-            .find((agent) => agent?.role === 'teacher') || getAgent('default-1');
-        const teacherVoiceConfig = selectedTeacherAgent?.voiceConfig;
-        const selectedVoicePreset =
-          customVoices.find((v) => v.id === form.tutorVoicePresetId) ||
-          customVoices.find(
-            (v) =>
-              v.providerId === teacherVoiceConfig?.providerId &&
-              v.providerVoiceId === teacherVoiceConfig?.voiceId,
-          );
-        if (selectedVoicePreset) {
-          applyTutorToPresenters(selectedVoicePreset);
-        } else {
-          applyTutorToPresenters();
-        }
-        const now = Date.now();
-        const stageId = nanoid(10);
-        const stage: Stage & {
-          tutorConfig?: {
-            name: string;
-            avatar: string;
-            description?: string;
-            voicePreset?: {
-              id: string;
-              name: string;
-              providerId: string;
-              voiceId: string;
-            };
-          };
-        } = {
-          id: stageId,
-          name: form.requirement.trim().slice(0, 120) || 'Gamma Presentation',
-          description: 'Generated via Gamma AI',
-          createdAt: now,
-          updatedAt: now,
+      const sessionState: GenerationSessionState = {
+        sessionId: nanoid(),
+        generationMode: 'gamma',
+        requirements: {
+          requirement: form.requirement,
           language: form.language,
-          style: 'professional',
-        };
-        stage.tutorConfig = {
-          name: selectedVoicePreset?.name || selectedTeacherAgent?.name || form.tutorName || 'AI Tutor',
+        },
+        tutorConfig: {
+          name:
+            selectedVoicePreset?.name ||
+            selectedTeacherAgent?.name ||
+            form.tutorName ||
+            'AI Tutor',
           avatar:
-            selectedVoicePreset?.avatar || selectedTeacherAgent?.avatar || form.tutorAvatar || AVATAR_OPTIONS[1],
+            selectedVoicePreset?.avatar ||
+            selectedTeacherAgent?.avatar ||
+            form.tutorAvatar ||
+            AVATAR_OPTIONS[1],
           description:
             selectedVoicePreset?.description || selectedVoicePreset?.title || form.tutorDescription || '',
           ...((selectedVoicePreset || teacherVoiceConfig)
@@ -1740,7 +1325,11 @@ function HomePage() {
                   id:
                     selectedVoicePreset?.id ||
                     `${teacherVoiceConfig?.providerId || 'tts'}::${teacherVoiceConfig?.voiceId || 'default'}`,
-                  name: selectedVoicePreset?.name || selectedTeacherAgent?.name || form.tutorName || 'AI Tutor',
+                  name:
+                    selectedVoicePreset?.name ||
+                    selectedTeacherAgent?.name ||
+                    form.tutorName ||
+                    'AI Tutor',
                   providerId:
                     selectedVoicePreset?.providerId || teacherVoiceConfig?.providerId || 'browser-native-tts',
                   voiceId:
@@ -1748,280 +1337,20 @@ function HomePage() {
                 },
               }
             : {}),
-        };
-        const exportBaseUrl = `/api/gamma/export/${encodeURIComponent(startData.generationId)}`;
-        const pageCountHint = Math.max(1, Math.min(50, Math.floor(last.pageCount ?? 1)));
-        let renderedPageImages: string[] = [];
-        let renderedPageTexts: string[] = [];
-        let resolvedPageCount = pageCountHint;
-        try {
-          const rendered = await renderGammaPdfPagesToImages(startData.generationId, pageCountHint);
-          renderedPageImages = rendered.images;
-          renderedPageTexts = rendered.pageTexts;
-          resolvedPageCount = rendered.pageCount;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          toast.warning(
-            'Some Gamma slides could not convert. Using viewer fallback for those pages.',
-          );
-          console.warn('[gamma] page image download failed', {
-            message,
-          });
-        }
+        },
+        pdfText: '',
+        pdfImages: [],
+        imageStorageIds: [],
+        sceneOutlines: null,
+        currentStep: 'generating',
+      };
+      sessionStorage.setItem('generationSession', JSON.stringify(sessionState));
 
-        renderedPageImages = await fillMissingGammaPageImages(
-          startData.generationId,
-          renderedPageImages,
-          resolvedPageCount,
-        );
-
-        let aiScripts = new Map<number, string[]>();
-        try {
-          aiScripts = await generateGammaScriptsByAI(stage.name, renderedPageTexts, form.language);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.warn('[gamma] ai script generation failed, using local fallback scripts', {
-            message,
-          });
-        }
-        let aiQuizzes = new Map<number, QuizQuestion[]>();
-        try {
-          aiQuizzes = await generateGammaQuizzesByAI(stage.name, renderedPageTexts);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.warn('[gamma] ai quiz generation failed, continuing without quizzes', {
-            message,
-          });
-        }
-
-        const missingPages = renderedPageImages
-          .map((img, idx) => ({ idx, ok: typeof img === 'string' && img.length > 0 }))
-          .filter((x) => !x.ok)
-          .map((x) => x.idx + 1);
-        if (missingPages.length > 0) {
-          toast.error(
-            `Could not prepare local slide snapshot for pages: ${missingPages.join(', ')}. Please retry generation.`,
-          );
-          return;
-        }
-
-        const pageCount = resolvedPageCount;
-        const slideScenes: Scene[] = Array.from({ length: pageCount }, (_, idx) => {
-          const pageNumber = idx + 1;
-          const pageImage = renderedPageImages[idx];
-          const pageText = renderedPageTexts[idx];
-          const slideScript =
-            aiScripts.get(pageNumber) ||
-            buildGammaSlideScript(pageNumber, pageText || '', stage.name || 'this topic');
-          const narrationLines =
-            slideScript.length > 0
-              ? slideScript
-              : [
-                  buildGammaSlideSpeech(pageNumber, pageText),
-                  buildGammaSlideSpeech(pageNumber, pageText),
-                ];
-          const narrationActions = narrationLines
-            .map((line) => line.trim())
-            .filter(Boolean)
-            .map(
-              (line) =>
-                ({
-                  id: nanoid(10),
-                  type: 'speech',
-                  text: line,
-                }) as Action,
-            );
-          return {
-            id: nanoid(12),
-            stageId,
-            type: 'slide',
-            title: `Gamma Slide ${pageNumber}`,
-            order: pageNumber,
-            content: {
-              type: 'slide',
-              canvas: {
-                id: nanoid(12),
-                viewportSize: 1000,
-                viewportRatio: 0.5625,
-                theme: {
-                  backgroundColor: '#ffffff',
-                  themeColors: ['#5b9bd5', '#ed7d31', '#a5a5a5', '#ffc000', '#4472c4'],
-                  fontColor: '#333333',
-                  fontName: 'Microsoft Yahei',
-                },
-                elements: [
-                  {
-                    type: 'image',
-                    id: nanoid(12),
-                    left: 0,
-                    top: 0,
-                    width: 1000,
-                    height: 563,
-                    rotate: 0,
-                    fixedRatio: false,
-                    src: pageImage,
-                  },
-                ],
-              } as Slide,
-            },
-            actions:
-              pageNumber === 1
-                ? ([
-                    {
-                      id: nanoid(10),
-                      type: 'speech',
-                      text: `Welcome everyone. We will learn ${stage.name} together. I will guide you through each slide and explain the key concepts clearly.`,
-                    },
-                    ...narrationActions,
-                    {
-                      id: nanoid(10),
-                      type: 'discussion',
-                      topic: 'Let us begin with your first impressions of this topic.',
-                      prompt:
-                        'Ask the student one warm-up question about the lesson topic and respond supportively.',
-                    },
-                  ] as Action[])
-                : (narrationActions as Action[]),
-            createdAt: now,
-            updatedAt: now,
-          };
-        });
-        const scenes: Scene[] = [];
-        for (const slideScene of slideScenes) {
-          scenes.push(slideScene);
-          const afterPageNumber = slideScene.order;
-          const quizQuestions = aiQuizzes.get(afterPageNumber);
-          if (!quizQuestions || quizQuestions.length === 0) continue;
-          scenes.push({
-            id: nanoid(12),
-            stageId,
-            type: 'quiz',
-            title: `Quick Check ${afterPageNumber}`,
-            order: scenes.length + 1,
-            content: {
-              type: 'quiz',
-              questions: quizQuestions,
-            },
-            actions: [
-              {
-                id: nanoid(10),
-                type: 'speech',
-                text: 'Great progress. Let us do a quick quiz to check your understanding before we continue.',
-              },
-            ] as Action[],
-            createdAt: now,
-            updatedAt: now,
-          });
-        }
-        scenes.forEach((scene, index) => {
-          scene.order = index + 1;
-        });
-
-        // Pre-generate Gamma scene speech audio with the same selected tutor voice.
-        // Reason: without audioId/audio in DB, playback can become silent and only use timing fallback.
-        if (settings.ttsEnabled) {
-          const tutorVoicePreset = stage.tutorConfig?.voicePreset;
-          const effectiveProviderId = (tutorVoicePreset?.providerId ||
-            settings.ttsProviderId) as TTSProviderId;
-          const effectiveVoiceId = tutorVoicePreset?.voiceId || settings.ttsVoice;
-          const effectiveProviderConfig = settings.ttsProvidersConfig?.[effectiveProviderId];
-
-          if (effectiveProviderId !== 'browser-native-tts' && effectiveVoiceId) {
-            let gammaTTSFailures = 0;
-            for (const scene of scenes) {
-              const speechActions = (scene.actions || []).filter(
-                (a): a is Action & { type: 'speech'; text: string } => a.type === 'speech' && !!a.text,
-              );
-              for (const action of speechActions) {
-                const audioId = `tts_${action.id}`;
-                action.audioId = audioId;
-                try {
-                  const ttsResp = await fetch('/api/generate/tts', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      text: action.text,
-                      audioId,
-                      ttsProviderId: effectiveProviderId,
-                      ttsVoice: effectiveVoiceId,
-                      ttsSpeed: settings.ttsSpeed,
-                      ttsApiKey: effectiveProviderConfig?.apiKey || undefined,
-                      ttsBaseUrl:
-                        effectiveProviderConfig?.serverBaseUrl ||
-                        effectiveProviderConfig?.baseUrl ||
-                        undefined,
-                    }),
-                  });
-                  if (!ttsResp.ok) {
-                    gammaTTSFailures++;
-                    continue;
-                  }
-                  const ttsData = await ttsResp.json();
-                  if (!ttsData?.success || !ttsData?.base64 || !ttsData?.format) {
-                    gammaTTSFailures++;
-                    continue;
-                  }
-                  if (ttsData.ttsDebug) {
-                    log.info('[TTS Debug][Gamma]', ttsData.ttsDebug);
-                  }
-                  const binary = atob(ttsData.base64);
-                  const bytes = new Uint8Array(binary.length);
-                  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-                  const blob = new Blob([bytes], { type: `audio/${ttsData.format}` });
-                  await db.audioFiles.put({
-                    id: audioId,
-                    blob,
-                    format: ttsData.format,
-                    createdAt: Date.now(),
-                  });
-                  try {
-                    const uploadedUrl = await uploadSpeechAudioForClassroom(stage.id, audioId, blob);
-                    if (uploadedUrl) {
-                      action.audioUrl = uploadedUrl;
-                    }
-                  } catch (gammaUploadErr) {
-                    log.warn('[gamma] failed to upload tutor speech clip', gammaUploadErr);
-                  }
-                } catch (gammaTTSError) {
-                  gammaTTSFailures++;
-                  log.warn('[gamma] failed to pre-generate tutor speech', gammaTTSError);
-                }
-              }
-            }
-            if (gammaTTSFailures > 0) {
-              toast.warning(
-                'Some tutor speech clips could not be generated. Replaying those lines may use fallback timing.',
-              );
-            }
-          }
-        }
-
-        const stageStore = useStageStore.getState();
-        stageStore.setStage(stage);
-        scenes.forEach((scene) => stageStore.addScene(scene));
-        stageStore.setCurrentSceneId(scenes[0].id);
-        await stageStore.saveToStorage();
-        try {
-          await syncClassroomToSupabase({
-            stage,
-            scenes,
-            chats: [],
-          });
-        } catch (syncError) {
-          console.warn('[gamma] explicit supabase sync failed', syncError);
-        }
-
-        toast.success('Gamma slides generated successfully.');
-        router.push(`/classroom/${stageId}`);
-      } else {
-        toast.error(last.error || 'Gamma generation failed');
-      }
+      clearRequirementDraft();
+      router.push('/generation-preview');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Gamma request failed');
-    } finally {
-      if (gammaRunRef.current === runId) {
-        setGammaBusy(false);
-      }
+      log.error('Error preparing Gamma generation:', err);
+      setError(err instanceof Error ? err.message : t('upload.generateFailed'));
     }
   };
 
@@ -2038,7 +1367,7 @@ function HomePage() {
   };
 
   const canGenerate = !!form.requirement.trim() && isAuthenticated && isAdminUser;
-  const canGenerateNow = canGenerate && !gammaBusy;
+  const canGenerateNow = canGenerate;
   const showAuthenticatedUi = authReady && isAuthenticated;
   const totalRecentItems = recentsSource === 'remote' ? totalClassroomsCount : classrooms.length;
   const totalRecentPages = Math.max(1, Math.ceil(totalRecentItems / RECENTS_PER_PAGE));
@@ -2583,16 +1912,27 @@ function HomePage() {
                       Save a reusable tutor profile with voice reference and avatar.
                     </p>
                   </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7 text-xs rounded-md"
-                    disabled={isCreatingVoice}
-                    onClick={() => void handleCreateCustomVoice()}
-                  >
-                    {isCreatingVoice ? 'Creating tutor...' : 'Create Tutor'}
-                  </Button>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-xs rounded-md text-muted-foreground"
+                      onClick={() => clearTutorFields()}
+                    >
+                      Clear
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs rounded-md"
+                      disabled={isCreatingVoice}
+                      onClick={() => void handleCreateCustomVoice()}
+                    >
+                      {isCreatingVoice ? 'Creating tutor...' : 'Create Tutor'}
+                    </Button>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
@@ -2669,23 +2009,28 @@ function HomePage() {
                       value={form.tutorVoicePresetId}
                       onChange={(e) => {
                         const presetId = e.target.value;
-                        updateForm('tutorVoicePresetId', presetId);
-                        const voice = customVoices.find((v) => v.id === presetId);
-                        if (voice) {
-                          updateForm('tutorName', voice.name || form.tutorName);
-                          updateForm('tutorTitle', voice.title || voice.name || form.tutorTitle);
-                          updateForm(
-                            'tutorDescription',
-                            voice.description || form.tutorDescription,
-                          );
-                          updateForm(
-                            'tutorVoiceReferenceUrl',
-                            voice.referenceUrl || form.tutorVoiceReferenceUrl,
-                          );
-                          updateForm('tutorAvatar', voice.avatar || form.tutorAvatar);
-                          applyTutorToPresenters(voice);
-                          void savePreferredTutorToDb(voice);
+                        markTutorFieldsTouched();
+                        if (!presetId) {
+                          setForm((prev) => ({ ...prev, ...emptyTutorFormFields }));
+                          void savePreferredTutorToDb(null);
+                          return;
                         }
+                        const voice = customVoices.find((v) => v.id === presetId);
+                        if (!voice) {
+                          updateForm('tutorVoicePresetId', presetId);
+                          return;
+                        }
+                        setForm((prev) => ({
+                          ...prev,
+                          tutorVoicePresetId: presetId,
+                          tutorName: voice.name || '',
+                          tutorTitle: voice.title || voice.name || '',
+                          tutorDescription: voice.description || '',
+                          tutorVoiceReferenceUrl: voice.referenceUrl || '',
+                          tutorAvatar: voice.avatar || '',
+                        }));
+                        applyTutorToPresenters(voice);
+                        void savePreferredTutorToDb(voice);
                       }}
                       className="h-8 rounded-md border border-border/80 bg-background/90 px-2.5 text-xs text-foreground"
                     >

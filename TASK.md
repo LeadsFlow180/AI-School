@@ -3,6 +3,8 @@
 ## Active
 
 - [x] 2026-05-13 - Fix `pnpm run build` / Next 16 TypeScript failures: exclude `.next/dev/types` duplicate route types; `withTimeout` accepts `PromiseLike` for Supabase builders; Gamma page-image `Response` bodies as `Uint8Array`; scene-outlines-stream split `streamLLM` branches; Zod `z.record` key schema; RAG test routes use `API_ERROR_CODES`; Stage type vs component alias on classroom page; Tesseract OCR lines from `blocks`; motion readonly keyframe spreads; assorted `TTSProviderId` / union casts; `skipLibCheck: true` for broken `@supabase/realtime-js` phoenix path types; remove deprecated `eslint` key from `next.config.ts`.
+- [x] 2026-05-11 - Reduce classroom speech handoff gap by preloading upcoming audio clips in playback engine and reusing warmed sources in `AudioPlayer` for smoother back-to-back narration.
+- [x] 2026-05-11 - Clear Home prompt textarea draft after successful classroom generation entry (standard + Gamma) so returning to `/` starts with an empty input, while keeping explicit `/rag` draft preservation.
 - [x] 2026-05-07 - Classroom `/edit` layout: slide strip always visible (mobile horizontal scroller + sticky bar), tall slide canvas (`min-h` with `dvh` caps, no `aspect-video`), tools panel below with bounded scroll; desktop sidebar full height + scrollable list; taller slide chips/list rows.
 - [x] 2026-05-07 - Refine classroom `/edit` `EditCanvasActionPanel`: monochrome list rows + shadcn Button/Input, calmer status banners, single primary emphasis on finalize; neutral canvas background.
 - [x] 2026-05-07 - Classroom canvas edit (`/classroom/[id]/edit`): show same rich-text toolbar in the left Slides sidebar when a text or shape-with-text element is selected; extract shared `SlideTextRichToolbar` used by canvas overlay and sidebar (`embedded` layout).
@@ -193,6 +195,7 @@
 
 - [x] 2026-05-15 - Fix new-tab default tutor icon and mute: re-apply tutorConfig (name/avatar/voice) from server stage after background refresh so agent registry stays in sync; fix `resolveEffectiveTTSRequest` early-return to check the *effective* provider (tutorConfig.voicePreset override) rather than global settings provider, preventing custom-cloned-tts from being silenced when global provider is still browser-native-tts.
 
+- [x] 2026-05-11 - Log Supabase `admin_users` / `classrooms` upsert failures in `/api/classroom/sync` so dev terminal shows `code`/`details`/`hint` when sync returns 500.
 - [x] 2026-04-15 - Improve Home mobile polish: recents pagination controls, prompt action layout, and compact mascot overlays visible in empty spaces on small screens.
 - [x] 2026-04-15 - Improve Home page small-screen responsiveness: compact top toolbar, tighter hero spacing, mobile-friendly prompt controls stacking, and denser recents card layout.
 - [x] 2026-04-15 - Compact Export dropdown item spacing (3 actions) to reduce menu height and avoid overlap with classroom guide character.

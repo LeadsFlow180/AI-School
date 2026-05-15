@@ -30,6 +30,8 @@ import type { SceneOutline, PdfImage, ImageMapping } from '@/lib/types/generatio
 import { AgentRevealModal } from '@/components/agent/agent-reveal-modal';
 import { createLogger } from '@/lib/logger';
 import { type GenerationSessionState, ALL_STEPS, getActiveSteps } from './types';
+import { buildClassroomFromGamma } from '@/lib/gamma/classroom-builder';
+import type { GammaGenerationStepId } from '@/lib/gamma/types';
 import type { ProviderId } from '@/lib/ai/providers';
 import { StepVisualizer } from './components/visualizers';
 import { getSessionSafe, getSupabaseClient } from '@/lib/supabase/client';
@@ -207,6 +209,28 @@ function GenerationPreviewContent() {
     setCurrentStepIndex(0);
 
     try {
+      if (currentSession.generationMode === 'gamma') {
+        const gammaSteps = getActiveSteps(currentSession);
+        const stepIndexFor = (stepId: GammaGenerationStepId) =>
+          Math.max(0, gammaSteps.findIndex((s) => s.id === stepId));
+
+        const { stageId } = await buildClassroomFromGamma({
+          prompt: currentSession.requirements.requirement,
+          language:
+            currentSession.requirements.language === 'zh-CN' ? 'zh-CN' : 'en-US',
+          tutorConfig: currentSession.tutorConfig,
+          signal,
+          onProgress: ({ stepId, statusMessage }) => {
+            setCurrentStepIndex(stepIndexFor(stepId));
+            setStatusMessage(statusMessage);
+          },
+        });
+
+        sessionStorage.removeItem('generationSession');
+        router.push(`/classroom/${stageId}`);
+        return;
+      }
+
       // Compute active steps for this session (recomputed after session mutations)
       let activeSteps = getActiveSteps(currentSession);
 

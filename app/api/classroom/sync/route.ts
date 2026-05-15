@@ -1,8 +1,11 @@
 import { type NextRequest } from 'next/server';
 import { apiError, apiSuccess, API_ERROR_CODES } from '@/lib/server/api-response';
 import { getSupabaseAdminClient } from '@/lib/server/supabase-admin';
+import { createLogger } from '@/lib/logger';
 import type { Scene, Stage } from '@/lib/types/stage';
 import type { ChatSession } from '@/lib/types/chat';
+
+const log = createLogger('ClassroomSync');
 
 type SyncPayload = {
   stage?: Stage;
@@ -38,6 +41,11 @@ export async function POST(request: NextRequest) {
       .eq('user_id', userData.user.id)
       .maybeSingle();
     if (adminErr) {
+      log.warn('admin_users lookup failed', {
+        message: adminErr.message,
+        code: (adminErr as { code?: string }).code,
+        details: (adminErr as { details?: string }).details,
+      });
       return apiError(
         API_ERROR_CODES.INTERNAL_ERROR,
         500,
@@ -81,6 +89,13 @@ export async function POST(request: NextRequest) {
 
     const { error: upsertErr } = await adminClient.from('classrooms').upsert(payload, { onConflict: 'id' });
     if (upsertErr) {
+      log.warn('classrooms upsert failed', {
+        classroomId: stage.id,
+        message: upsertErr.message,
+        code: (upsertErr as { code?: string }).code,
+        details: (upsertErr as { details?: string }).details,
+        hint: (upsertErr as { hint?: string }).hint,
+      });
       return apiError(
         API_ERROR_CODES.INTERNAL_ERROR,
         500,
@@ -91,6 +106,7 @@ export async function POST(request: NextRequest) {
 
     return apiSuccess({ id: stage.id, synced: true });
   } catch (error) {
+    log.error('classroom sync exception', error);
     return apiError(
       API_ERROR_CODES.INTERNAL_ERROR,
       500,

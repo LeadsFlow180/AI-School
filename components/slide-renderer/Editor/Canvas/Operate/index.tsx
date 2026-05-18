@@ -18,6 +18,9 @@ import { ShapeElementOperate } from './ShapeElementOperate';
 import { LineElementOperate } from './LineElementOperate';
 import { TableElementOperate } from './TableElementOperate';
 import { CommonElementOperate } from './CommonElementOperate';
+import { ElementDeleteButton } from './ElementDeleteButton';
+import { getElementRange } from '@/lib/utils/element';
+import { isEditorSidebarElementId } from '@/lib/classroom/edit-slide-tools';
 import type { SlideContent } from '@/lib/types/stage';
 
 interface OperateProps {
@@ -65,6 +68,8 @@ export function Operate({
 }: OperateProps) {
   const canvasScale = useCanvasStore.use.canvasScale();
   const toolbarState = useCanvasStore.use.toolbarState();
+  const classroomCanvasEditMode = useCanvasStore.use.classroomCanvasEditMode();
+  const hiddenElementIdList = useCanvasStore.use.hiddenElementIdList();
 
   // Get the formatted animations using a proper selector to avoid infinite loops
   const currentSlide = useSceneSelector<SlideContent, Slide>((content) => content.canvas);
@@ -127,26 +132,65 @@ export function Operate({
   }, [formatedAnimations, elementInfo.id]);
 
   const rotate = useMemo(() => ('rotate' in elementInfo ? elementInfo.rotate : 0), [elementInfo]);
-  const height = useMemo(() => ('height' in elementInfo ? elementInfo.height : 0), [elementInfo]);
+  const boxSize = useMemo(() => {
+    if (elementInfo.type === 'line') {
+      const { minX, maxX, minY, maxY } = getElementRange(elementInfo);
+      return { width: maxX - minX, height: maxY - minY };
+    }
+    return {
+      width: 'width' in elementInfo ? elementInfo.width : 80,
+      height: 'height' in elementInfo ? elementInfo.height : 40,
+    };
+  }, [elementInfo]);
+
+  const isSidebarImported = isEditorSidebarElementId(elementInfo.id);
+  // In classroom /edit, only sidebar-added overlays get resize/delete chrome.
+  const showEditChrome = !classroomCanvasEditMode || isSidebarImported;
 
   // In grouped/multi-select scenarios, keep handles visible for the active element
   // so users can still resize directly in presentation mode.
   const handlerVisible =
-    !elementInfo.lock && (isActive || isActiveGroupElement || !isMultiSelect);
+    showEditChrome &&
+    !elementInfo.lock &&
+    (isActive || isActiveGroupElement || !isMultiSelect);
+
+  const deleteButtonPosition = useMemo(() => {
+    if (elementInfo.type === 'line') {
+      const { maxX, minY } = getElementRange(elementInfo);
+      return {
+        left: (maxX - elementInfo.left) * canvasScale - 10,
+        top: (minY - elementInfo.top) * canvasScale - 10,
+      };
+    }
+    const width = 'width' in elementInfo ? elementInfo.width : 80;
+    return {
+      left: width * canvasScale - 10,
+      top: -10,
+    };
+  }, [elementInfo, canvasScale]);
+
+  const showDeleteButton =
+    classroomCanvasEditMode &&
+    isSidebarImported &&
+    !elementInfo.lock &&
+    !hiddenElementIdList.includes(elementInfo.id);
+
+  if (classroomCanvasEditMode && !showEditChrome) {
+    return null;
+  }
 
   return (
-    <div
-      className={`operate absolute z-[90] select-none ${isMultiSelect && !isActive ? 'opacity-20' : ''}`}
+    <div className={`operate absolute z-[90] select-none ${isMultiSelect && !isActive ? 'opacity-20' : ''}`}
       style={{
         top: elementInfo.top * canvasScale + 'px',
         left: elementInfo.left * canvasScale + 'px',
         transform: `rotate(${rotate}deg)`,
-        transformOrigin: `${(elementInfo.width * canvasScale) / 2}px ${(height * canvasScale) / 2}px`,
+        transformOrigin: `${(boxSize.width * canvasScale) / 2}px ${(boxSize.height * canvasScale) / 2}px`,
         pointerEvents: 'auto', // Enable mouse events for operate controls
       }}
     >
       {/* eslint-disable @typescript-eslint/no-explicit-any -- dynamic component dispatch requires type widening */}
-      {(isSelected || isActive) && CurrentOperateComponent && (
+      {(isSelected || isActive) && CurrentOperateComponent && showEditChrome && (
         <CurrentOperateComponent
           elementInfo={elementInfo as any}
           handlerVisible={handlerVisible}
@@ -157,6 +201,15 @@ export function Operate({
         />
       )}
       {/* eslint-enable @typescript-eslint/no-explicit-any */}
+
+      {showDeleteButton && (
+        <ElementDeleteButton
+          elementId={elementInfo.id}
+          left={deleteButtonPosition.left}
+          top={deleteButtonPosition.top}
+          prominent={isSelected || isActive}
+        />
+      )}
 
       {/* Animation index display */}
       {toolbarState === 'elAnimation' && elementIndexListInAnimation.length > 0 && (

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { SceneProvider } from '@/lib/contexts/scene-context';
 import { useStageStore } from '@/lib/store';
+import { useSnapshotStore } from '@/lib/store/snapshot';
 import { useCanvasStore } from '@/lib/store/canvas';
 import { SceneRenderer } from '@/components/stage/scene-renderer';
 import { useMediaGenerationStore } from '@/lib/store/media-generation';
@@ -13,9 +14,46 @@ import type { Scene } from '@/lib/types/stage';
 import type { Action } from '@/lib/types/action';
 import type { PPTElement } from '@/lib/types/slides';
 import { nanoid } from 'nanoid';
+import { Layers, LayoutGrid, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { SlideTextRichToolbar } from '@/components/slide-renderer/Editor/Canvas/Operate/SlideTextRichToolbar';
 import { EditCanvasActionPanel } from '@/components/classroom/edit-canvas-action-panel';
+import { EditCanvasAmbient } from '@/components/classroom/edit-canvas-ambient';
+import { EditCanvasHeader } from '@/components/classroom/edit-canvas-header';
+import { EditCanvasPanel } from '@/components/classroom/edit-canvas-panel';
+import { EditCanvasSlideButton } from '@/components/classroom/edit-canvas-slide-button';
+import {
+  editAccentGradient,
+  editCanvasChromeBar,
+  editCanvasFrame,
+  editGlassPanel,
+  editPanelBody,
+  editStudioBackdrop,
+} from '@/lib/classroom/edit-canvas-styles';
+import {
+  adjustElementOpacity,
+  applySlideElements,
+  alignElementsToCanvas,
+  boldTextElements,
+  createArrowLineElement,
+  createCalloutShapeElement,
+  createCaptionElement,
+  createHighlightBarElement,
+  createImportantBadgeElement,
+  createStickyNoteElement,
+  createTitleBannerElement,
+  deleteSidebarElements,
+  distributeElementsHorizontally,
+  duplicateElements,
+  flipElementsHorizontal,
+  flipElementsVertical,
+  italicTextElements,
+  removeEditOverlayTexts,
+  reorderElement,
+  resolveTargetElementIds,
+  widenTextElements,
+} from '@/lib/classroom/edit-slide-tools';
+import { ElementAlignCommands } from '@/lib/types/edit';
 
 type TesseractBbox = { x0: number; y0: number; x1: number; y1: number };
 
@@ -61,6 +99,13 @@ export default function ClassroomEditCanvasPage() {
   const scenes = useStageStore((s) => s.scenes);
   const currentSceneId = useStageStore((s) => s.currentSceneId);
   const handleElementId = useCanvasStore.use.handleElementId();
+  const activeElementIdList = useCanvasStore.use.activeElementIdList();
+  const setActiveElementIdList = useCanvasStore.use.setActiveElementIdList();
+
+  const snapshotCursor = useSnapshotStore((s) => s.snapshotCursor);
+  const snapshotLength = useSnapshotStore((s) => s.snapshotLength);
+  const canUndoHistory = snapshotCursor > 0;
+  const canRedoHistory = snapshotCursor < snapshotLength - 1;
 
   const [authReady, setAuthReady] = useState(false);
   const [isAdminUser, setIsAdminUser] = useState(false);
@@ -71,6 +116,8 @@ export default function ClassroomEditCanvasPage() {
   const [imageUrlInput, setImageUrlInput] = useState('');
   const [isReplacingImage, setIsReplacingImage] = useState(false);
   const [finalizeSaveNotice, setFinalizeSaveNotice] = useState<string | null>(null);
+  const [isSavingAll, setIsSavingAll] = useState(false);
+  const [manualSaveNotice, setManualSaveNotice] = useState<string | null>(null);
   const imageUploadInputRef = useRef<HTMLInputElement | null>(null);
   const scriptSyncGuardRef = useRef(false);
   const persistDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -80,6 +127,18 @@ export default function ClassroomEditCanvasPage() {
     const t = window.setTimeout(() => setFinalizeSaveNotice(null), 8000);
     return () => window.clearTimeout(t);
   }, [finalizeSaveNotice]);
+
+  useEffect(() => {
+    if (!manualSaveNotice) return;
+    const t = window.setTimeout(() => setManualSaveNotice(null), 5000);
+    return () => window.clearTimeout(t);
+  }, [manualSaveNotice]);
+
+  useEffect(() => {
+    const { setClassroomCanvasEditMode } = useCanvasStore.getState();
+    setClassroomCanvasEditMode(true);
+    return () => setClassroomCanvasEditMode(false);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -192,6 +251,8 @@ export default function ClassroomEditCanvasPage() {
         if (slideScenes.length > 0) {
           setCurrentSceneId(slideScenes[0].id);
         }
+
+        await useSnapshotStore.getState().resetSnapshotHistory();
       } catch (e) {
         if (!active) return;
         setError(e instanceof Error ? e.message : 'Failed to load classroom');
@@ -284,16 +345,19 @@ export default function ClassroomEditCanvasPage() {
       },
       updatedAt: Date.now(),
     };
-    applySceneUpdate(nextScene);
+    applySceneUpdate(nextScene, { recordHistory: true });
   };
 
   const handleUpdateSceneTitle = (value: string) => {
     if (!selectedScene) return;
-    applySceneUpdate({
-      ...selectedScene,
-      title: value,
-      updatedAt: Date.now(),
-    });
+    applySceneUpdate(
+      {
+        ...selectedScene,
+        title: value,
+        updatedAt: Date.now(),
+      },
+      { recordHistory: true },
+    );
   };
 
   const speechActions = useMemo(() => {
@@ -378,7 +442,10 @@ export default function ClassroomEditCanvasPage() {
     };
   };
 
-  const applySceneUpdate = (scene: Scene, options?: { refreshTutorScript?: boolean }) => {
+  const applySceneUpdate = (
+    scene: Scene,
+    options?: { refreshTutorScript?: boolean; recordHistory?: boolean },
+  ) => {
     const next = options?.refreshTutorScript === false ? scene : rebuildTutorScript(scene);
     // Mark as explicitly edited so classroom runtime does not auto-regenerate
     // Gamma/default scripts repeatedly on every load.
@@ -388,6 +455,10 @@ export default function ClassroomEditCanvasPage() {
       __scriptLocked: true,
     } as Scene;
     updateScene(lockedScene.id, lockedScene);
+
+    if (options?.recordHistory) {
+      void useSnapshotStore.getState().addSnapshot();
+    }
 
     if (persistDebounceRef.current) {
       clearTimeout(persistDebounceRef.current);
@@ -424,11 +495,222 @@ export default function ClassroomEditCanvasPage() {
     const current = nextActions[actionIndex];
     if (!current || current.type !== 'speech') return;
     nextActions[actionIndex] = { ...current, text: value };
-    applySceneUpdate({
-      ...selectedScene,
-      actions: nextActions,
-      updatedAt: Date.now(),
-    }, { refreshTutorScript: false });
+    applySceneUpdate(
+      {
+        ...selectedScene,
+        actions: nextActions,
+        updatedAt: Date.now(),
+      },
+      { refreshTutorScript: false, recordHistory: true },
+    );
+  };
+
+  const getSlideElements = (): PPTElement[] => {
+    if (!selectedScene || selectedScene.content.type !== 'slide') return [];
+    return selectedScene.content.canvas.elements;
+  };
+
+  const getTargetElementIds = () =>
+    resolveTargetElementIds(getSlideElements(), activeElementIdList, handleElementId, {
+      sidebarOnly: true,
+    });
+
+  const commitSlideElements = (elements: PPTElement[], selectIds?: string[]) => {
+    if (!selectedScene || selectedScene.content.type !== 'slide') return;
+    applySceneUpdate(applySlideElements(selectedScene, elements), { recordHistory: true });
+    if (selectIds?.length) setActiveElementIdList(selectIds);
+  };
+
+  const handleUndoHistory = async () => {
+    if (!canUndoHistory) return;
+    await useSnapshotStore.getState().undo();
+    setActiveElementIdList([]);
+    if (persistDebounceRef.current) {
+      clearTimeout(persistDebounceRef.current);
+    }
+    persistDebounceRef.current = setTimeout(() => {
+      void persistEditChanges();
+      persistDebounceRef.current = null;
+    }, 700);
+  };
+
+  const handleRedoHistory = async () => {
+    if (!canRedoHistory) return;
+    await useSnapshotStore.getState().redo();
+    setActiveElementIdList([]);
+    if (persistDebounceRef.current) {
+      clearTimeout(persistDebounceRef.current);
+    }
+    persistDebounceRef.current = setTimeout(() => {
+      void persistEditChanges();
+      persistDebounceRef.current = null;
+    }, 700);
+  };
+
+  useEffect(() => {
+    if (loading || error) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+
+      const target = e.target;
+      if (target instanceof HTMLElement) {
+        const tag = target.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) return;
+      }
+
+      if (e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        void handleUndoHistory();
+      } else if (e.key === 'y' || (e.key === 'z' && e.shiftKey)) {
+        e.preventDefault();
+        void handleRedoHistory();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [loading, error, canUndoHistory, canRedoHistory]);
+
+  const handleDuplicateSelection = () => {
+    const elements = getSlideElements();
+    const targetIds = getTargetElementIds();
+    const result = duplicateElements(elements, targetIds);
+    if (!result) return;
+    commitSlideElements(result.elements, result.newIds);
+  };
+
+  const handleCenterSelection = () => {
+    const elements = getSlideElements();
+    const targetIds = getTargetElementIds();
+    const next = alignElementsToCanvas(elements, targetIds, ElementAlignCommands.CENTER);
+    if (!next) return;
+    commitSlideElements(next, targetIds);
+  };
+
+  const handleAlignSelection = (command: ElementAlignCommands) => {
+    const elements = getSlideElements();
+    const targetIds = getTargetElementIds();
+    const next = alignElementsToCanvas(elements, targetIds, command);
+    if (!next) return;
+    commitSlideElements(next, targetIds);
+  };
+
+  const handleDeleteSelection = () => {
+    const targetIds = getTargetElementIds();
+    const next = deleteSidebarElements(getSlideElements(), targetIds);
+    if (!next) return;
+    commitSlideElements(next, []);
+  };
+
+  const handleWidenText = () => {
+    const elements = getSlideElements();
+    const targetIds = getTargetElementIds();
+    const next = widenTextElements(elements, targetIds);
+    if (!next) return;
+    commitSlideElements(next, targetIds.length ? targetIds : undefined);
+  };
+
+  const handleDistributeHorizontally = () => {
+    const elements = getSlideElements();
+    const targetIds = getTargetElementIds();
+    const next = distributeElementsHorizontally(elements, targetIds);
+    if (!next) return;
+    commitSlideElements(next, targetIds);
+  };
+
+  const handleItalicText = () => {
+    const elements = getSlideElements();
+    const targetIds = getTargetElementIds();
+    const next = italicTextElements(elements, targetIds);
+    if (!next) return;
+    commitSlideElements(next, targetIds.length ? targetIds : undefined);
+  };
+
+  const handleAdjustOpacity = (delta: number) => {
+    const elements = getSlideElements();
+    const targetIds = getTargetElementIds();
+    const next = adjustElementOpacity(elements, targetIds, delta);
+    if (!next) return;
+    commitSlideElements(next, targetIds);
+  };
+
+  const handleReorderSelection = (position: 'front' | 'back') => {
+    const targetIds = getTargetElementIds();
+    if (targetIds.length === 0) return;
+    let elements = getSlideElements();
+    for (const id of targetIds) {
+      const next = reorderElement(elements, id, position);
+      if (next) elements = next;
+    }
+    commitSlideElements(elements, targetIds);
+  };
+
+  const handleFlipHorizontal = () => {
+    const elements = getSlideElements();
+    const targetIds = getTargetElementIds();
+    const next = flipElementsHorizontal(elements, targetIds);
+    if (!next) return;
+    commitSlideElements(next, targetIds);
+  };
+
+  const handleFlipVertical = () => {
+    const elements = getSlideElements();
+    const targetIds = getTargetElementIds();
+    const next = flipElementsVertical(elements, targetIds);
+    if (!next) return;
+    commitSlideElements(next, targetIds);
+  };
+
+  const handleBoldText = () => {
+    const elements = getSlideElements();
+    const targetIds = getTargetElementIds();
+    const next = boldTextElements(elements, targetIds);
+    if (!next) return;
+    commitSlideElements(next, targetIds.length ? targetIds : undefined);
+  };
+
+  const handleClearOverlayTexts = () => {
+    const next = removeEditOverlayTexts(getSlideElements());
+    if (!next) return;
+    commitSlideElements(next, []);
+  };
+
+  const handleAddStickyNote = () => {
+    const note = createStickyNoteElement();
+    commitSlideElements([...getSlideElements(), note], [note.id]);
+  };
+
+  const handleAddCallout = () => {
+    const callout = createCalloutShapeElement();
+    commitSlideElements([...getSlideElements(), callout], [callout.id]);
+  };
+
+  const handleAddHighlightBar = () => {
+    const bar = createHighlightBarElement();
+    commitSlideElements([...getSlideElements(), bar], [bar.id]);
+  };
+
+  const handleAddTitleBanner = () => {
+    if (!selectedScene) return;
+    const banner = createTitleBannerElement(selectedScene.title || `Slide ${selectedScene.order || 1}`);
+    commitSlideElements([...getSlideElements(), banner], [banner.id]);
+  };
+
+  const handleAddCaption = () => {
+    const caption = createCaptionElement();
+    commitSlideElements([...getSlideElements(), caption], [caption.id]);
+  };
+
+  const handleAddArrow = () => {
+    const arrow = createArrowLineElement();
+    commitSlideElements([...getSlideElements(), arrow], [arrow.id]);
+  };
+
+  const handleAddImportantBadge = () => {
+    const badge = createImportantBadgeElement();
+    commitSlideElements([...getSlideElements(), badge], [badge.id]);
   };
 
   const handleAddSlideTextBox = () => {
@@ -452,17 +734,20 @@ export default function ClassroomEditCanvasPage() {
       paragraphSpace: 5,
     });
 
-    applySceneUpdate({
-      ...selectedScene,
-      content: {
-        ...selectedScene.content,
-        canvas: {
-          ...selectedScene.content.canvas,
-          elements: nextElements,
+    applySceneUpdate(
+      {
+        ...selectedScene,
+        content: {
+          ...selectedScene.content,
+          canvas: {
+            ...selectedScene.content.canvas,
+            elements: nextElements,
+          },
         },
+        updatedAt: Date.now(),
       },
-      updatedAt: Date.now(),
-    });
+      { recordHistory: true },
+    );
   };
 
   const handleCreateLiveTextFromSpeech = () => {
@@ -495,17 +780,20 @@ export default function ClassroomEditCanvasPage() {
       paragraphSpace: 5,
     });
 
-    applySceneUpdate({
-      ...selectedScene,
-      content: {
-        ...selectedScene.content,
-        canvas: {
-          ...selectedScene.content.canvas,
-          elements: nextElements,
+    applySceneUpdate(
+      {
+        ...selectedScene,
+        content: {
+          ...selectedScene.content,
+          canvas: {
+            ...selectedScene.content.canvas,
+            elements: nextElements,
+          },
         },
+        updatedAt: Date.now(),
       },
-      updatedAt: Date.now(),
-    });
+      { recordHistory: true },
+    );
   };
 
   const toPlainText = (html: string) => {
@@ -591,17 +879,20 @@ export default function ClassroomEditCanvasPage() {
           (el) => !(el.type === 'text' && (el.id.startsWith('edit_text_') || el.id.startsWith('edit_live_text_'))),
         );
 
-      applySceneUpdate({
-        ...selectedScene,
-        content: {
-          ...selectedScene.content,
-          canvas: {
-            ...selectedScene.content.canvas,
-            elements: nextElements,
+      applySceneUpdate(
+        {
+          ...selectedScene,
+          content: {
+            ...selectedScene.content,
+            canvas: {
+              ...selectedScene.content.canvas,
+              elements: nextElements,
+            },
           },
+          updatedAt: Date.now(),
         },
-        updatedAt: Date.now(),
-      });
+        { recordHistory: true },
+      );
       await persistStageNow();
       setFinalizeSaveNotice(
         'Your changes have been saved. Overlay text was merged into the slide image and temporary text boxes were removed.',
@@ -663,17 +954,20 @@ export default function ClassroomEditCanvasPage() {
         };
       });
 
-      applySceneUpdate({
-        ...selectedScene,
-        content: {
-          ...selectedScene.content,
-          canvas: {
-            ...selectedScene.content.canvas,
-            elements: [...elements, ...overlayElements],
+      applySceneUpdate(
+        {
+          ...selectedScene,
+          content: {
+            ...selectedScene.content,
+            canvas: {
+              ...selectedScene.content.canvas,
+              elements: [...elements, ...overlayElements],
+            },
           },
+          updatedAt: Date.now(),
         },
-        updatedAt: Date.now(),
-      });
+        { recordHistory: true },
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : 'OCR conversion failed');
     } finally {
@@ -694,6 +988,22 @@ export default function ClassroomEditCanvasPage() {
 
   const persistStageNow = persistEditChanges;
 
+  const handleSaveAll = async () => {
+    if (persistDebounceRef.current) {
+      clearTimeout(persistDebounceRef.current);
+      persistDebounceRef.current = null;
+    }
+    setIsSavingAll(true);
+    setManualSaveNotice(null);
+    setError(null);
+    try {
+      await persistEditChanges();
+      setManualSaveNotice('All changes saved to this classroom.');
+    } finally {
+      setIsSavingAll(false);
+    }
+  };
+
   const fileToDataUrl = (file: File | Blob) =>
     new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
@@ -709,17 +1019,20 @@ export default function ClassroomEditCanvasPage() {
     const nextElements = selectedScene.content.canvas.elements.map((el) =>
       el.id === targetImageId && el.type === 'image' ? { ...el, src: nextSrc } : el,
     );
-    applySceneUpdate({
-      ...selectedScene,
-      content: {
-        ...selectedScene.content,
-        canvas: {
-          ...selectedScene.content.canvas,
-          elements: nextElements,
+    applySceneUpdate(
+      {
+        ...selectedScene,
+        content: {
+          ...selectedScene.content,
+          canvas: {
+            ...selectedScene.content.canvas,
+            elements: nextElements,
+          },
         },
+        updatedAt: Date.now(),
       },
-      updatedAt: Date.now(),
-    });
+      { recordHistory: true },
+    );
     await persistStageNow();
     return true;
   };
@@ -777,117 +1090,93 @@ export default function ClassroomEditCanvasPage() {
   };
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden bg-slate-50 dark:bg-slate-950">
-      <div className="shrink-0 border-b border-slate-200 bg-white px-3 py-2 sm:h-16 sm:px-6 sm:py-0">
-        <div className="flex flex-col gap-2 sm:h-full sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-          <button
-            onClick={() => router.push(`/classroom/${encodeURIComponent(classroomId || '')}`)}
-            className="rounded-lg bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-200"
-          >
-            Back
-          </button>
-          <div className="min-w-0">
-            <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500 sm:text-xs">
-              Edit in Canvas
-            </div>
-            <div className="truncate text-sm font-bold text-slate-900">{stage?.name || ''}</div>
-          </div>
-        </div>
-          <div className="text-xs font-semibold text-slate-500">
-            {authReady && !isAdminUser ? 'Admin only' : ''}
-          </div>
-        </div>
-      </div>
+    <div className="relative flex h-screen flex-col overflow-hidden">
+      <EditCanvasAmbient />
+      <EditCanvasHeader
+        classroomName={stage?.name || ''}
+        slideCount={slideScenes.length}
+        currentSlideOrder={selectedScene?.order ?? null}
+        adminRequired={authReady && !isAdminUser}
+        onBack={() => router.push(`/classroom/${encodeURIComponent(classroomId || '')}`)}
+      />
 
       {loading ? (
-        <div className="flex-1 flex items-center justify-center p-6">
-          <div className="text-slate-700 text-sm font-semibold">Loading editor...</div>
+        <div className="relative z-10 flex flex-1 items-center justify-center p-6">
+          <div className={cn('flex flex-col items-center gap-4 rounded-2xl px-10 py-8', editGlassPanel)}>
+            <Loader2 className="size-8 animate-spin text-primary" aria-hidden />
+            <p className="text-sm font-semibold text-foreground">Loading editor…</p>
+          </div>
         </div>
       ) : error ? (
-        <div className="flex-1 flex items-center justify-center p-6">
-          <div className="text-center rounded-2xl border border-slate-200 bg-white px-8 py-6 shadow-sm">
-            <p className="text-destructive mb-4">Error: {error}</p>
+        <div className="relative z-10 flex flex-1 items-center justify-center p-6">
+          <div className={cn('max-w-md text-center rounded-2xl px-8 py-7', editGlassPanel)}>
+            <p className="mb-4 text-sm font-medium text-destructive">Error: {error}</p>
             <button
+              type="button"
               onClick={() => router.push(`/classroom/${encodeURIComponent(classroomId || '')}`)}
-              className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90"
+              className={cn(
+                'rounded-xl px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/25 transition-opacity hover:opacity-95',
+                editAccentGradient,
+              )}
             >
-              Return
+              Return to classroom
             </button>
           </div>
         </div>
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
-          {/* Slide list: sticky strip on mobile (always visible); full sidebar on lg */}
-          <aside className="z-30 shrink-0 border-b border-slate-200/90 bg-white/95 backdrop-blur-md dark:border-slate-800 dark:bg-slate-950/90 lg:z-10 lg:flex lg:h-full lg:min-h-0 lg:w-[min(280px,32vw)] lg:flex-col lg:border-b-0 lg:border-r lg:bg-white lg:backdrop-blur-none dark:lg:bg-slate-950">
-            <div className="hidden border-b border-slate-200 px-3 py-2.5 lg:block sm:px-4">
-              <div className="text-[11px] font-bold uppercase tracking-widest text-slate-500">Slides</div>
-            </div>
-
-            {/* Mobile: horizontal slide strip — taller cards, easier to scan */}
+        <div className={cn('relative z-10 min-h-0 flex-1 overflow-hidden', editStudioBackdrop)}>
+          <EditCanvasPanel
+            title="Slides"
+            description="Pick a slide to edit"
+            icon={LayoutGrid}
+            className="z-30 w-full shrink-0 lg:z-10 lg:h-full lg:min-h-0 lg:w-[min(272px,30vw)]"
+            headerAction={
+              <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-[10px] font-bold tabular-nums text-primary">
+                {slideScenes.length}
+              </span>
+            }
+          >
+            <div className={editPanelBody}>
+            {/* Mobile: horizontal slide strip */}
             <div className="sticky top-0 flex snap-x snap-mandatory gap-2.5 overflow-x-auto px-3 py-3 [-webkit-overflow-scrolling:touch] [scrollbar-width:thin] lg:hidden">
               {slideScenes.length === 0 ? (
-                <div className="py-2 text-xs text-slate-500">No slides</div>
+                <p className="py-2 text-xs text-muted-foreground">No slides</p>
               ) : (
-                slideScenes.map((scene) => {
-                  const isActive = scene.id === currentSceneId;
-                  return (
-                    <button
-                      key={scene.id}
-                      type="button"
-                      onClick={() => setCurrentSceneId(scene.id)}
-                      className={cn(
-                        'flex min-h-[92px] min-w-[168px] max-w-[220px] shrink-0 snap-start flex-col justify-center rounded-xl border px-3 py-2.5 text-left shadow-sm transition-colors',
-                        isActive
-                          ? 'border-emerald-400/80 bg-emerald-50 text-emerald-950 ring-1 ring-emerald-500/25 dark:bg-emerald-950/40 dark:text-emerald-50'
-                          : 'border-slate-200/80 bg-white text-slate-800 hover:border-slate-300 dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-100',
-                      )}
-                    >
-                      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                        Slide {scene.order}
-                      </div>
-                      <div className="mt-1 line-clamp-3 text-[13px] font-semibold leading-snug">{scene.title}</div>
-                    </button>
-                  );
-                })
+                slideScenes.map((scene) => (
+                  <EditCanvasSlideButton
+                    key={scene.id}
+                    order={scene.order}
+                    title={scene.title}
+                    isActive={scene.id === currentSceneId}
+                    layout="horizontal"
+                    onSelect={() => setCurrentSceneId(scene.id)}
+                  />
+                ))
               )}
             </div>
 
             {/* Desktop: vertical slide list */}
             <div className="hidden min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto p-2 lg:flex">
               {slideScenes.length === 0 ? (
-                <div className="p-3 text-sm text-slate-600">No slide scenes available for editing.</div>
+                <p className="p-3 text-sm text-muted-foreground">No slide scenes available for editing.</p>
               ) : (
-                slideScenes.map((scene) => {
-                  const isActive = scene.id === currentSceneId;
-                  return (
-                    <button
-                      key={scene.id}
-                      type="button"
-                      onClick={() => setCurrentSceneId(scene.id)}
-                      className={cn(
-                        'w-full rounded-xl border px-3 py-3 text-left transition-colors',
-                        isActive
-                          ? 'border-emerald-300 bg-emerald-50 text-emerald-900 dark:border-emerald-600/50 dark:bg-emerald-950/50 dark:text-emerald-50'
-                          : 'border-transparent hover:border-slate-200 bg-transparent text-slate-800 dark:text-slate-100 dark:hover:border-slate-700',
-                      )}
-                    >
-                      <div className="text-[11px] font-bold text-slate-500 dark:text-slate-400">Slide {scene.order}</div>
-                      <div className="mt-1 line-clamp-4 text-sm font-semibold leading-snug">{scene.title}</div>
-                    </button>
-                  );
-                })
+                slideScenes.map((scene) => (
+                  <EditCanvasSlideButton
+                    key={scene.id}
+                    order={scene.order}
+                    title={scene.title}
+                    isActive={scene.id === currentSceneId}
+                    layout="vertical"
+                    onSelect={() => setCurrentSceneId(scene.id)}
+                  />
+                ))
               )}
             </div>
 
             {slideRichTextTarget && (
-              <div className="border-t border-slate-200 bg-slate-50/90 p-3 dark:border-slate-700 dark:bg-slate-900/50 sm:p-4 lg:max-h-[min(40vh,320px)] lg:overflow-y-auto">
-                <div className="mb-2 text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:text-slate-400">
-                  Text formatting
-                </div>
-                <p className="mb-2 hidden text-[11px] leading-snug text-slate-600 dark:text-slate-400 sm:block">
-                  Selected text box on the canvas.
-                </p>
+              <div className="shrink-0 border-t border-border/60 bg-muted/15 p-3 sm:p-4 lg:max-h-[min(36vh,280px)] lg:overflow-y-auto">
+                <p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-primary">Text formatting</p>
+                <p className="mb-2 hidden text-[11px] text-muted-foreground sm:block">Selected text box on the canvas.</p>
                 <SlideTextRichToolbar
                   elementId={slideRichTextTarget.id}
                   defaultColor={slideRichTextTarget.defaultColor}
@@ -895,58 +1184,110 @@ export default function ClassroomEditCanvasPage() {
                 />
               </div>
             )}
-          </aside>
+            </div>
+          </EditCanvasPanel>
 
-          {/* Canvas first: large min-height, fills flex space — no aspect-video cap */}
-          <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-muted/30 dark:bg-background">
-            <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-3 sm:gap-4 sm:p-4">
-              <div className="relative flex min-h-[min(65dvh,780px)] flex-1 flex-col sm:min-h-[min(62dvh,760px)] lg:min-h-[min(58dvh,720px)]">
-                <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200/80 bg-white shadow-lg dark:border-slate-800 dark:bg-gray-900">
-                  <div className="min-h-0 flex-1">
+          <EditCanvasPanel
+            title="Canvas"
+            description={selectedScene ? `Editing slide ${selectedScene.order}` : 'Select a slide to start'}
+            icon={Layers}
+            className="min-h-0 min-w-0 flex-1"
+          >
+            <div className={cn(editPanelBody, 'p-3 sm:p-4')}>
+              <div className="relative flex min-h-[min(48dvh,560px)] flex-1 flex-col lg:min-h-0">
+                <div className="pointer-events-none absolute -inset-1 rounded-2xl bg-primary/15 opacity-60 blur-lg" aria-hidden />
+                <div className={cn('relative min-h-0 flex-1', editCanvasFrame)}>
+                  <div className={editCanvasChromeBar}>
+                    <span className="text-xs font-medium text-muted-foreground">Workspace</span>
+                    {selectedScene && (
+                      <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-[11px] font-semibold text-primary">
+                        Slide {selectedScene.order}
+                      </span>
+                    )}
+                  </div>
+                  <div className="min-h-0 flex-1 bg-muted/20">
                     <SceneProvider>
                       {selectedScene ? (
                         <SceneRenderer scene={selectedScene} mode="autonomous" />
                       ) : (
-                        <div className="flex h-[min(50dvh,420px)] w-full items-center justify-center text-sm font-semibold text-slate-600">
-                          Select a slide to edit
+                        <div className="flex h-[min(44dvh,400px)] w-full flex-col items-center justify-center gap-3 px-6 text-center">
+                          <div className="flex size-12 items-center justify-center rounded-2xl bg-primary/10 ring-1 ring-primary/20">
+                            <Layers className="size-6 text-primary" aria-hidden />
+                          </div>
+                          <p className="text-sm font-semibold text-foreground">Select a slide to begin</p>
+                          <p className="max-w-xs text-xs text-muted-foreground">
+                            Choose a slide from the list, then add overlays from Slide tools.
+                          </p>
                         </div>
                       )}
                     </SceneProvider>
                   </div>
                 </div>
               </div>
-
-              <div className="max-h-[min(34dvh,320px)] shrink-0 overflow-y-auto overscroll-contain rounded-xl border border-border/40 bg-background/60 shadow-sm dark:bg-background/40 lg:max-h-[min(32vh,400px)]">
-                <EditCanvasActionPanel
-                  onAddTextBox={handleAddSlideTextBox}
-                  onGenerateFromNarration={handleCreateLiveTextFromSpeech}
-                  onRebuildScript={() => {
-                    if (!selectedScene) return;
-                    applySceneUpdate(selectedScene);
-                  }}
-                  rebuildDisabled={!selectedScene}
-                  onConvertOcr={() => void handleConvertImageTextToEditable()}
-                  isConvertingOcr={isConvertingOcr}
-                  onFinalizeReplace={handleFinalizeReplaceOnImage}
-                  isFinalizing={isFinalizing}
-                  finalizeSaveNotice={finalizeSaveNotice}
-                  onDismissFinalizeNotice={() => setFinalizeSaveNotice(null)}
-                  imageUrlInput={imageUrlInput}
-                  onImageUrlChange={setImageUrlInput}
-                  onReplaceFromUrl={() => void handleReplaceImageFromUrl()}
-                  isReplacingImage={isReplacingImage}
-                  imageUploadInputRef={imageUploadInputRef}
-                  onImageFileChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    void handleReplaceImageFromUpload(file);
-                    e.currentTarget.value = '';
-                  }}
-                  onUploadImageClick={() => imageUploadInputRef.current?.click()}
-                />
-              </div>
             </div>
-          </main>
+          </EditCanvasPanel>
+
+          <div className={cn('w-full shrink-0 lg:w-[min(320px,30vw)] lg:min-h-0', editGlassPanel)}>
+              <EditCanvasActionPanel
+                onSaveAll={() => void handleSaveAll()}
+                isSavingAll={isSavingAll}
+                manualSaveNotice={manualSaveNotice}
+                onDismissManualSaveNotice={() => setManualSaveNotice(null)}
+                onAddTextBox={handleAddSlideTextBox}
+                onGenerateFromNarration={handleCreateLiveTextFromSpeech}
+                onRebuildScript={() => {
+                  if (!selectedScene) return;
+                  applySceneUpdate(selectedScene, { recordHistory: true });
+                }}
+                onUndo={() => void handleUndoHistory()}
+                onRedo={() => void handleRedoHistory()}
+                canUndoHistory={canUndoHistory}
+                canRedoHistory={canRedoHistory}
+                rebuildDisabled={!selectedScene}
+                onConvertOcr={() => void handleConvertImageTextToEditable()}
+                isConvertingOcr={isConvertingOcr}
+                onFinalizeReplace={handleFinalizeReplaceOnImage}
+                isFinalizing={isFinalizing}
+                finalizeSaveNotice={finalizeSaveNotice}
+                onDismissFinalizeNotice={() => setFinalizeSaveNotice(null)}
+                imageUrlInput={imageUrlInput}
+                onImageUrlChange={setImageUrlInput}
+                onReplaceFromUrl={() => void handleReplaceImageFromUrl()}
+                isReplacingImage={isReplacingImage}
+                imageUploadInputRef={imageUploadInputRef}
+                onImageFileChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  void handleReplaceImageFromUpload(file);
+                  e.currentTarget.value = '';
+                }}
+                onUploadImageClick={() => imageUploadInputRef.current?.click()}
+                onDuplicateSelection={handleDuplicateSelection}
+                onDeleteSelection={handleDeleteSelection}
+                onCenterSelection={handleCenterSelection}
+                onAlignLeft={() => handleAlignSelection(ElementAlignCommands.LEFT)}
+                onAlignTop={() => handleAlignSelection(ElementAlignCommands.TOP)}
+                onBringToFront={() => handleReorderSelection('front')}
+                onSendToBack={() => handleReorderSelection('back')}
+                onDistributeHorizontally={handleDistributeHorizontally}
+                onAddStickyNote={handleAddStickyNote}
+                onAddCallout={handleAddCallout}
+                onAddHighlightBar={handleAddHighlightBar}
+                onAddTitleBanner={handleAddTitleBanner}
+                onAddCaption={handleAddCaption}
+                onAddArrow={handleAddArrow}
+                onAddImportantBadge={handleAddImportantBadge}
+                onBoldText={handleBoldText}
+                onItalicText={handleItalicText}
+                onWidenText={handleWidenText}
+                onFlipHorizontal={handleFlipHorizontal}
+                onFlipVertical={handleFlipVertical}
+                onIncreaseOpacity={() => handleAdjustOpacity(0.12)}
+                onDecreaseOpacity={() => handleAdjustOpacity(-0.12)}
+                onClearOverlayTexts={handleClearOverlayTexts}
+                selectionToolsDisabled={!selectedScene}
+              />
+          </div>
         </div>
       )}
     </div>

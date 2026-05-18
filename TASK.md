@@ -2,6 +2,8 @@
 
 ## Active
 
+- [x] 2026-05-18 - Classroom `/edit`: per-element delete trash buttons on canvas in edit mode; Save button atop tools sidebar (local storage + DB sync).
+- [x] 2026-05-18 - Classroom `/edit` Slide tools: dock tools in right sidebar on lg; Design studio section with 10 new edits (duplicate, center, layer order, sticky/callout/highlight/title bar, bold, flip, clear overlays) via `lib/classroom/edit-slide-tools.ts`.
 - [x] 2026-05-13 - Fix `pnpm run build` / Next 16 TypeScript failures: exclude `.next/dev/types` duplicate route types; `withTimeout` accepts `PromiseLike` for Supabase builders; Gamma page-image `Response` bodies as `Uint8Array`; scene-outlines-stream split `streamLLM` branches; Zod `z.record` key schema; RAG test routes use `API_ERROR_CODES`; Stage type vs component alias on classroom page; Tesseract OCR lines from `blocks`; motion readonly keyframe spreads; assorted `TTSProviderId` / union casts; `skipLibCheck: true` for broken `@supabase/realtime-js` phoenix path types; remove deprecated `eslint` key from `next.config.ts`.
 - [x] 2026-05-11 - Reduce classroom speech handoff gap by preloading upcoming audio clips in playback engine and reusing warmed sources in `AudioPlayer` for smoother back-to-back narration.
 - [x] 2026-05-11 - Clear Home prompt textarea draft after successful classroom generation entry (standard + Gamma) so returning to `/` starts with an empty input, while keeping explicit `/rag` draft preservation.

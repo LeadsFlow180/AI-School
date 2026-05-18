@@ -40,9 +40,15 @@ export const editCanvasChromeBar = cn(
   'bg-card/80',
 );
 
+export const editStudioScroll = 'scrollbar-studio';
+
 export const editToolsScroll = cn(
   'flex min-h-0 flex-1 flex-col overflow-y-auto',
-  'p-3 [scrollbar-width:thin]',
+  'p-3 scrollbar-studio',
+);
+
+export const editCanvasWorkspace = cn(
+  'edit-canvas-workspace min-h-0 flex-1 bg-muted/20',
 );
 
 export const editPanelBody = cn('flex min-h-0 flex-1 flex-col overflow-hidden');
@@ -77,7 +83,7 @@ export const editGlassPanel = editPanel;
 
 export function editSlideItemClass(isActive: boolean) {
   return cn(
-    'group relative w-full overflow-hidden rounded-xl border text-left transition-all duration-200',
+    'group relative w-full rounded-xl border text-left transition-all duration-200',
     'px-3 py-3',
     isActive
       ? [

@@ -26,6 +26,7 @@ import {
   editAccentGradient,
   editCanvasChromeBar,
   editCanvasFrame,
+  editCanvasWorkspace,
   editGlassPanel,
   editPanelBody,
   editStudioBackdrop,
@@ -1090,7 +1091,7 @@ export default function ClassroomEditCanvasPage() {
   };
 
   return (
-    <div className="relative flex h-screen flex-col overflow-hidden">
+    <div className="edit-studio relative flex h-screen flex-col overflow-hidden">
       <EditCanvasAmbient />
       <EditCanvasHeader
         classroomName={stage?.name || ''}
@@ -1136,9 +1137,9 @@ export default function ClassroomEditCanvasPage() {
               </span>
             }
           >
-            <div className={editPanelBody}>
+            <div className={cn(editPanelBody, 'min-h-0')}>
             {/* Mobile: horizontal slide strip */}
-            <div className="sticky top-0 flex snap-x snap-mandatory gap-2.5 overflow-x-auto px-3 py-3 [-webkit-overflow-scrolling:touch] [scrollbar-width:thin] lg:hidden">
+            <div className="sticky top-0 flex shrink-0 snap-x snap-mandatory gap-2.5 overflow-x-auto px-3 py-3 scrollbar-studio [-webkit-overflow-scrolling:touch] lg:hidden">
               {slideScenes.length === 0 ? (
                 <p className="py-2 text-xs text-muted-foreground">No slides</p>
               ) : (
@@ -1155,8 +1156,8 @@ export default function ClassroomEditCanvasPage() {
               )}
             </div>
 
-            {/* Desktop: vertical slide list */}
-            <div className="hidden min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto p-2 lg:flex">
+            {/* Desktop: vertical slide list — scrolls when text formatting is open */}
+            <div className="hidden min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto overscroll-contain p-2 scrollbar-studio lg:flex">
               {slideScenes.length === 0 ? (
                 <p className="p-3 text-sm text-muted-foreground">No slide scenes available for editing.</p>
               ) : (
@@ -1174,7 +1175,7 @@ export default function ClassroomEditCanvasPage() {
             </div>
 
             {slideRichTextTarget && (
-              <div className="shrink-0 border-t border-border/60 bg-muted/15 p-3 sm:p-4 lg:max-h-[min(36vh,280px)] lg:overflow-y-auto">
+              <div className="shrink-0 border-t border-border/60 bg-muted/15 p-3 sm:p-4 scrollbar-studio lg:max-h-[min(42vh,320px)] lg:overflow-y-auto">
                 <p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-primary">Text formatting</p>
                 <p className="mb-2 hidden text-[11px] text-muted-foreground sm:block">Selected text box on the canvas.</p>
                 <SlideTextRichToolbar
@@ -1205,7 +1206,7 @@ export default function ClassroomEditCanvasPage() {
                       </span>
                     )}
                   </div>
-                  <div className="min-h-0 flex-1 bg-muted/20">
+                  <div className={editCanvasWorkspace}>
                     <SceneProvider>
                       {selectedScene ? (
                         <SceneRenderer scene={selectedScene} mode="autonomous" />

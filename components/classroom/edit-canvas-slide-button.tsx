@@ -25,7 +25,7 @@ export function EditCanvasSlideButton({
       className={cn(
         'flex gap-3 text-left',
         layout === 'horizontal' && 'min-h-[88px] min-w-[180px] max-w-[240px] shrink-0 snap-start',
-        layout === 'vertical' && 'w-full',
+        layout === 'vertical' && 'w-full shrink-0',
         editSlideItemClass(isActive),
       )}
     >
@@ -36,8 +36,8 @@ export function EditCanvasSlideButton({
         </span>
         <span
           className={cn(
-            'mt-0.5 block font-medium leading-snug text-foreground',
-            layout === 'horizontal' ? 'line-clamp-2 text-sm' : 'line-clamp-3 text-sm',
+            'mt-0.5 block overflow-hidden font-medium text-foreground',
+            layout === 'horizontal' ? 'line-clamp-2 text-sm leading-snug' : 'line-clamp-2 text-sm leading-normal',
           )}
         >
           {title}

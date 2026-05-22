@@ -11,6 +11,12 @@ export const stageZhCN = {
     exitFullscreen: '退出全屏',
     classroomLoadingTitle: '教室加载中…',
     classroomLoadingSubtitle: '小伙伴们正在布置你的课堂舞台',
+    classroomProgressTitle: '学习进度',
+    classroomProgressSlides: '第 {current} / {total} 页',
+    classroomProgressPercent: '{percent}% 已完成',
+    classroomProgressComplete: '本课完成',
+    classroomProgressDoneCount: '已完成 {done} 页',
+    classroomProgressLadder: '探索步骤：{step}',
   },
   whiteboard: {
     title: '互动白板',
@@ -60,6 +66,7 @@ export const stageZhCN = {
     aiGrading: 'AI 正在批改中...',
     aiGradingWait: '请稍候，正在分析你的答案',
     quizReport: '答题报告',
+    resultSaved: '已保存',
     retry: '重新答题',
   },
   roundtable: {
@@ -189,6 +196,12 @@ export const stageEnUS = {
     exitFullscreen: 'Exit Fullscreen',
     classroomLoadingTitle: 'Loading your classroom…',
     classroomLoadingSubtitle: 'Your learning friends are setting the stage',
+    classroomProgressTitle: 'Your progress',
+    classroomProgressSlides: 'Slide {current} of {total}',
+    classroomProgressPercent: '{percent}% done',
+    classroomProgressComplete: 'Lesson complete',
+    classroomProgressDoneCount: '{done} slides finished',
+    classroomProgressLadder: 'Explore step: {step}',
   },
   whiteboard: {
     title: 'Interactive Whiteboard',
@@ -238,6 +251,7 @@ export const stageEnUS = {
     aiGrading: 'AI is grading...',
     aiGradingWait: 'Please wait, analyzing your answers',
     quizReport: 'Quiz Report',
+    resultSaved: 'Saved',
     retry: 'Retry',
   },
   roundtable: {

@@ -20,12 +20,14 @@ import { useStageStore, useCanvasStore } from '@/lib/store';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import type { SceneType, SlideContent } from '@/lib/types/stage';
 import { PENDING_SCENE_ID } from '@/lib/store/stage';
+import { ClassroomProgressIndicator } from '@/components/classroom/classroom-progress-indicator';
 
 interface SceneSidebarProps {
   readonly collapsed: boolean;
   readonly onCollapseChange: (collapsed: boolean) => void;
   readonly onSceneSelect?: (sceneId: string) => void;
   readonly onRetryOutline?: (outlineId: string) => Promise<void>;
+  readonly playbackCompleted?: boolean;
 }
 
 const DEFAULT_WIDTH = 220;
@@ -37,6 +39,7 @@ export function SceneSidebar({
   onCollapseChange,
   onSceneSelect,
   onRetryOutline,
+  playbackCompleted = false,
 }: SceneSidebarProps) {
   const { t } = useI18n();
   const router = useRouter();
@@ -210,11 +213,10 @@ export function SceneSidebar({
           </button>
         </div>
 
+        <ClassroomProgressIndicator playbackCompleted={playbackCompleted} variant="sidebar" />
+
         {/* Scenes List */}
         <div className="relative flex-1 min-h-0 px-1.5 pb-1.5">
-          <div className="pointer-events-none absolute left-3 top-2 z-20 rounded-full border border-violet-200/80 bg-white/90 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-violet-700 shadow-sm dark:border-violet-900/45 dark:bg-slate-900/85 dark:text-violet-300">
-            Slides {scenes.length + (generatingOutlines.length > 0 ? 1 : 0)}
-          </div>
           <div
             data-testid="scene-list"
             ref={sceneListRef}

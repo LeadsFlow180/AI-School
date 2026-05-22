@@ -2,6 +2,10 @@
 
 ## Active
 
+- [x] 2026-05-22 - Quiz results: save to IndexedDB, sync `status: quiz` + `quiz` object to AGA `/api/learn/content`; contract in `docs/aga-quiz-results-contract.md`.
+- [x] 2026-05-22 - AGA embed: verify signed redirect on `/classroom/[id]`, resume `resumeSceneIndex`/`resumeSceneId`, sync `status: progress|complete` with `details` to `AGA_BASE_URL` `/api/learn/content`; one ladder mission per full classroom run.
+- [x] 2026-05-21 - AGA embed playback progress: capture `payload`/`sig` from classroom URL, POST `/api/learn/progress` → forward to `AGA_SITE_URL` `/api/learn/content` (Allen Girls Supabase), not AI-School `classroom_progress`.
+- [x] 2026-05-21 - Persist classroom playback progress per authenticated user to AI-School Supabase `classroom_progress` when not launched from AGA; IndexedDB mirror; `/api/classroom/progress` GET/POST.
 - [x] 2026-05-18 - Classroom `/edit`: per-element delete trash buttons on canvas in edit mode; Save button atop tools sidebar (local storage + DB sync).
 - [x] 2026-05-18 - Classroom `/edit` Slide tools: dock tools in right sidebar on lg; Design studio section with 10 new edits (duplicate, center, layer order, sticky/callout/highlight/title bar, bold, flip, clear overlays) via `lib/classroom/edit-slide-tools.ts`.
 - [x] 2026-05-13 - Fix `pnpm run build` / Next 16 TypeScript failures: exclude `.next/dev/types` duplicate route types; `withTimeout` accepts `PromiseLike` for Supabase builders; Gamma page-image `Response` bodies as `Uint8Array`; scene-outlines-stream split `streamLLM` branches; Zod `z.record` key schema; RAG test routes use `API_ERROR_CODES`; Stage type vs component alias on classroom page; Tesseract OCR lines from `blocks`; motion readonly keyframe spreads; assorted `TTSProviderId` / union casts; `skipLibCheck: true` for broken `@supabase/realtime-js` phoenix path types; remove deprecated `eslint` key from `next.config.ts`.

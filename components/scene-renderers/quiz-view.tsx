@@ -20,24 +20,25 @@ import { createLogger } from '@/lib/logger';
 
 const log = createLogger('QuizView');
 import type { QuizQuestion } from '@/lib/types/stage';
+import type { QuizQuestionResultRecord } from '@/lib/types/quiz-result';
 import { useDraftCache } from '@/lib/hooks/use-draft-cache';
 import { SpeechButton } from '@/components/audio/speech-button';
+import {
+  clearQuizResultLocal,
+  loadQuizResultLocal,
+} from '@/lib/classroom/quiz-result-storage';
+import { persistQuizResult } from '@/lib/classroom/quiz-result-sync';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 type Phase = 'not_started' | 'answering' | 'grading' | 'reviewing';
 
-interface QuestionResult {
-  questionId: string;
-  correct: boolean | null;
-  status: 'correct' | 'incorrect';
-  earned: number;
-  aiComment?: string;
-}
+type QuestionResult = QuizQuestionResultRecord;
 
 interface QuizViewProps {
   readonly questions: QuizQuestion[];
   readonly sceneId: string;
+  readonly classroomId?: string;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -685,11 +686,12 @@ function ScoreBanner({
 
 // ─── Main Component ─────────────────────────────────────────────────────────
 
-export function QuizView({ questions, sceneId }: QuizViewProps) {
+export function QuizView({ questions, sceneId, classroomId }: QuizViewProps) {
   const { t, locale } = useI18n();
   const [phase, setPhase] = useState<Phase>('not_started');
   const [answers, setAnswers] = useState<Record<string, string | string[]>>({});
   const [results, setResults] = useState<QuestionResult[]>([]);
+  const [resultSaved, setResultSaved] = useState(false);
 
   // Draft cache for quiz answers, keyed by sceneId to isolate across classrooms
   const {
@@ -737,8 +739,24 @@ export function QuizView({ questions, sceneId }: QuizViewProps) {
 
   const handleSubmit = useCallback(() => {
     setPhase('grading');
+    setResultSaved(false);
     clearAnswersCache();
   }, [clearAnswersCache]);
+
+  useEffect(() => {
+    if (!classroomId) return;
+    let active = true;
+    void loadQuizResultLocal(classroomId, sceneId).then((saved) => {
+      if (!active || !saved) return;
+      setResults(saved.results);
+      if (saved.answers) setAnswers(saved.answers);
+      setPhase('reviewing');
+      setResultSaved(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, [classroomId, sceneId]);
 
   // When entering grading phase, grade choice questions locally + call API for short-answer
   useEffect(() => {
@@ -767,21 +785,33 @@ export function QuizView({ questions, sceneId }: QuizViewProps) {
       const ordered = questions.map((q) => allResultsMap.get(q.id)!).filter(Boolean);
 
       setResults(ordered);
-
       setPhase('reviewing');
+
+      if (classroomId) {
+        const outcome = await persistQuizResult({
+          classroomId,
+          sceneId,
+          results: ordered,
+          totalPoints,
+          answers,
+        });
+        if (!cancelled) setResultSaved(outcome.saved);
+      }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [phase, questions, answers, locale]);
+  }, [phase, questions, answers, locale, classroomId, sceneId, totalPoints]);
 
   const handleRetry = useCallback(() => {
     setPhase('not_started');
     setAnswers({});
     setResults([]);
+    setResultSaved(false);
     clearAnswersCache();
-  }, [clearAnswersCache]);
+    if (classroomId) void clearQuizResultLocal(classroomId, sceneId);
+  }, [clearAnswersCache, classroomId, sceneId]);
 
   const earnedScore = useMemo(() => results.reduce((sum, r) => sum + r.earned, 0), [results]);
 
@@ -942,6 +972,11 @@ export function QuizView({ questions, sceneId }: QuizViewProps) {
                 <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">
                   {t('quiz.quizReport')}
                 </span>
+                {resultSaved ? (
+                  <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                    {t('quiz.resultSaved')}
+                  </span>
+                ) : null}
               </div>
               <button
                 onClick={handleRetry}

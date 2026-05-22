@@ -729,6 +729,45 @@ export default function ClassroomDetailPage() {
         throw new Error(`Classroom "${classroomId}" was not found.`);
       }
 
+      // Allen Girls Adventure embed: verify signed redirect before playback.
+      const {
+        buildAgaLaunchContext,
+        captureAgaLaunchFromUrl,
+        getAgaLaunchBundle,
+        parseAgaLaunchPayloadEncoded,
+        setAgaLaunchContext,
+      } = await import('@/lib/aga/launch-payload');
+      captureAgaLaunchFromUrl(classroomId, searchParams);
+      const bundle = getAgaLaunchBundle(classroomId);
+      if (bundle) {
+          const verifyRes = await fetch('/api/learn/verify-launch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              payload: bundle.payload,
+              sig: bundle.sig,
+              classroomId,
+            }),
+          });
+          if (!verifyRes.ok) {
+            const errJson = await verifyRes.json().catch(() => null);
+            const msg =
+              errJson?.error ||
+              'Invalid or expired Allen Girls Adventures launch link.';
+            throw new Error(msg);
+          }
+          const verifyJson = await verifyRes.json().catch(() => null);
+          const ctxFromApi = verifyJson?.context;
+          if (ctxFromApi) {
+            setAgaLaunchContext(classroomId, ctxFromApi);
+          } else {
+            const parsed = parseAgaLaunchPayloadEncoded(bundle.payload);
+            if (parsed) {
+              setAgaLaunchContext(classroomId, buildAgaLaunchContext(parsed, classroomId));
+            }
+          }
+      }
+
       // Restore completed media generation tasks from IndexedDB
       await useMediaGenerationStore.getState().restoreFromDB(classroomId);
       // Backfill any unresolved generated-image placeholders from media blobs
@@ -817,6 +856,14 @@ export default function ClassroomDetailPage() {
           useStageStore.setState({ scenes: splitResult.scenes });
           await useStageStore.getState().saveToStorage();
         }
+      }
+
+      // Restore per-user playback progress (slide + action position) from Supabase / IndexedDB.
+      try {
+        const { hydrateClassroomProgress } = await import('@/lib/classroom/classroom-progress');
+        await hydrateClassroomProgress(classroomId);
+      } catch (progressErr) {
+        log.warn('Failed to hydrate classroom playback progress:', progressErr);
       }
 
       // New-tab resilience: hydrate missing speech audio in background so
@@ -978,7 +1025,7 @@ export default function ClassroomDetailPage() {
       }
       setLoading(false);
     }
-  }, [classroomId, loadFromStorage]);
+  }, [classroomId, loadFromStorage, searchParams]);
 
   useEffect(() => {
     if (!classroomId) {

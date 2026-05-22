@@ -27,6 +27,23 @@ create table if not exists public.classrooms (
   updated_at timestamptz not null default now()
 );
 
+-- Per-user classroom playback progress (resume slide / action while playing)
+create table if not exists public.classroom_progress (
+  user_id uuid not null references auth.users (id) on delete cascade,
+  classroom_id text not null references public.classrooms (id) on delete cascade,
+  current_scene_id text,
+  scene_index integer not null default 0,
+  action_index integer not null default 0,
+  consumed_discussions jsonb not null default '[]'::jsonb,
+  playback_completed boolean not null default false,
+  last_played_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (user_id, classroom_id)
+);
+
+create index if not exists classroom_progress_classroom_id_idx
+  on public.classroom_progress (classroom_id);
+
 create table if not exists public.admin_users (
   user_id uuid primary key references auth.users (id) on delete cascade,
   created_at timestamptz not null default now()
@@ -77,6 +94,7 @@ create unique index if not exists custom_tutor_voices_provider_voice_uidx
 
 alter table public.creator_profiles enable row level security;
 alter table public.classrooms enable row level security;
+alter table public.classroom_progress enable row level security;
 alter table public.admin_users enable row level security;
 alter table public.custom_tutor_voices enable row level security;
 
@@ -99,6 +117,12 @@ execute function public.set_updated_at();
 drop trigger if exists classrooms_set_updated_at on public.classrooms;
 create trigger classrooms_set_updated_at
 before update on public.classrooms
+for each row
+execute function public.set_updated_at();
+
+drop trigger if exists classroom_progress_set_updated_at on public.classroom_progress;
+create trigger classroom_progress_set_updated_at
+before update on public.classroom_progress
 for each row
 execute function public.set_updated_at();
 
@@ -178,6 +202,28 @@ on public.classrooms
 for delete
 to authenticated
 using (auth.uid() = user_id);
+
+drop policy if exists "classroom_progress_select_own" on public.classroom_progress;
+create policy "classroom_progress_select_own"
+on public.classroom_progress
+for select
+to authenticated
+using (auth.uid() = user_id);
+
+drop policy if exists "classroom_progress_insert_own" on public.classroom_progress;
+create policy "classroom_progress_insert_own"
+on public.classroom_progress
+for insert
+to authenticated
+with check (auth.uid() = user_id);
+
+drop policy if exists "classroom_progress_update_own" on public.classroom_progress;
+create policy "classroom_progress_update_own"
+on public.classroom_progress
+for update
+to authenticated
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
 
 drop policy if exists "admin_users_select_own" on public.admin_users;
 create policy "admin_users_select_own"

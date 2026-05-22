@@ -24,13 +24,21 @@ import { useStageStore } from '@/lib/store/stage';
 import { useMediaGenerationStore } from '@/lib/store/media-generation';
 import { useExportPPTX } from '@/lib/export/use-export-pptx';
 
+import { ClassroomProgressIndicator } from '@/components/classroom/classroom-progress-indicator';
+
 interface HeaderProps {
   readonly currentSceneTitle: string;
   readonly onOpenGuidance?: () => void;
   readonly onOpenCanvasEdit?: () => void;
+  readonly playbackCompleted?: boolean;
 }
 
-export function Header({ currentSceneTitle, onOpenGuidance, onOpenCanvasEdit }: HeaderProps) {
+export function Header({
+  currentSceneTitle,
+  onOpenGuidance,
+  onOpenCanvasEdit,
+  playbackCompleted = false,
+}: HeaderProps) {
   const { t, locale, setLocale } = useI18n();
   const { theme, setTheme } = useTheme();
   const router = useRouter();
@@ -113,6 +121,8 @@ export function Header({ currentSceneTitle, onOpenGuidance, onOpenCanvasEdit }: 
             </h1>
           </div>
         </div>
+
+        <ClassroomProgressIndicator playbackCompleted={playbackCompleted} variant="header" />
 
         <div className="relative z-10 hidden sm:flex items-center gap-1 sm:gap-4 bg-slate-50 px-1.5 sm:px-2 py-1.5 rounded-full border border-slate-200 shadow-sm shrink-0">
           {onOpenGuidance && (

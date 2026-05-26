@@ -110,6 +110,10 @@ export interface ClonedTutorSynthesizeConfig {
   referenceUrl: string;
   speed?: number;
   language?: string;
+  /** Maps to synthesize API `voice_instruction` (e.g. tutor description). */
+  voiceInstruction?: string;
+  cfgValue?: number;
+  inferenceTimesteps?: number;
 }
 
 function joinUrl(base: string, path: string): string {
@@ -184,6 +188,100 @@ async function fetchWithTimeout(
   }
 }
 
+/** Primary voice-clone synthesize body (POST /synthesize, Accept: audio/wav). */
+function buildPrimarySynthPayload(text: string, config: ClonedTutorSynthesizeConfig): Record<string, unknown> {
+  return {
+    text,
+    referenceUrl: config.referenceUrl,
+    voice_instruction:
+      config.voiceInstruction?.trim() ||
+      process.env.VOICE_CLONE_VOICE_INSTRUCTION?.trim() ||
+      'warm, conversational podcast host',
+    cfg_value: config.cfgValue ?? Number(process.env.VOICE_CLONE_CFG_VALUE || 2),
+    inference_timesteps:
+      config.inferenceTimesteps ?? Number(process.env.VOICE_CLONE_INFERENCE_TIMESTEPS || 10),
+  };
+}
+
+/** Legacy synthesize body for older upstream deployments. */
+function buildLegacySynthPayload(text: string, config: ClonedTutorSynthesizeConfig): Record<string, unknown> {
+  const language = config.language || process.env.VOICE_CLONE_DEFAULT_LANGUAGE || 'en';
+  const speed = Math.min(2, Math.max(0.5, config.speed ?? 1.0));
+  return {
+    text,
+    referenceUrl: config.referenceUrl,
+    reference_url: config.referenceUrl,
+    referenceAudioUrl: config.referenceUrl,
+    reference_audio_url: config.referenceUrl,
+    language,
+    speed,
+  };
+}
+
+async function materializeClonedSynthResponse(
+  jsonBody: Record<string, unknown>,
+  textBody: string,
+  requestTimeoutMs: number,
+): Promise<TTSGenerationResult> {
+  const status = jsonBody.status;
+  const audioBase64 = jsonBody.audio_base64;
+  if (
+    status === 'success' &&
+    typeof audioBase64 === 'string' &&
+    audioBase64.trim().length > 0
+  ) {
+    const mimeType =
+      typeof jsonBody.mime_type === 'string' ? jsonBody.mime_type : 'audio/wav';
+    const bytes = new Uint8Array(Buffer.from(audioBase64, 'base64'));
+    return {
+      audio: bytes,
+      format: getFormatFromMime(mimeType),
+      metadata: {
+        mime_type: jsonBody.mime_type,
+        sample_rate: jsonBody.sample_rate,
+      },
+    };
+  }
+
+  const legacy = jsonBody as {
+    success?: boolean;
+    data?: { audioUrl?: string };
+    metadata?: Record<string, unknown>;
+    error?: string;
+  };
+  if (legacy.success && legacy.data?.audioUrl) {
+    const audioUrl = legacy.data.audioUrl;
+    if (audioUrl.startsWith('data:')) {
+      const { mimeType, bytes } = parseDataUrl(audioUrl);
+      return {
+        audio: bytes,
+        format: getFormatFromMime(mimeType),
+        metadata: legacy.metadata || null,
+      };
+    }
+    const externalResponse = await fetchWithTimeout(audioUrl, {}, requestTimeoutMs);
+    if (!externalResponse.ok) {
+      throw Object.assign(new Error(`Failed to download synthesized audio: HTTP ${externalResponse.status}`), {
+        status: externalResponse.status,
+      });
+    }
+    const arrayBuffer = await externalResponse.arrayBuffer();
+    const mimeType = externalResponse.headers.get('content-type') || 'audio/wav';
+    return {
+      audio: new Uint8Array(arrayBuffer),
+      format: getFormatFromMime(mimeType),
+      metadata: legacy.metadata || null,
+    };
+  }
+
+  const errMsg =
+    (typeof jsonBody.error === 'string' && jsonBody.error) ||
+    (typeof legacy.error === 'string' && legacy.error) ||
+    textBody ||
+    'Custom voice synthesize request failed: invalid response payload';
+  throw Object.assign(new Error(errMsg), { status: 502 });
+}
+
 function parseRetryAfterSeconds(headers: Headers, body: unknown): number {
   const retryAfter = headers.get('retry-after');
   if (retryAfter) {
@@ -204,62 +302,28 @@ export async function generateClonedTutorTTS(
   config: ClonedTutorSynthesizeConfig,
   text: string,
 ): Promise<TTSGenerationResult> {
-  const language = config.language || process.env.VOICE_CLONE_DEFAULT_LANGUAGE || 'en';
-  const speed = Math.min(2, Math.max(0.5, config.speed ?? 1.0));
-  const fullPayload = {
-    text,
-    referenceUrl: config.referenceUrl,
-    reference_url: config.referenceUrl,
-    referenceAudioUrl: config.referenceUrl,
-    reference_audio_url: config.referenceUrl,
-    language,
-    emotion: process.env.VOICE_CLONE_DEFAULT_EMOTION || 'neutral',
-    emotion_intensity: Number(process.env.VOICE_CLONE_DEFAULT_EMOTION_INTENSITY || 5),
-    speed,
-    pitch: Number(process.env.VOICE_CLONE_DEFAULT_PITCH || 0),
-    energy_level: Number(process.env.VOICE_CLONE_DEFAULT_ENERGY_LEVEL || 5),
-    expressions_already_added: true,
-    personality: {
-      dominant_trait: process.env.VOICE_CLONE_PERSONALITY_TRAIT || 'friendly',
-      all_traits: [process.env.VOICE_CLONE_PERSONALITY_TRAIT || 'friendly'],
-      speaking_style: process.env.VOICE_CLONE_PERSONALITY_STYLE || 'conversational',
-      intensity: Number(process.env.VOICE_CLONE_PERSONALITY_INTENSITY || 5),
-    },
-  };
-  const minimalPayload = {
-    text,
-    referenceUrl: config.referenceUrl,
-    reference_url: config.referenceUrl,
-    referenceAudioUrl: config.referenceUrl,
-    reference_audio_url: config.referenceUrl,
-    language,
-    speed,
-  };
-  const altMinimalPayload = {
-    text,
-    referenceUrl: config.referenceUrl,
-    reference_url: config.referenceUrl,
-    referenceAudioUrl: config.referenceUrl,
-    reference_audio_url: config.referenceUrl,
-    language,
-    speed,
-  };
   const payloadBodies = [
-    JSON.stringify(fullPayload),
-    JSON.stringify(minimalPayload),
-    JSON.stringify(altMinimalPayload),
+    JSON.stringify(buildPrimarySynthPayload(text, config)),
+    JSON.stringify(buildLegacySynthPayload(text, config)),
   ];
   const candidateUrls = buildSynthesizeCandidateUrls(config.apiUrl);
+  const synthHeaders = {
+    'Content-Type': 'application/json',
+    Accept: 'audio/wav',
+    ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+  };
 
   let response: Response | null = null;
   let textBody = '';
   let jsonBody: Record<string, unknown> = {};
+  let binaryResult: TTSGenerationResult | null = null;
   let attemptedUrl = config.apiUrl;
   const maxRetries = Number(process.env.TTS_503_MAX_RETRIES || 2);
   const maxTimeoutRetries = Number(process.env.TTS_524_MAX_RETRIES || 0);
   const minBackoffMs = Number(process.env.TTS_503_MIN_BACKOFF_MS || 2000);
   const maxBackoffMs = Number(process.env.TTS_503_MAX_BACKOFF_MS || 10000);
   const requestTimeoutMs = Number(process.env.TTS_UPSTREAM_TIMEOUT_MS || 180000);
+
   for (const payloadBody of payloadBodies) {
     for (const url of candidateUrls) {
       attemptedUrl = url;
@@ -270,10 +334,7 @@ export async function generateClonedTutorTTS(
             url,
             {
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
-              },
+              headers: synthHeaders,
               body: payloadBody,
             },
             requestTimeoutMs,
@@ -294,6 +355,17 @@ export async function generateClonedTutorTTS(
           }
           throw err;
         }
+        response = res;
+        const responseContentType = res.headers.get('content-type') || '';
+        if (res.ok && responseContentType.includes('audio/')) {
+          const arrayBuffer = await res.arrayBuffer();
+          binaryResult = {
+            audio: new Uint8Array(arrayBuffer),
+            format: getFormatFromMime(responseContentType),
+            metadata: null,
+          };
+          break;
+        }
         const body = await res.text().catch(() => '');
         let parsedBody: Record<string, unknown> = {};
         try {
@@ -301,7 +373,6 @@ export async function generateClonedTutorTTS(
         } catch {
           parsedBody = {};
         }
-        response = res;
         textBody = body;
         jsonBody = parsedBody;
         if (res.ok) break;
@@ -323,7 +394,6 @@ export async function generateClonedTutorTTS(
           });
         }
 
-        // Retry on common route-shape mismatch statuses.
         if (res.status === 404 || res.status === 405 || res.status === 308 || res.status === 307) {
           break;
         }
@@ -341,7 +411,6 @@ export async function generateClonedTutorTTS(
 
       if (response?.ok) break;
 
-      // For route-shape mismatch statuses, continue to next URL/payload candidate.
       if (
         response &&
         response.status !== 404 &&
@@ -359,74 +428,50 @@ export async function generateClonedTutorTTS(
     throw new Error('Custom voice synthesize request failed: no response received.');
   }
 
-  const payload: {
-    success?: boolean;
-    data?: { audioUrl?: string };
-    metadata?: Record<string, unknown>;
-    error?: string;
-  } = jsonBody as {
-    success?: boolean;
-    data?: { audioUrl?: string };
-    metadata?: Record<string, unknown>;
-    error?: string;
-  };
-
-  if (!response.ok) {
-    throw Object.assign(
-      new Error(
-        summarizeTtsUpstreamError(
-          payload.error ||
-            textBody ||
-            `Custom voice synthesize request failed: HTTP ${response.status} at ${attemptedUrl}`,
-          attemptedUrl,
-        ),
-      ),
-      { status: response.status },
-    );
+  if (binaryResult) {
+    return binaryResult;
   }
 
-  if (!payload.success || !payload.data?.audioUrl) {
+  if (!response.ok) {
+    const errMsg =
+      (typeof jsonBody.error === 'string' && jsonBody.error) ||
+      textBody ||
+      `Custom voice synthesize request failed: HTTP ${response.status} at ${attemptedUrl}`;
+    throw Object.assign(new Error(summarizeTtsUpstreamError(errMsg, attemptedUrl)), {
+      status: response.status,
+    });
+  }
+
+  try {
+    return await materializeClonedSynthResponse(jsonBody, textBody, requestTimeoutMs);
+  } catch (err) {
+    if (err instanceof Error && 'status' in err) throw err;
     throw Object.assign(
       new Error(
         summarizeTtsUpstreamError(
-          payload.error ||
-            textBody ||
-            `Custom voice synthesize request failed: invalid payload at ${attemptedUrl}`,
+          err instanceof Error ? err.message : String(err),
           attemptedUrl,
         ),
       ),
       { status: response.status || 502 },
     );
   }
+}
 
-  const audioUrl = payload.data.audioUrl;
-  if (audioUrl.startsWith('data:')) {
-    const { mimeType, bytes } = parseDataUrl(audioUrl);
-    return {
-      audio: bytes,
-      format: getFormatFromMime(mimeType),
-      metadata: payload.metadata || null,
-    };
+function normalizeSynthesizeEndpointUrl(url: string): string {
+  const trimmed = url.trim();
+  if (!trimmed) return '';
+  const normalized = trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
+  if (normalized.toLowerCase().endsWith('/synthesize')) {
+    return normalized;
   }
-
-  const externalResponse = await fetchWithTimeout(audioUrl, {}, requestTimeoutMs);
-  if (!externalResponse.ok) {
-    throw Object.assign(new Error(`Failed to download synthesized audio: HTTP ${externalResponse.status}`), {
-      status: externalResponse.status,
-    });
-  }
-  const arrayBuffer = await externalResponse.arrayBuffer();
-  const mimeType = externalResponse.headers.get('content-type') || 'audio/wav';
-  return {
-    audio: new Uint8Array(arrayBuffer),
-    format: getFormatFromMime(mimeType),
-    metadata: payload.metadata || null,
-  };
+  return `${normalized}/synthesize`;
 }
 
 export function resolveVoiceCloneSynthesizeUrl(): string {
-  if (process.env.VOICE_CLONE_SYNTHESIZE_URL) {
-    return process.env.VOICE_CLONE_SYNTHESIZE_URL;
+  const direct = process.env.VOICE_CLONE_SYNTHESIZE_URL?.trim();
+  if (direct) {
+    return normalizeSynthesizeEndpointUrl(direct);
   }
   if (process.env.VOICE_CLONE_BASE_URL) {
     return joinUrl(

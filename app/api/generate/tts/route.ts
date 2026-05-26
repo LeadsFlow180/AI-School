@@ -127,13 +127,20 @@ async function generateTTSPayload(body: TTSRequestBody) {
   const adminClient = getSupabaseAdminClient();
   let referenceUrl: string | null = null;
   let metadataPath: string | null = null;
+  let customVoice: {
+    reference_url?: string | null;
+    metadata?: unknown;
+    description?: string | null;
+    title?: string | null;
+  } | null = null;
   if (adminClient) {
-    const { data: customVoice } = await adminClient
+    const { data: voiceRow } = await adminClient
       .from('custom_tutor_voices')
-      .select('reference_url, metadata')
+      .select('reference_url, metadata, description, title')
       .eq('provider_id', ttsProviderId)
       .eq('provider_voice_id', ttsVoice)
       .maybeSingle();
+    customVoice = voiceRow;
     const metadataObj =
       customVoice?.metadata && typeof customVoice.metadata === 'object'
         ? (customVoice.metadata as Record<string, unknown>)
@@ -206,12 +213,17 @@ async function generateTTSPayload(body: TTSRequestBody) {
     for (const refUrl of candidateReferenceUrls) {
       try {
         // eslint-disable-next-line no-await-in-loop
+        const voiceInstruction =
+          (typeof customVoice?.description === 'string' && customVoice.description.trim()) ||
+          (typeof customVoice?.title === 'string' && customVoice.title.trim()) ||
+          undefined;
         generated = await generateClonedTutorTTS(
           {
             apiUrl: synthUrl,
             apiKey: process.env.VOICE_CLONE_API_KEY || undefined,
             referenceUrl: refUrl,
             speed: ttsSpeed ?? 1.0,
+            voiceInstruction,
           },
           text,
         );

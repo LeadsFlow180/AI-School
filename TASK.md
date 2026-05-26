@@ -199,6 +199,7 @@
 
 ## Discovered During Work
 
+- [x] 2026-05-15 - Align cloned tutor `/synthesize` with voice-clone API: POST JSON `{ text, referenceUrl, voice_instruction, cfg_value, inference_timesteps }`, `Accept: audio/wav`, parse `{ status, mime_type, sample_rate, audio_base64 }` (legacy `data.audioUrl` fallback); pass tutor description as `voice_instruction`.
 - [x] 2026-05-15 - Fix new-tab default tutor icon and mute: re-apply tutorConfig (name/avatar/voice) from server stage after background refresh so agent registry stays in sync; fix `resolveEffectiveTTSRequest` early-return to check the *effective* provider (tutorConfig.voicePreset override) rather than global settings provider, preventing custom-cloned-tts from being silenced when global provider is still browser-native-tts.
 
 - [x] 2026-05-11 - Log Supabase `admin_users` / `classrooms` upsert failures in `/api/classroom/sync` so dev terminal shows `code`/`details`/`hint` when sync returns 500.

@@ -6,6 +6,7 @@ import {
   ladderStepIndex,
   signAgaBody,
 } from '@/lib/aga/redirect-crypto';
+import { normalizeAgaLaunchUserIds } from '@/lib/aga/aga-user-identity';
 import type { QuizResultPayload } from '@/lib/types/quiz-result';
 
 const log = createLogger('AgaContentSync');
@@ -24,6 +25,8 @@ export const agaProgressDetailsSchema = z.object({
   actionIndex: z.number().int().nonnegative().optional(),
   consumedDiscussions: z.array(z.string()).optional(),
   playbackCompleted: z.boolean().optional(),
+  /** learnerId ?? guestSessionId — required on every AGA progress row */
+  userId: z.string().uuid(),
 });
 
 export const agaQuizPayloadSchema = z.object({
@@ -85,6 +88,14 @@ function getAgaProgressPath(): string {
   return path.startsWith('/') ? path : `/${path}`;
 }
 
+function userFieldsFromLaunch(launch: AgaLaunchFields) {
+  const identity = normalizeAgaLaunchUserIds(launch);
+  if (!identity) {
+    throw new Error('missing_user_identity');
+  }
+  return identity;
+}
+
 export function buildAgaContentBody(
   launch: AgaLaunchFields,
   input: {
@@ -97,6 +108,7 @@ export function buildAgaContentBody(
     classroomId: string;
   },
 ): AgaContentSyncInput {
+  const { learnerId, guestSessionId, userId } = userFieldsFromLaunch(launch);
   const ladderStep = launch.step || 'start';
   const classroomId = launch.classroomId?.trim() || input.classroomId || AGA_DEFAULT_CLASSROOM_ID;
   const totalSlides =
@@ -107,8 +119,8 @@ export function buildAgaContentBody(
         : 5;
 
   return {
-    learnerId: launch.learnerId ?? null,
-    guestSessionId: launch.guestSessionId ?? null,
+    learnerId,
+    guestSessionId,
     status: input.status,
     details: {
       classroomId,
@@ -124,6 +136,7 @@ export function buildAgaContentBody(
       actionIndex: input.actionIndex,
       consumedDiscussions: input.consumedDiscussions,
       playbackCompleted: input.playbackCompleted,
+      userId,
     },
   };
 }
@@ -140,6 +153,11 @@ export async function postAgaContent(body: AgaContentSyncInput): Promise<{
   if (!agaBase) {
     log.warn('AGA_BASE_URL / AGA_SITE_URL not configured; skipping AGA content sync');
     return { ok: false, error: 'aga_site_not_configured' };
+  }
+
+  if (!body.details.userId) {
+    log.warn('AGA content sync skipped: missing details.userId');
+    return { ok: false, error: 'missing_user_identity' };
   }
 
   const secret = process.env.AI_SCHOOL_REDIRECT_SECRET?.trim() || '';
@@ -161,6 +179,8 @@ export async function postAgaContent(body: AgaContentSyncInput): Promise<{
     log.info('AGA content sync ok', {
       status: response.status,
       classroomId: body.details.classroomId,
+      userId: body.details.userId,
+      learnerId: body.learnerId,
       syncStatus: body.status,
       sceneId: body.quiz?.sceneId,
     });
@@ -177,14 +197,15 @@ export function buildAgaQuizContentBody(
   quiz: QuizResultPayload,
   sceneIndex: number,
 ): AgaContentSyncInput {
+  const { learnerId, guestSessionId, userId } = userFieldsFromLaunch(launch);
   const ladderStep = launch.step || 'start';
   const classroomId = launch.classroomId?.trim() || quiz.classroomId || AGA_DEFAULT_CLASSROOM_ID;
   const totalSlides =
     typeof launch.totalSlides === 'number' && launch.totalSlides > 0 ? launch.totalSlides : 5;
 
   return {
-    learnerId: launch.learnerId ?? null,
-    guestSessionId: launch.guestSessionId ?? null,
+    learnerId,
+    guestSessionId,
     status: 'quiz',
     details: {
       classroomId,
@@ -200,6 +221,7 @@ export function buildAgaQuizContentBody(
       actionIndex: 0,
       consumedDiscussions: [],
       playbackCompleted: false,
+      userId,
     },
     quiz: {
       sceneId: quiz.sceneId,

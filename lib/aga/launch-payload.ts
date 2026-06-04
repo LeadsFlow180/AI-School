@@ -1,5 +1,6 @@
 'use client';
 
+import { normalizeAgaLaunchUserIds } from '@/lib/aga/aga-user-identity';
 import {
   AGA_DEFAULT_CLASSROOM_ID,
   AGA_DEFAULT_TOTAL_SLIDES,
@@ -21,6 +22,8 @@ export type AgaLaunchPayload = {
   classroomId?: string;
   resumeSceneIndex?: number | null;
   resumeSceneId?: string | null;
+  /** When true, `resumeSceneIndex` was fully played — open the next slide. */
+  resumePlaybackCompleted?: boolean | null;
   totalSlides?: number | null;
   issuedAt?: string;
   expiresAt?: string;
@@ -74,8 +77,12 @@ export function buildAgaLaunchContext(
       ? parsed.totalSlides
       : AGA_DEFAULT_TOTAL_SLIDES;
 
+  const identity = normalizeAgaLaunchUserIds(parsed);
+
   return {
     ...parsed,
+    learnerId: identity?.learnerId ?? null,
+    guestSessionId: identity?.guestSessionId ?? null,
     classroomId,
     totalSlides,
     source: parsed.source || AGA_SOURCE,
@@ -115,7 +122,17 @@ export function captureAgaLaunchFromUrl(
 
   const bundle: AgaLaunchBundle = { payload, sig };
   sessionStorage.setItem(storageKey(classroomId, 'bundle'), JSON.stringify(bundle));
+  sessionStorage.setItem(storageKey(classroomId, 'fresh'), '1');
   return true;
+}
+
+/** True once per signed URL open from AGA (not a same-tab refresh without payload/sig). */
+export function consumeAgaFreshLaunch(classroomId: string): boolean {
+  if (typeof window === 'undefined') return false;
+  const key = storageKey(classroomId, 'fresh');
+  const fresh = sessionStorage.getItem(key) === '1';
+  if (fresh) sessionStorage.removeItem(key);
+  return fresh;
 }
 
 export function getAgaLaunchBundle(classroomId: string): AgaLaunchBundle | null {
@@ -140,6 +157,7 @@ export function clearAgaLaunchBundle(classroomId: string): void {
   sessionStorage.removeItem(storageKey(classroomId, 'bundle'));
   sessionStorage.removeItem(storageKey(classroomId, 'context'));
   sessionStorage.removeItem(storageKey(classroomId, 'complete-sent'));
+  sessionStorage.removeItem(storageKey(classroomId, 'fresh'));
 }
 
 export function markAgaCompleteSent(classroomId: string, step: string | undefined): void {

@@ -34,6 +34,13 @@ export async function POST(request: NextRequest) {
     if (verified.error === 'expired') {
       return apiError(API_ERROR_CODES.INVALID_REQUEST, 401, 'Launch link has expired.');
     }
+    if (verified.error === 'missing_user_identity') {
+      return apiError(
+        API_ERROR_CODES.INVALID_REQUEST,
+        400,
+        'Launch link is missing learner or guest identity. Sign in on Allen Girls Adventures and try again.',
+      );
+    }
     return apiError(API_ERROR_CODES.INVALID_REQUEST, 400, 'Invalid launch payload.');
   }
 

@@ -36,6 +36,13 @@ export async function POST(request: NextRequest) {
       if (verified.error === 'invalid_signature') {
         return apiError(API_ERROR_CODES.INVALID_REQUEST, 401, 'Invalid launch signature.');
       }
+      if (verified.error === 'missing_user_identity') {
+        return apiError(
+          API_ERROR_CODES.INVALID_REQUEST,
+          400,
+          'Cannot sync quiz without learner or guest identity in the launch payload.',
+        );
+      }
       return apiError(API_ERROR_CODES.INVALID_REQUEST, 400, 'Invalid launch payload.');
     }
 

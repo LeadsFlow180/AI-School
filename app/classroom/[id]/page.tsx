@@ -752,6 +752,7 @@ export default function ClassroomDetailPage() {
           if (!verifyRes.ok) {
             const errJson = await verifyRes.json().catch(() => null);
             const msg =
+              errJson?.message ||
               errJson?.error ||
               'Invalid or expired Allen Girls Adventures launch link.';
             throw new Error(msg);

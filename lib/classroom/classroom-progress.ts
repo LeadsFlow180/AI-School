@@ -8,6 +8,8 @@ import type { PlaybackSnapshot } from '@/lib/utils/playback-storage';
 
 import {
 
+  clearPlaybackState,
+
   loadPlaybackState,
 
   savePlaybackState,
@@ -15,6 +17,8 @@ import {
 } from '@/lib/utils/playback-storage';
 
 import {
+
+  consumeAgaFreshLaunch,
 
   getAgaLaunchBundle,
 
@@ -29,6 +33,8 @@ import {
   type AgaLaunchContext,
 
 } from '@/lib/aga/launch-payload';
+
+import { resolveAgaResumeTargetIndex } from '@/lib/classroom/aga-resume';
 
 import { getSessionSafe, getSupabaseClient } from '@/lib/supabase/client';
 
@@ -264,7 +270,7 @@ async function pushAgaProgress(input: ProgressSaveInput): Promise<void> {
 
       consumedDiscussions: snapshot.consumedDiscussions,
 
-      playbackCompleted: sendComplete,
+      playbackCompleted: wantsComplete,
 
     }),
 
@@ -528,65 +534,45 @@ function resumeFromAgaContext(
 
 
 
-  if (byId) {
+  let targetIndex = byId
 
-    const sceneIndex = sceneIndexForId(scenes, byId);
+    ? sceneIndexForId(scenes, byId)
 
-    return {
+    : resolveAgaResumeTargetIndex(ctx, scenes.length);
 
-      sceneId: byId,
 
-      snapshot: {
 
-        sceneIndex,
+  if (byId && ctx.resumePlaybackCompleted === true) {
 
-        actionIndex: 0,
-
-        consumedDiscussions: [],
-
-        sceneId: byId,
-
-      },
-
-    };
+    targetIndex = Math.min(targetIndex + 1, Math.max(0, scenes.length - 1));
 
   }
 
 
 
-  if (typeof ctx.resumeSceneIndex === 'number' && ctx.resumeSceneIndex >= 0) {
+  const scene = scenes[targetIndex] ?? scenes[0];
 
-    const clamped = Math.min(ctx.resumeSceneIndex, Math.max(0, scenes.length - 1));
-
-    const scene = scenes[clamped];
-
-    if (scene) {
-
-      return {
-
-        sceneId: scene.id,
-
-        snapshot: {
-
-          sceneIndex: clamped,
-
-          actionIndex: 0,
-
-          consumedDiscussions: [],
-
-          sceneId: scene.id,
-
-        },
-
-      };
-
-    }
-
-  }
+  if (!scene) return { sceneId: null, snapshot: null };
 
 
 
-  return { sceneId: scenes[0]?.id ?? null, snapshot: null };
+  return {
+
+    sceneId: scene.id,
+
+    snapshot: {
+
+      sceneIndex: targetIndex,
+
+      actionIndex: 0,
+
+      consumedDiscussions: [],
+
+      sceneId: scene.id,
+
+    },
+
+  };
 
 }
 
@@ -610,7 +596,27 @@ export async function hydrateClassroomProgress(classroomId: string): Promise<Cla
 
   if (agaCtx && scenes.length > 0) {
 
+    const isFreshLaunch = consumeAgaFreshLaunch(classroomId);
+
+    if (isFreshLaunch) {
+
+      try {
+
+        await clearPlaybackState(classroomId);
+
+      } catch {
+
+        // ignore — prefer AGA resume over stale local IndexedDB
+
+      }
+
+    }
+
+
+
     const { sceneId, snapshot } = resumeFromAgaContext(agaCtx, scenes);
+
+
 
     if (sceneId && sceneId !== useStageStore.getState().currentSceneId) {
 
@@ -633,6 +639,8 @@ export async function hydrateClassroomProgress(classroomId: string): Promise<Cla
       }
 
     }
+
+
 
     return {
 

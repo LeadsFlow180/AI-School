@@ -57,6 +57,7 @@ describe('aga redirect-crypto', () => {
   it('buildAgaContentBody uses progress/complete status and classroom id', () => {
     const progress = buildAgaContentBody(
       {
+        learnerId: '11111111-1111-4111-8111-111111111111',
         guestSessionId: '550e8400-e29b-41d4-a716-446655440000',
         step: 'practice',
         sectionId: 1,
@@ -79,9 +80,15 @@ describe('aga redirect-crypto', () => {
     expect(progress.details.ladderStepIndex).toBe(3);
     expect(progress.details.classroomId).toBe('l4gHC6hvRo');
     expect(progress.details.playbackCompleted).toBe(false);
+    expect(progress.details.userId).toBe('11111111-1111-4111-8111-111111111111');
 
     const complete = buildAgaContentBody(
-      { step: 'practice', classroomId: 'l4gHC6hvRo', totalSlides: 5 },
+      {
+        learnerId: '11111111-1111-4111-8111-111111111111',
+        step: 'practice',
+        classroomId: 'l4gHC6hvRo',
+        totalSlides: 5,
+      },
       {
         status: 'complete',
         sceneIndex: 4,

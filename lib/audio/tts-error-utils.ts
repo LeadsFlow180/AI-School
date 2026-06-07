@@ -33,7 +33,7 @@ export function summarizeTtsUpstreamError(body: string, url?: string): string {
     );
   }
 
-  if (trimmed.startsWith('RIFF') && trimmed.includes('WAVE')) {
+  if (trimmed.startsWith('RIFF') || trimmed.includes('WAVEfmt')) {
     return (
       `Voice clone service returned raw WAV audio with an unexpected response format${urlHint}. ` +
       'The synthesize endpoint should return audio/wav (or JSON with audio_base64). Check upstream Content-Type headers.'
@@ -50,7 +50,13 @@ export function summarizeTtsUpstreamError(body: string, url?: string): string {
 export function summarizeTtsErrorMessage(message: string, url?: string): string {
   const trimmed = message.trim();
   if (!trimmed) return 'TTS generation failed.';
-  if (trimmed.length > 400 || trimmed.includes('<!DOCTYPE') || trimmed.includes('<html')) {
+  if (
+    trimmed.length > 400 ||
+    trimmed.includes('<!DOCTYPE') ||
+    trimmed.includes('<html') ||
+    trimmed.startsWith('RIFF') ||
+    trimmed.includes('WAVEfmt')
+  ) {
     return summarizeTtsUpstreamError(trimmed, url);
   }
   return trimmed;

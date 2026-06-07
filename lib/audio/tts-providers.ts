@@ -218,6 +218,36 @@ function getFormatFromBytes(bytes: Uint8Array, contentType: string): string {
   return getFormatFromMime(contentType);
 }
 
+function audioResultFromBytes(
+  bytes: Uint8Array,
+  contentType: string,
+  httpStatus?: number,
+): TTSGenerationResult | null {
+  if (bytes.length < 12) return null;
+  if (!isLikelyAudioContentType(contentType) && !isLikelyAudioBytes(bytes)) return null;
+  return {
+    audio: bytes,
+    format: getFormatFromBytes(bytes, contentType),
+    metadata: httpStatus != null ? { httpStatus } : null,
+  };
+}
+
+function isMaterializableSynthJson(jsonBody: Record<string, unknown>): boolean {
+  if (
+    jsonBody.status === 'success' &&
+    typeof jsonBody.audio_base64 === 'string' &&
+    jsonBody.audio_base64.trim().length > 0
+  ) {
+    return true;
+  }
+  const legacy = jsonBody as { success?: boolean; data?: { audioUrl?: string } };
+  return !!(
+    legacy.success &&
+    typeof legacy.data?.audioUrl === 'string' &&
+    legacy.data.audioUrl.trim().length > 0
+  );
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -275,7 +305,14 @@ async function materializeClonedSynthResponse(
   jsonBody: Record<string, unknown>,
   textBody: string,
   requestTimeoutMs: number,
+  rawBytes?: Uint8Array,
+  contentType = '',
 ): Promise<TTSGenerationResult> {
+  if (rawBytes) {
+    const directAudio = audioResultFromBytes(rawBytes, contentType);
+    if (directAudio) return directAudio;
+  }
+
   const status = jsonBody.status;
   const audioBase64 = jsonBody.audio_base64;
   if (
@@ -332,7 +369,7 @@ async function materializeClonedSynthResponse(
     (typeof legacy.error === 'string' && legacy.error) ||
     textBody ||
     'Custom voice synthesize request failed: invalid response payload';
-  throw Object.assign(new Error(errMsg), { status: 502 });
+  throw Object.assign(new Error(summarizeTtsUpstreamError(errMsg)), { status: 502 });
 }
 
 function parseRetryAfterSeconds(headers: Headers, body: unknown): number {
@@ -369,7 +406,10 @@ export async function generateClonedTutorTTS(
   let response: Response | null = null;
   let textBody = '';
   let jsonBody: Record<string, unknown> = {};
+  let responseBytes = new Uint8Array(0);
+  let responseContentType = '';
   let binaryResult: TTSGenerationResult | null = null;
+  let hasMaterializableJson = false;
   let attemptedUrl = config.apiUrl;
   const maxRetries = Number(process.env.TTS_503_MAX_RETRIES || 2);
   const maxTimeoutRetries = Number(process.env.TTS_524_MAX_RETRIES || 0);
@@ -409,20 +449,16 @@ export async function generateClonedTutorTTS(
           throw err;
         }
         response = res;
-        const responseContentType = res.headers.get('content-type') || '';
+        responseContentType = res.headers.get('content-type') || '';
         const arrayBuffer = await res.arrayBuffer().catch(() => new ArrayBuffer(0));
-        const responseBytes = new Uint8Array(arrayBuffer);
-        if (
-          res.ok &&
-          (isLikelyAudioContentType(responseContentType) || isLikelyAudioBytes(responseBytes))
-        ) {
-          binaryResult = {
-            audio: responseBytes,
-            format: getFormatFromBytes(responseBytes, responseContentType),
-            metadata: null,
-          };
+        responseBytes = new Uint8Array(arrayBuffer);
+
+        const audioFromBytes = audioResultFromBytes(responseBytes, responseContentType, res.status);
+        if (audioFromBytes) {
+          binaryResult = audioFromBytes;
           break;
         }
+
         const body = new TextDecoder('utf-8', { fatal: false }).decode(responseBytes);
         let parsedBody: Record<string, unknown> = {};
         try {
@@ -432,7 +468,14 @@ export async function generateClonedTutorTTS(
         }
         textBody = body;
         jsonBody = parsedBody;
-        if (res.ok) break;
+        hasMaterializableJson = res.ok && isMaterializableSynthJson(parsedBody);
+        if (hasMaterializableJson) break;
+
+        if (res.ok) {
+          // Reason: Some hosts return HTTP 200 index/health payloads on non-synth paths.
+          // Keep trying other candidate URLs instead of treating that as synth success.
+          break;
+        }
 
         const retryBudget = res.status === 524 ? maxTimeoutRetries : maxRetries;
         if ((res.status === 503 || res.status === 524) && attempt < retryBudget) {
@@ -466,19 +509,21 @@ export async function generateClonedTutorTTS(
         );
       }
 
-      if (response?.ok) break;
+      if (binaryResult || hasMaterializableJson) break;
 
-      if (
-        response &&
-        response.status !== 404 &&
-        response.status !== 405 &&
-        response.status !== 308 &&
-        response.status !== 307
-      ) {
+      if (response && !response.ok) {
+        if (
+          response.status === 404 ||
+          response.status === 405 ||
+          response.status === 308 ||
+          response.status === 307
+        ) {
+          continue;
+        }
         break;
       }
     }
-    if (response?.ok) break;
+    if (binaryResult || hasMaterializableJson) break;
   }
 
   if (!response) {
@@ -490,6 +535,10 @@ export async function generateClonedTutorTTS(
   }
 
   if (!response.ok) {
+    const audioFromErrorBody = audioResultFromBytes(responseBytes, responseContentType, response.status);
+    if (audioFromErrorBody) {
+      return audioFromErrorBody;
+    }
     const errMsg =
       (typeof jsonBody.error === 'string' && jsonBody.error) ||
       textBody ||
@@ -500,7 +549,13 @@ export async function generateClonedTutorTTS(
   }
 
   try {
-    return await materializeClonedSynthResponse(jsonBody, textBody, requestTimeoutMs);
+    return await materializeClonedSynthResponse(
+      jsonBody,
+      textBody,
+      requestTimeoutMs,
+      responseBytes,
+      responseContentType,
+    );
   } catch (err) {
     if (err instanceof Error && 'status' in err) throw err;
     throw Object.assign(

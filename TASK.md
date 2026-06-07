@@ -199,7 +199,7 @@
 
 ## Discovered During Work
 
-- [x] 2026-06-07 - Fix deployed cloned TTS `UPSTREAM_ERROR` showing raw `RIFF/WAVE` bytes: detect WAV/MP3/OGG by magic bytes when upstream omits `audio/*` Content-Type.
+- [x] 2026-06-07 - Fix deployed cloned TTS `UPSTREAM_ERROR` showing raw `RIFF/WAVE` bytes: detect WAV/MP3/OGG by magic bytes (even on non-2xx status), keep trying candidate URLs when HTTP 200 body is not materializable JSON, and sanitize binary error messages.
 - [x] 2026-05-15 - Align cloned tutor `/synthesize` with voice-clone API: POST JSON `{ text, referenceUrl, voice_instruction, cfg_value, inference_timesteps }`, `Accept: audio/wav`, parse `{ status, mime_type, sample_rate, audio_base64 }` (legacy `data.audioUrl` fallback); pass tutor description as `voice_instruction`.
 - [x] 2026-05-29 - AGA embed user id: require `learnerId` or `guestSessionId` on launch; prefer learner; add `details.userId` on every `/api/learn/content` sync; reject missing identity.
 - [x] 2026-05-29 - AGA classroom resume: open next slide after completed slides (`resumePlaybackCompleted` + `resumeSceneIndex`), slide 1 when no progress; clear stale IndexedDB on signed URL launch; sync per-slide `playbackCompleted` to AGA without marking mission complete until last slide.

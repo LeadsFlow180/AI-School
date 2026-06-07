@@ -1,4 +1,9 @@
 import { summarizeTtsUpstreamError } from '@/lib/audio/tts-error-utils';
+import {
+  recoverSynthAudioFromResponse,
+  isMaterializableSynthJson,
+  type RecoveredSynthAudio,
+} from '@/lib/audio/synth-response';
 
 /**
  * TTS (Text-to-Speech) Provider Implementation
@@ -165,89 +170,6 @@ function getFormatFromMime(mimeType: string): string {
   return 'wav';
 }
 
-function isLikelyAudioContentType(contentType: string): boolean {
-  const lower = contentType.toLowerCase();
-  return (
-    lower.includes('audio/') ||
-    lower.includes('application/octet-stream') ||
-    lower.includes('binary/octet-stream')
-  );
-}
-
-/** Detect raw audio payloads when upstream omits or mislabels Content-Type (common on deployed synth servers). */
-function isLikelyAudioBytes(bytes: Uint8Array): boolean {
-  if (bytes.length < 12) return false;
-  const isWav =
-    bytes[0] === 0x52 &&
-    bytes[1] === 0x49 &&
-    bytes[2] === 0x46 &&
-    bytes[3] === 0x46 &&
-    bytes[8] === 0x57 &&
-    bytes[9] === 0x41 &&
-    bytes[10] === 0x56 &&
-    bytes[11] === 0x45;
-  if (isWav) return true;
-  const isMp3 =
-    (bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33) ||
-    (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0);
-  if (isMp3) return true;
-  return (
-    bytes[0] === 0x4f && bytes[1] === 0x67 && bytes[2] === 0x67 && bytes[3] === 0x53
-  );
-}
-
-function getFormatFromBytes(bytes: Uint8Array, contentType: string): string {
-  if (
-    bytes.length >= 12 &&
-    bytes[8] === 0x57 &&
-    bytes[9] === 0x41 &&
-    bytes[10] === 0x56 &&
-    bytes[11] === 0x45
-  ) {
-    return 'wav';
-  }
-  if (
-    (bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33) ||
-    (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0)
-  ) {
-    return 'mp3';
-  }
-  if (bytes[0] === 0x4f && bytes[1] === 0x67 && bytes[2] === 0x67 && bytes[3] === 0x53) {
-    return 'ogg';
-  }
-  return getFormatFromMime(contentType);
-}
-
-function audioResultFromBytes(
-  bytes: Uint8Array,
-  contentType: string,
-  httpStatus?: number,
-): TTSGenerationResult | null {
-  if (bytes.length < 12) return null;
-  if (!isLikelyAudioContentType(contentType) && !isLikelyAudioBytes(bytes)) return null;
-  return {
-    audio: bytes,
-    format: getFormatFromBytes(bytes, contentType),
-    metadata: httpStatus != null ? { httpStatus } : null,
-  };
-}
-
-function isMaterializableSynthJson(jsonBody: Record<string, unknown>): boolean {
-  if (
-    jsonBody.status === 'success' &&
-    typeof jsonBody.audio_base64 === 'string' &&
-    jsonBody.audio_base64.trim().length > 0
-  ) {
-    return true;
-  }
-  const legacy = jsonBody as { success?: boolean; data?: { audioUrl?: string } };
-  return !!(
-    legacy.success &&
-    typeof legacy.data?.audioUrl === 'string' &&
-    legacy.data.audioUrl.trim().length > 0
-  );
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -308,15 +230,18 @@ async function materializeClonedSynthResponse(
   rawBytes?: Uint8Array,
   contentType = '',
 ): Promise<TTSGenerationResult> {
-  if (rawBytes) {
-    const directAudio = audioResultFromBytes(rawBytes, contentType);
-    if (directAudio) return directAudio;
-  }
+  const recovered = recoverSynthAudioFromResponse(
+    rawBytes || new Uint8Array(0),
+    textBody,
+    contentType,
+    jsonBody,
+  );
+  if (recovered) return recovered;
 
   const status = jsonBody.status;
   const audioBase64 = jsonBody.audio_base64;
   if (
-    status === 'success' &&
+    (status === 'success' || status == null) &&
     typeof audioBase64 === 'string' &&
     audioBase64.trim().length > 0
   ) {
@@ -408,7 +333,7 @@ export async function generateClonedTutorTTS(
   let jsonBody: Record<string, unknown> = {};
   let responseBytes = new Uint8Array(0);
   let responseContentType = '';
-  let binaryResult: TTSGenerationResult | null = null;
+  let binaryResult: RecoveredSynthAudio | null = null;
   let hasMaterializableJson = false;
   let attemptedUrl = config.apiUrl;
   const maxRetries = Number(process.env.TTS_503_MAX_RETRIES || 2);
@@ -450,24 +375,35 @@ export async function generateClonedTutorTTS(
         }
         response = res;
         responseContentType = res.headers.get('content-type') || '';
-        const arrayBuffer = await res.arrayBuffer().catch(() => new ArrayBuffer(0));
+        const arrayBuffer = await res.arrayBuffer();
         responseBytes = new Uint8Array(arrayBuffer);
 
-        const audioFromBytes = audioResultFromBytes(responseBytes, responseContentType, res.status);
-        if (audioFromBytes) {
-          binaryResult = audioFromBytes;
+        const body = new TextDecoder('utf-8', { fatal: false }).decode(responseBytes);
+        let parsedBodyValue: unknown = {};
+        try {
+          parsedBodyValue = body ? JSON.parse(body) : {};
+        } catch {
+          parsedBodyValue = {};
+        }
+        const parsedBody =
+          parsedBodyValue && typeof parsedBodyValue === 'object' && !Array.isArray(parsedBodyValue)
+            ? (parsedBodyValue as Record<string, unknown>)
+            : {};
+        textBody = body;
+        jsonBody = parsedBody;
+
+        const recovered = recoverSynthAudioFromResponse(
+          responseBytes,
+          body,
+          responseContentType,
+          parsedBodyValue,
+          res.status,
+        );
+        if (recovered) {
+          binaryResult = recovered;
           break;
         }
 
-        const body = new TextDecoder('utf-8', { fatal: false }).decode(responseBytes);
-        let parsedBody: Record<string, unknown> = {};
-        try {
-          parsedBody = body ? (JSON.parse(body) as Record<string, unknown>) : {};
-        } catch {
-          parsedBody = {};
-        }
-        textBody = body;
-        jsonBody = parsedBody;
         hasMaterializableJson = res.ok && isMaterializableSynthJson(parsedBody);
         if (hasMaterializableJson) break;
 
@@ -495,6 +431,18 @@ export async function generateClonedTutorTTS(
         }
 
         if (res.status === 404 || res.status === 405 || res.status === 308 || res.status === 307) {
+          break;
+        }
+
+        const recoveredBeforeThrow = recoverSynthAudioFromResponse(
+          responseBytes,
+          body,
+          responseContentType,
+          parsedBodyValue,
+          res.status,
+        );
+        if (recoveredBeforeThrow) {
+          binaryResult = recoveredBeforeThrow;
           break;
         }
 
@@ -535,7 +483,13 @@ export async function generateClonedTutorTTS(
   }
 
   if (!response.ok) {
-    const audioFromErrorBody = audioResultFromBytes(responseBytes, responseContentType, response.status);
+    const audioFromErrorBody = recoverSynthAudioFromResponse(
+      responseBytes,
+      textBody,
+      responseContentType,
+      jsonBody,
+      response.status,
+    );
     if (audioFromErrorBody) {
       return audioFromErrorBody;
     }
@@ -557,6 +511,16 @@ export async function generateClonedTutorTTS(
       responseContentType,
     );
   } catch (err) {
+    const recoveredAfterMaterialize = recoverSynthAudioFromResponse(
+      responseBytes,
+      textBody,
+      responseContentType,
+      jsonBody,
+      response.status,
+    );
+    if (recoveredAfterMaterialize) {
+      return recoveredAfterMaterialize;
+    }
     if (err instanceof Error && 'status' in err) throw err;
     throw Object.assign(
       new Error(

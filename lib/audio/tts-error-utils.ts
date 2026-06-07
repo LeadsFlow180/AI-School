@@ -1,6 +1,8 @@
 /**
  * Turn noisy upstream TTS / voice-clone bodies (e.g. Thunder Compute HTML pages) into short errors.
  */
+import { isLikelyWavText } from '@/lib/audio/synth-response';
+
 export function summarizeTtsUpstreamError(body: string, url?: string): string {
   const trimmed = body.trim();
   if (!trimmed) {
@@ -33,7 +35,7 @@ export function summarizeTtsUpstreamError(body: string, url?: string): string {
     );
   }
 
-  if (trimmed.startsWith('RIFF') || trimmed.includes('WAVEfmt')) {
+  if (isLikelyWavText(trimmed)) {
     return (
       `Voice clone service returned raw WAV audio with an unexpected response format${urlHint}. ` +
       'The synthesize endpoint should return audio/wav (or JSON with audio_base64). Check upstream Content-Type headers.'
@@ -54,8 +56,7 @@ export function summarizeTtsErrorMessage(message: string, url?: string): string 
     trimmed.length > 400 ||
     trimmed.includes('<!DOCTYPE') ||
     trimmed.includes('<html') ||
-    trimmed.startsWith('RIFF') ||
-    trimmed.includes('WAVEfmt')
+    isLikelyWavText(trimmed)
   ) {
     return summarizeTtsUpstreamError(trimmed, url);
   }

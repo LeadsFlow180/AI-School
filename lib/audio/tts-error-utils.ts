@@ -33,6 +33,13 @@ export function summarizeTtsUpstreamError(body: string, url?: string): string {
     );
   }
 
+  if (trimmed.startsWith('RIFF') && trimmed.includes('WAVE')) {
+    return (
+      `Voice clone service returned raw WAV audio with an unexpected response format${urlHint}. ` +
+      'The synthesize endpoint should return audio/wav (or JSON with audio_base64). Check upstream Content-Type headers.'
+    );
+  }
+
   if (trimmed.length > 320) {
     return `${trimmed.slice(0, 300)}…`;
   }

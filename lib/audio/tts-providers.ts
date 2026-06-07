@@ -165,6 +165,59 @@ function getFormatFromMime(mimeType: string): string {
   return 'wav';
 }
 
+function isLikelyAudioContentType(contentType: string): boolean {
+  const lower = contentType.toLowerCase();
+  return (
+    lower.includes('audio/') ||
+    lower.includes('application/octet-stream') ||
+    lower.includes('binary/octet-stream')
+  );
+}
+
+/** Detect raw audio payloads when upstream omits or mislabels Content-Type (common on deployed synth servers). */
+function isLikelyAudioBytes(bytes: Uint8Array): boolean {
+  if (bytes.length < 12) return false;
+  const isWav =
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x41 &&
+    bytes[10] === 0x56 &&
+    bytes[11] === 0x45;
+  if (isWav) return true;
+  const isMp3 =
+    (bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33) ||
+    (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0);
+  if (isMp3) return true;
+  return (
+    bytes[0] === 0x4f && bytes[1] === 0x67 && bytes[2] === 0x67 && bytes[3] === 0x53
+  );
+}
+
+function getFormatFromBytes(bytes: Uint8Array, contentType: string): string {
+  if (
+    bytes.length >= 12 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x41 &&
+    bytes[10] === 0x56 &&
+    bytes[11] === 0x45
+  ) {
+    return 'wav';
+  }
+  if (
+    (bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33) ||
+    (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0)
+  ) {
+    return 'mp3';
+  }
+  if (bytes[0] === 0x4f && bytes[1] === 0x67 && bytes[2] === 0x67 && bytes[3] === 0x53) {
+    return 'ogg';
+  }
+  return getFormatFromMime(contentType);
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -357,16 +410,20 @@ export async function generateClonedTutorTTS(
         }
         response = res;
         const responseContentType = res.headers.get('content-type') || '';
-        if (res.ok && responseContentType.includes('audio/')) {
-          const arrayBuffer = await res.arrayBuffer();
+        const arrayBuffer = await res.arrayBuffer().catch(() => new ArrayBuffer(0));
+        const responseBytes = new Uint8Array(arrayBuffer);
+        if (
+          res.ok &&
+          (isLikelyAudioContentType(responseContentType) || isLikelyAudioBytes(responseBytes))
+        ) {
           binaryResult = {
-            audio: new Uint8Array(arrayBuffer),
-            format: getFormatFromMime(responseContentType),
+            audio: responseBytes,
+            format: getFormatFromBytes(responseBytes, responseContentType),
             metadata: null,
           };
           break;
         }
-        const body = await res.text().catch(() => '');
+        const body = new TextDecoder('utf-8', { fatal: false }).decode(responseBytes);
         let parsedBody: Record<string, unknown> = {};
         try {
           parsedBody = body ? (JSON.parse(body) as Record<string, unknown>) : {};

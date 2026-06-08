@@ -378,10 +378,11 @@ export async function generateClonedTutorTTS(
         const arrayBuffer = await res.arrayBuffer();
         responseBytes = new Uint8Array(arrayBuffer);
 
-        const body = new TextDecoder('utf-8', { fatal: false }).decode(responseBytes);
+        const bodyUtf8 = new TextDecoder('utf-8', { fatal: false }).decode(responseBytes);
+        const bodyLatin1 = Buffer.from(responseBytes).toString('latin1');
         let parsedBodyValue: unknown = {};
         try {
-          parsedBodyValue = body ? JSON.parse(body) : {};
+          parsedBodyValue = bodyUtf8 ? JSON.parse(bodyUtf8) : {};
         } catch {
           parsedBodyValue = {};
         }
@@ -389,12 +390,13 @@ export async function generateClonedTutorTTS(
           parsedBodyValue && typeof parsedBodyValue === 'object' && !Array.isArray(parsedBodyValue)
             ? (parsedBodyValue as Record<string, unknown>)
             : {};
-        textBody = body;
+        // Reason: binary WAV bodies must stay byte-accurate for synth recovery.
+        textBody = bodyLatin1;
         jsonBody = parsedBody;
 
         const recovered = recoverSynthAudioFromResponse(
           responseBytes,
-          body,
+          bodyLatin1,
           responseContentType,
           parsedBodyValue,
           res.status,
@@ -425,9 +427,15 @@ export async function generateClonedTutorTTS(
         }
 
         if (res.status === 503 || res.status === 524) {
-          throw Object.assign(new Error(String(parsedBody.error || body || 'TTS overloaded or timed out')), {
-            status: res.status,
-          });
+          throw Object.assign(
+            new Error(
+              summarizeTtsUpstreamError(
+                String(parsedBody.error || bodyLatin1 || 'TTS overloaded or timed out'),
+                attemptedUrl,
+              ),
+            ),
+            { status: res.status },
+          );
         }
 
         if (res.status === 404 || res.status === 405 || res.status === 308 || res.status === 307) {
@@ -436,7 +444,7 @@ export async function generateClonedTutorTTS(
 
         const recoveredBeforeThrow = recoverSynthAudioFromResponse(
           responseBytes,
-          body,
+          bodyLatin1,
           responseContentType,
           parsedBodyValue,
           res.status,
@@ -449,7 +457,7 @@ export async function generateClonedTutorTTS(
         throw Object.assign(
           new Error(
             summarizeTtsUpstreamError(
-              String(parsedBody.error || body || `Custom voice synthesize request failed: HTTP ${res.status}`),
+              String(parsedBody.error || bodyLatin1 || `Custom voice synthesize request failed: HTTP ${res.status}`),
               attemptedUrl,
             ),
           ),

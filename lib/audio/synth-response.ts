@@ -4,6 +4,8 @@ export interface RecoveredSynthAudio {
   metadata?: Record<string, unknown> | null;
 }
 
+const MAX_EMBEDDED_AUDIO_SCAN = 4096;
+
 function indexOfAscii(bytes: Uint8Array, needle: string, start: number, end: number): number {
   const endIdx = Math.min(end, bytes.length);
   const needleLen = needle.length;
@@ -21,9 +23,58 @@ function indexOfAscii(bytes: Uint8Array, needle: string, start: number, end: num
   return -1;
 }
 
+/** Scan for RIFF/WAVE (or other audio magic) not necessarily at byte 0. */
+export function findEmbeddedAudioOffset(bytes: Uint8Array): number {
+  const end = Math.min(bytes.length, MAX_EMBEDDED_AUDIO_SCAN);
+  for (let i = 0; i <= end - 12; i++) {
+    const isRiff =
+      bytes[i] === 0x52 && bytes[i + 1] === 0x49 && bytes[i + 2] === 0x46 && bytes[i + 3] === 0x46;
+    if (isRiff && indexOfAscii(bytes, 'WAVE', i + 4, Math.min(bytes.length, i + 512)) >= 0) {
+      return i;
+    }
+    const isRf64 =
+      bytes[i] === 0x52 && bytes[i + 1] === 0x46 && bytes[i + 2] === 0x36 && bytes[i + 3] === 0x34;
+    if (isRf64) return i;
+  }
+  for (let i = 0; i <= end - 3; i++) {
+    if (bytes[i] === 0x49 && bytes[i + 1] === 0x44 && bytes[i + 2] === 0x33) return i;
+    if (bytes[i] === 0xff && (bytes[i + 1] & 0xe0) === 0xe0) return i;
+    if (
+      bytes[i] === 0x4f &&
+      bytes[i + 1] === 0x67 &&
+      bytes[i + 2] === 0x67 &&
+      bytes[i + 3] === 0x53
+    ) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+export function extractEmbeddedAudioBytes(bytes: Uint8Array): Uint8Array {
+  if (bytes.length === 0) return bytes;
+  const offset = findEmbeddedAudioOffset(bytes);
+  return offset > 0 ? bytes.subarray(offset) : bytes;
+}
+
 export function isLikelyWavText(text: string): boolean {
-  const trimmed = text.trim();
-  return trimmed.startsWith('RIFF') || trimmed.includes('WAVEfmt') || trimmed.includes('WAVE');
+  if (!text) return false;
+  const sample = text.slice(0, MAX_EMBEDDED_AUDIO_SCAN);
+  if (sample.includes('WAVEfmt') || sample.includes('WAVE')) return true;
+  const riffIdx = sample.indexOf('RIFF');
+  return riffIdx >= 0 && riffIdx <= 32;
+}
+
+export function isLikelyBinaryResponseBody(text: string): boolean {
+  const sample = text.slice(0, 512);
+  if (!sample) return false;
+  let nonPrintable = 0;
+  for (let i = 0; i < sample.length; i++) {
+    const code = sample.charCodeAt(i);
+    if (code === 9 || code === 10 || code === 13) continue;
+    if (code < 32 || code === 127) nonPrintable++;
+  }
+  return nonPrintable > sample.length * 0.08;
 }
 
 export function isLikelyAudioContentType(contentType: string): boolean {
@@ -37,25 +88,7 @@ export function isLikelyAudioContentType(contentType: string): boolean {
 
 export function isLikelyAudioBytes(bytes: Uint8Array): boolean {
   if (bytes.length < 4) return false;
-
-  const isRiff =
-    bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46;
-  if (isRiff && indexOfAscii(bytes, 'WAVE', 4, Math.min(bytes.length, 512)) >= 0) {
-    return true;
-  }
-
-  const isRf64 =
-    bytes[0] === 0x52 && bytes[1] === 0x46 && bytes[2] === 0x36 && bytes[3] === 0x34;
-  if (isRf64) return true;
-
-  const isMp3 =
-    (bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33) ||
-    (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0);
-  if (isMp3) return true;
-
-  return (
-    bytes[0] === 0x4f && bytes[1] === 0x67 && bytes[2] === 0x67 && bytes[3] === 0x53
-  );
+  return findEmbeddedAudioOffset(bytes) >= 0;
 }
 
 function getFormatFromMime(mimeType: string): string {
@@ -88,7 +121,7 @@ function decodeBase64Audio(value: string): Uint8Array | null {
   const trimmed = value.trim();
   if (!trimmed) return null;
   try {
-    const bytes = new Uint8Array(Buffer.from(trimmed, 'base64'));
+    const bytes = extractEmbeddedAudioBytes(new Uint8Array(Buffer.from(trimmed, 'base64')));
     return isLikelyAudioBytes(bytes) ? bytes : null;
   } catch {
     return null;
@@ -122,12 +155,16 @@ export function audioResultFromBytes(
   contentType: string,
   httpStatus?: number,
 ): RecoveredSynthAudio | null {
-  if (!isLikelyAudioContentType(contentType) && !isLikelyAudioBytes(bytes)) {
+  const normalizedBytes = extractEmbeddedAudioBytes(bytes);
+  if (
+    !isLikelyAudioContentType(contentType) &&
+    !isLikelyAudioBytes(normalizedBytes)
+  ) {
     return null;
   }
   return {
-    audio: bytes,
-    format: getFormatFromBytes(bytes, contentType),
+    audio: normalizedBytes,
+    format: getFormatFromBytes(normalizedBytes, contentType),
     metadata: httpStatus != null ? { httpStatus } : null,
   };
 }
@@ -168,8 +205,9 @@ export function recoverSynthAudioFromResponse(
   }
 
   if (isLikelyWavText(textBody)) {
+    // Reason: upstream bodies are binary; UTF-8 decoding corrupts bytes used for recovery.
     const recoveredBytes =
-      bytes.length > 0 && isLikelyAudioBytes(bytes) ? bytes : latin1BytesFromText(textBody);
+      bytes.length > 0 ? extractEmbeddedAudioBytes(bytes) : latin1BytesFromText(textBody);
     const fromText = audioResultFromBytes(recoveredBytes, contentType, httpStatus);
     if (fromText) return fromText;
   }

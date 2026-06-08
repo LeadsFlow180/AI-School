@@ -1,7 +1,7 @@
 /**
  * Turn noisy upstream TTS / voice-clone bodies (e.g. Thunder Compute HTML pages) into short errors.
  */
-import { isLikelyWavText } from '@/lib/audio/synth-response';
+import { isLikelyWavText, isLikelyBinaryResponseBody } from '@/lib/audio/synth-response';
 
 export function summarizeTtsUpstreamError(body: string, url?: string): string {
   const trimmed = body.trim();
@@ -35,7 +35,7 @@ export function summarizeTtsUpstreamError(body: string, url?: string): string {
     );
   }
 
-  if (isLikelyWavText(trimmed)) {
+  if (isLikelyWavText(trimmed) || isLikelyBinaryResponseBody(trimmed)) {
     return (
       `Voice clone service returned raw WAV audio with an unexpected response format${urlHint}. ` +
       'The synthesize endpoint should return audio/wav (or JSON with audio_base64). Check upstream Content-Type headers.'
@@ -43,7 +43,7 @@ export function summarizeTtsUpstreamError(body: string, url?: string): string {
   }
 
   if (trimmed.length > 320) {
-    return `${trimmed.slice(0, 300)}…`;
+    return `Voice clone service returned an unreadable response (${trimmed.length} bytes)${urlHint}. Check synthesize URL and upstream logs.`;
   }
 
   return trimmed;
@@ -56,7 +56,8 @@ export function summarizeTtsErrorMessage(message: string, url?: string): string 
     trimmed.length > 400 ||
     trimmed.includes('<!DOCTYPE') ||
     trimmed.includes('<html') ||
-    isLikelyWavText(trimmed)
+    isLikelyWavText(trimmed) ||
+    isLikelyBinaryResponseBody(trimmed)
   ) {
     return summarizeTtsUpstreamError(trimmed, url);
   }

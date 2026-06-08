@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  findEmbeddedAudioOffset,
   isLikelyAudioBytes,
   isLikelyWavText,
   recoverSynthAudioFromResponse,
 } from '@/lib/audio/synth-response';
+import { summarizeTtsUpstreamError } from '@/lib/audio/tts-error-utils';
 
 function makeMinimalWavBytes(): Uint8Array {
   const bytes = new Uint8Array(64);
@@ -42,5 +44,31 @@ describe('synth-response', () => {
     );
     expect(recovered?.format).toBe('wav');
     expect(recovered?.audio.length).toBe(bytes.length);
+  });
+
+  it('recovers WAV embedded after a short JSON error prefix', () => {
+    const bytes = makeMinimalWavBytes();
+    const prefix = Buffer.from('{"error":"busy"}\n', 'utf8');
+    const combined = new Uint8Array(prefix.length + bytes.length);
+    combined.set(prefix, 0);
+    combined.set(bytes, prefix.length);
+    expect(findEmbeddedAudioOffset(combined)).toBe(prefix.length);
+    const recovered = recoverSynthAudioFromResponse(
+      combined,
+      Buffer.from(combined).toString('latin1'),
+      'application/json',
+      {},
+      500,
+    );
+    expect(recovered?.format).toBe('wav');
+    expect(recovered?.audio.length).toBe(bytes.length);
+  });
+
+  it('does not leak raw WAV bytes into summarized upstream errors', () => {
+    const bytes = makeMinimalWavBytes();
+    const text = Buffer.from(bytes).toString('latin1');
+    const summary = summarizeTtsUpstreamError(text, 'https://example.com/synthesize');
+    expect(summary).toContain('raw WAV audio');
+    expect(summary).not.toContain('WAVEfmt');
   });
 });

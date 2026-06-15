@@ -94,6 +94,7 @@ type GammaJson = {
   gammaUrl?: string;
   exportUrl?: string;
   pageCount?: number;
+  ragUsed?: boolean;
 };
 
 type GammaScriptJson = {
@@ -944,12 +945,20 @@ function HomePage() {
           exportAs: 'pdf',
           textMode: 'generate',
           format: 'presentation',
+          enableRAG: form.enableRAG || undefined,
         }),
       });
       const startData = (await startRes.json()) as GammaJson;
       if (!startData.success || !startData.generationId) {
         toast.error(startData.error || 'Could not start Gamma generation');
         return;
+      }
+      if (form.enableRAG && !startData.ragUsed) {
+        toast.warning(
+          form.language === 'zh-CN'
+            ? '已启用 RAG，但未找到相关参考文档，将仅根据标题生成幻灯片。'
+            : 'RAG is enabled but no matching reference documents were found. Slides will be generated from the title only.',
+        );
       }
       let last: GammaJson = {};
       for (let i = 0; i < 120; i++) {

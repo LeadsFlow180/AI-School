@@ -20,6 +20,7 @@ import { cn } from '@/lib/utils';
 import { useStageStore } from '@/lib/store';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { ClassroomProgressIndicator } from '@/components/classroom/classroom-progress-indicator';
 
 export interface CanvasToolbarProps {
   readonly currentSceneIndex: number;
@@ -50,6 +51,7 @@ export interface CanvasToolbarProps {
   readonly onToggleAutoPlay?: () => void;
   readonly playbackSpeed?: number;
   readonly onCycleSpeed?: () => void;
+  readonly playbackCompleted?: boolean;
 }
 
 /* Compact control button */
@@ -108,6 +110,7 @@ export function CanvasToolbar({
   onToggleAutoPlay,
   playbackSpeed = 1,
   onCycleSpeed,
+  playbackCompleted = false,
 }: CanvasToolbarProps) {
   const { t } = useI18n();
   const canGoPrev = currentSceneIndex > 0;
@@ -159,11 +162,17 @@ export function CanvasToolbar({
             <LayoutList className="w-3.5 h-3.5" />
           </button>
         )}
-        <span className="text-[11px] text-gray-400 dark:text-gray-500 tabular-nums select-none font-medium">
-          {currentSceneIndex + 1}
-          <span className="opacity-35 mx-px">/</span>
-          {scenesCount}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-gray-400 dark:text-gray-500 tabular-nums select-none font-medium">
+            {currentSceneIndex + 1}
+            <span className="opacity-35 mx-px">/</span>
+            {scenesCount}
+          </span>
+          <ClassroomProgressIndicator
+            playbackCompleted={playbackCompleted}
+            variant="toolbar"
+          />
+        </div>
       </div>
 
       <CtrlDivider />

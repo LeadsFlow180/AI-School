@@ -351,7 +351,7 @@ export async function* statelessGenerate(
     const agentWbActions: WhiteboardActionRecord[] = [];
 
     for await (const chunk of stream) {
-      const event = chunk as StatelessEvent;
+      const event = chunk as unknown as StatelessEvent;
 
       if (event.type === 'agent_start') {
         totalAgents++;

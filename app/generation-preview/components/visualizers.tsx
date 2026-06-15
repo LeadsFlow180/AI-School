@@ -40,6 +40,18 @@ export function StepVisualizer({
       return <ContentVisualizer />;
     case 'actions':
       return <ActionsVisualizer />;
+    case 'gamma-create':
+    case 'gamma-wait':
+      return <AgentGenerationVisualizer />;
+    case 'gamma-slides':
+      return <ContentVisualizer />;
+    case 'gamma-scripts':
+    case 'gamma-quizzes':
+      return <ActionsVisualizer />;
+    case 'gamma-tts':
+      return <ActionsVisualizer />;
+    case 'gamma-save':
+      return <ContentVisualizer />;
     default:
       return null;
   }

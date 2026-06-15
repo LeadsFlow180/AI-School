@@ -6,7 +6,7 @@
 
 import { NextRequest } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { apiError, apiSuccess } from '@/lib/server/api-response';
+import { apiError, apiSuccess, API_ERROR_CODES } from '@/lib/server/api-response';
 
 export async function GET(req: NextRequest) {
   try {
@@ -27,7 +27,11 @@ export async function GET(req: NextRequest) {
       !supabaseServiceKey ||
       supabaseServiceKey === 'your_service_role_key_here'
     ) {
-      return apiError('CONFIG_ERROR', 500, 'Supabase URL or service role key not configured');
+      return apiError(
+        API_ERROR_CODES.MISSING_API_KEY,
+        500,
+        'Supabase URL or service role key not configured',
+      );
     }
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
@@ -37,12 +41,12 @@ export async function GET(req: NextRequest) {
       const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
       if (sessionError) {
         console.log('❌ Auth session test failed:', sessionError.message);
-        return apiError('AUTH_ERROR', 500, `Auth session test failed: ${sessionError.message}`);
+        return apiError(API_ERROR_CODES.UPSTREAM_ERROR, 500, `Auth session test failed: ${sessionError.message}`);
       }
       console.log('✅ Auth session test passed');
     } catch (err) {
       console.log('❌ Auth session test error:', err);
-      return apiError('AUTH_ERROR', 500, `Auth session test error: ${err}`);
+      return apiError(API_ERROR_CODES.UPSTREAM_ERROR, 500, `Auth session test error: ${err}`);
     }
 
     // Test 2: Storage access
@@ -50,7 +54,7 @@ export async function GET(req: NextRequest) {
       const { data: buckets, error: storageError } = await supabase.storage.listBuckets();
       if (storageError) {
         console.log('❌ Storage test failed:', storageError.message);
-        return apiError('STORAGE_ERROR', 500, `Storage test failed: ${storageError.message}`);
+        return apiError(API_ERROR_CODES.UPSTREAM_ERROR, 500, `Storage test failed: ${storageError.message}`);
       }
       console.log(
         '✅ Storage test passed, buckets:',
@@ -58,7 +62,7 @@ export async function GET(req: NextRequest) {
       );
     } catch (err) {
       console.log('❌ Storage test error:', err);
-      return apiError('STORAGE_ERROR', 500, `Storage test error: ${err}`);
+      return apiError(API_ERROR_CODES.UPSTREAM_ERROR, 500, `Storage test error: ${err}`);
     }
 
     // Test 3: Database access (if you have a test table)
@@ -93,6 +97,6 @@ export async function GET(req: NextRequest) {
     });
   } catch (error) {
     console.error('❌ Test endpoint error:', error);
-    return apiError('TEST_ERROR', 500, `Test failed: ${error}`);
+    return apiError(API_ERROR_CODES.INTERNAL_ERROR, 500, `Test failed: ${error}`);
   }
 }

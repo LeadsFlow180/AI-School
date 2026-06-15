@@ -123,6 +123,24 @@ export interface PlaybackStateRecord {
 }
 
 /**
+ * QuizResult table - Graded quiz attempts per classroom scene
+ */
+export interface QuizResultRecord {
+  id: string; // `${stageId}:${sceneId}`
+  stageId: string;
+  sceneId: string;
+  score: number;
+  totalPoints: number;
+  percent: number;
+  correctCount: number;
+  incorrectCount: number;
+  questionCount: number;
+  submittedAt: number;
+  results: string; // JSON QuizQuestionResultRecord[]
+  answers?: string; // JSON Record<string, string | string[]>
+}
+
+/**
  * StageOutlines table - Persisted outlines for resume-on-refresh
  */
 export interface StageOutlinesRecord {
@@ -175,7 +193,7 @@ export function mediaFileKey(stageId: string, elementId: string): string {
 // ==================== Database Definition ====================
 
 const DATABASE_NAME = 'MAIC-Database';
-const _DATABASE_VERSION = 8;
+const _DATABASE_VERSION = 9;
 
 /**
  * MAIC Database Instance
@@ -192,6 +210,7 @@ class MAICDatabase extends Dexie {
   stageOutlines!: EntityTable<StageOutlinesRecord, 'stageId'>;
   mediaFiles!: EntityTable<MediaFileRecord, 'id'>;
   generatedAgents!: EntityTable<GeneratedAgentRecord, 'id'>;
+  quizResults!: EntityTable<QuizResultRecord, 'id'>;
 
   constructor() {
     super(DATABASE_NAME);
@@ -309,7 +328,25 @@ class MAICDatabase extends Dexie {
       mediaFiles: 'id, stageId, [stageId+type]',
       generatedAgents: 'id, stageId',
     });
+
+    this.version(9).stores({
+      stages: 'id, updatedAt',
+      scenes: 'id, stageId, order, [stageId+order]',
+      audioFiles: 'id, createdAt',
+      imageFiles: 'id, createdAt',
+      snapshots: '++id',
+      chatSessions: 'id, stageId, [stageId+createdAt]',
+      playbackState: 'stageId',
+      stageOutlines: 'stageId',
+      mediaFiles: 'id, stageId, [stageId+type]',
+      generatedAgents: 'id, stageId',
+      quizResults: 'id, stageId, sceneId, [stageId+sceneId]',
+    });
   }
+}
+
+export function quizResultKey(stageId: string, sceneId: string): string {
+  return `${stageId}:${sceneId}`;
 }
 
 // Create database instance
@@ -405,6 +442,7 @@ export async function deleteStageWithRelatedData(stageId: string): Promise<void>
       db.stageOutlines,
       db.mediaFiles,
       db.generatedAgents,
+      db.quizResults,
     ],
     async () => {
       await db.stages.delete(stageId);
@@ -414,6 +452,7 @@ export async function deleteStageWithRelatedData(stageId: string): Promise<void>
       await db.stageOutlines.delete(stageId);
       await db.mediaFiles.where('stageId').equals(stageId).delete();
       await db.generatedAgents.where('stageId').equals(stageId).delete();
+      await db.quizResults.where('stageId').equals(stageId).delete();
     },
   );
 }
@@ -442,5 +481,6 @@ export async function getDatabaseStats() {
     stageOutlines: await db.stageOutlines.count(),
     mediaFiles: await db.mediaFiles.count(),
     generatedAgents: await db.generatedAgents.count(),
+    quizResults: await db.quizResults.count(),
   };
 }

@@ -21,11 +21,25 @@ import {
   MessageSquare,
   Minus,
   Plus,
+  Check,
+  Trash2,
 } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import type { AgentConfig } from '@/lib/orchestration/registry/types';
 import type { TTSProviderId } from '@/lib/audio/types';
 import type { ProviderWithVoices } from '@/lib/audio/voice-resolver';
+import type { TutorVoicePreset } from '@/lib/types/tutor-voice';
+import { getSessionSafe, getSupabaseClient } from '@/lib/supabase/client';
 
 function AgentVoicePill({
   agent,
@@ -455,11 +469,23 @@ export function AgentBar() {
   const setMaxTurns = useSettingsStore((s) => s.setMaxTurns);
   const agentMode = useSettingsStore((s) => s.agentMode);
   const setAgentMode = useSettingsStore((s) => s.setAgentMode);
+  const setTTSProvider = useSettingsStore((s) => s.setTTSProvider);
+  const setTTSVoice = useSettingsStore((s) => s.setTTSVoice);
   const ttsProvidersConfig = useSettingsStore((s) => s.ttsProvidersConfig);
   const ttsEnabled = useSettingsStore((s) => s.ttsEnabled);
+  const updateAgent = useAgentRegistry((s) => s.updateAgent);
 
   const [open, setOpen] = useState(false);
+  const [isHydrated, setIsHydrated] = useState(false);
   const [browserVoices, setBrowserVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [customTutors, setCustomTutors] = useState<TutorVoicePreset[]>([]);
+  const [isTutorsLoading, setIsTutorsLoading] = useState(false);
+  const [customTutorsError, setCustomTutorsError] = useState<string | null>(null);
+  const [hasLoadedTutorsOnce, setHasLoadedTutorsOnce] = useState(false);
+  const [previewingTutorId, setPreviewingTutorId] = useState<string | null>(null);
+  const [deletingTutorId, setDeletingTutorId] = useState<string | null>(null);
+  const [pendingDeleteTutor, setPendingDeleteTutor] = useState<TutorVoicePreset | null>(null);
+  const previewTutorAudioRef = useRef<HTMLAudioElement | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Load browser native TTS voices
@@ -472,7 +498,9 @@ export function AgentBar() {
   }, []);
 
   const allAgents = listAgents();
-  const agents = allAgents.filter((a) => !a.isGenerated);
+  // Include generated agents so classroom-specific tutor/teacher profiles
+  // are visible in presenter list after generation/reload.
+  const agents = allAgents;
   const teacherAgent = agents.find((a) => a.role === 'teacher');
   const selectedAgents = agents.filter((a) => selectedAgentIds.includes(a.id));
   const nonTeacherSelected = selectedAgents.filter((a) => a.role !== 'teacher');
@@ -491,6 +519,298 @@ export function AgentBar() {
       : []),
   ];
   const showVoice = availableProviders.length > 0;
+  const teacherAvatarSrc = isHydrated
+    ? (teacherAgent?.avatar || '/avatars/teacher.png')
+    : '/avatars/teacher.png';
+
+  useEffect(() => {
+    setIsHydrated(true);
+  }, []);
+
+  const loadCustomTutors = useCallback(async () => {
+    try {
+      setIsTutorsLoading(true);
+      setCustomTutorsError(null);
+      const res = await fetch('/api/admin/custom-voices', { cache: 'no-store' });
+      const json = await res.json();
+      if (!res.ok || !json?.success || !Array.isArray(json.voices)) {
+        setCustomTutors([]);
+        setCustomTutorsError(
+          typeof json?.error === 'string' ? json.error : 'Failed to load tutors from DB',
+        );
+        return;
+      }
+      const voices = (json.voices as Array<Record<string, unknown>>).map((v) => ({
+        id: String(v.id || ''),
+        name: String(v.name || ''),
+        title: v.title ? String(v.title) : String(v.name || ''),
+        description: v.description ? String(v.description) : null,
+        providerId: String(v.provider_id || 'custom-cloned-tts'),
+        providerVoiceId: String(v.provider_voice_id || ''),
+        referenceUrl: v.reference_url ? String(v.reference_url) : null,
+        avatar: v.avatar ? String(v.avatar) : null,
+      })) as TutorVoicePreset[];
+      setCustomTutors(voices.filter((v) => v.id && v.name));
+      setHasLoadedTutorsOnce(true);
+    } catch (err) {
+      setCustomTutors([]);
+      setCustomTutorsError(err instanceof Error ? err.message : 'Failed to load tutors from DB');
+    } finally {
+      setIsTutorsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadCustomTutors();
+  }, [loadCustomTutors]);
+
+  useEffect(() => {
+    if (!open) return;
+    // Avoid re-fetching on every open; only retry if first load failed.
+    if (!hasLoadedTutorsOnce && !isTutorsLoading) {
+      void loadCustomTutors();
+    }
+  }, [hasLoadedTutorsOnce, isTutorsLoading, loadCustomTutors, open]);
+
+  const applyTutorPresetToTeacher = useCallback(
+    (preset: TutorVoicePreset) => {
+      if (!teacherAgent) return;
+      updateAgent(teacherAgent.id, {
+        name: preset.name || teacherAgent.name,
+        avatar: preset.avatar || teacherAgent.avatar,
+        ...(preset.providerVoiceId
+          ? {
+              voiceConfig: {
+                providerId: preset.providerId as TTSProviderId,
+                voiceId: preset.providerVoiceId,
+              },
+            }
+          : {}),
+      });
+      if (preset.providerVoiceId) {
+        setTTSProvider(preset.providerId as TTSProviderId);
+        setTTSVoice(preset.providerVoiceId);
+      }
+    },
+    [setTTSProvider, setTTSVoice, teacherAgent, updateAgent],
+  );
+
+  const persistPreferredTutor = useCallback(async (preset: TutorVoicePreset) => {
+    try {
+      const supabase = getSupabaseClient();
+      if (!supabase) return;
+      const session = await getSessionSafe(supabase);
+      const token = session?.access_token;
+      if (!token) return;
+      await fetch('/api/admin/tutor-preference', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          preferredTutor: {
+            id: preset.id,
+            name: preset.name,
+            title: preset.title,
+            description: preset.description,
+            avatar: preset.avatar,
+            providerId: preset.providerId,
+            providerVoiceId: preset.providerVoiceId,
+          },
+        }),
+      });
+    } catch {
+      // keep UI responsive even if preference persistence fails
+    }
+  }, []);
+
+  const stopTutorPreview = useCallback(() => {
+    if (previewTutorAudioRef.current) {
+      previewTutorAudioRef.current.pause();
+      previewTutorAudioRef.current.src = '';
+      previewTutorAudioRef.current = null;
+    }
+    setPreviewingTutorId(null);
+  }, []);
+
+  const handlePreviewTutorVoice = useCallback(
+    async (preset: TutorVoicePreset) => {
+      if (!preset.providerVoiceId) return;
+      if (previewingTutorId === preset.id) {
+        stopTutorPreview();
+        return;
+      }
+      stopTutorPreview();
+      setPreviewingTutorId(preset.id);
+
+      try {
+        const courseLanguage =
+          (typeof localStorage !== 'undefined' && localStorage.getItem('generationLanguage')) || 'zh-CN';
+        const previewText = courseLanguage === 'en-US' ? 'Welcome to AI Classroom' : '欢迎来到AI课堂';
+        const providerConfig = ttsProvidersConfig[preset.providerId];
+        const res = await fetch('/api/generate/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: previewText,
+            audioId: `tutor-preview-${preset.id}`,
+            ttsProviderId: preset.providerId,
+            ttsVoice: preset.providerVoiceId,
+            ttsSpeed: 1,
+            ttsApiKey: providerConfig?.apiKey,
+            ttsBaseUrl: providerConfig?.serverBaseUrl || providerConfig?.baseUrl,
+          }),
+        });
+        if (!res.ok) throw new Error('TTS error');
+        const data = await res.json();
+        if (!data.base64) throw new Error('No audio');
+        const audio = new Audio(`data:audio/${data.format || 'mp3'};base64,${data.base64}`);
+        previewTutorAudioRef.current = audio;
+        audio.addEventListener('ended', () => setPreviewingTutorId(null));
+        audio.addEventListener('error', () => setPreviewingTutorId(null));
+        await audio.play();
+      } catch {
+        // Fallback: play saved reference clip directly when synth preview is unavailable.
+        try {
+          if (!preset.referenceUrl) throw new Error('No reference audio');
+          const fallbackAudio = new Audio(preset.referenceUrl);
+          previewTutorAudioRef.current = fallbackAudio;
+          fallbackAudio.addEventListener('ended', () => setPreviewingTutorId(null));
+          fallbackAudio.addEventListener('error', () => setPreviewingTutorId(null));
+          await fallbackAudio.play();
+        } catch {
+          setPreviewingTutorId(null);
+        }
+      }
+    },
+    [previewingTutorId, stopTutorPreview, ttsProvidersConfig],
+  );
+
+  useEffect(() => () => stopTutorPreview(), [stopTutorPreview]);
+
+  const confirmDeleteTutor = useCallback(async () => {
+    const preset = pendingDeleteTutor;
+    if (!preset) return;
+    try {
+      setDeletingTutorId(preset.id);
+      const supabase = getSupabaseClient();
+      if (!supabase) throw new Error('Supabase is not configured.');
+      const session = await getSessionSafe(supabase);
+      const token = session?.access_token;
+      if (!token) throw new Error('Please login again.');
+      const res = await fetch(`/api/admin/custom-voices?id=${encodeURIComponent(preset.id)}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.success) {
+        throw new Error(
+          typeof json?.error === 'string' ? json.error : 'Failed to delete tutor from DB.',
+        );
+      }
+      setCustomTutors((prev) => prev.filter((t) => t.id !== preset.id));
+      setPendingDeleteTutor(null);
+    } catch (err) {
+      setCustomTutorsError(err instanceof Error ? err.message : 'Failed to delete tutor.');
+    } finally {
+      setDeletingTutorId(null);
+    }
+  }, [pendingDeleteTutor]);
+
+  const renderDynamicTutorRow = (preset: TutorVoicePreset) => {
+    if (!teacherAgent) return null;
+    const isActive =
+      teacherAgent.voiceConfig?.providerId === (preset.providerId as TTSProviderId) &&
+      teacherAgent.voiceConfig?.voiceId === preset.providerVoiceId;
+    return (
+      <div
+        key={preset.id}
+        role="button"
+        tabIndex={0}
+        onClick={() => {
+          applyTutorPresetToTeacher(preset);
+          void persistPreferredTutor(preset);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            applyTutorPresetToTeacher(preset);
+            void persistPreferredTutor(preset);
+          }
+        }}
+        className={cn(
+          'w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg transition-colors text-left cursor-pointer',
+          isActive ? 'bg-primary/10 ring-1 ring-primary/30' : 'hover:bg-muted/50',
+        )}
+      >
+        <span
+          className={cn(
+            'inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border',
+            isActive ? 'border-primary bg-primary text-primary-foreground' : 'border-primary/50 bg-transparent',
+          )}
+          aria-hidden
+        >
+          {isActive ? <Check className="h-3 w-3" /> : null}
+        </span>
+        <div className="size-7 rounded-full overflow-hidden ring-1 ring-border/40 shrink-0">
+          <img
+            src={preset.avatar || teacherAgent.avatar}
+            alt={preset.name}
+            className="size-full object-cover"
+          />
+        </div>
+        <span className="text-[13px] font-medium truncate min-w-0 flex-1 text-left">{preset.name}</span>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            void handlePreviewTutorVoice(preset);
+          }}
+          disabled={!preset.providerVoiceId}
+          className={cn(
+            'inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm transition-colors',
+            preset.providerVoiceId
+              ? 'text-muted-foreground/70 hover:text-primary hover:bg-primary/10'
+              : 'cursor-not-allowed text-muted-foreground/30',
+          )}
+          title="Preview tutor voice"
+        >
+          {previewingTutorId === preset.id ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Volume2 className="h-3.5 w-3.5" />
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setPendingDeleteTutor(preset);
+          }}
+          disabled={deletingTutorId === preset.id}
+          className={cn(
+            'inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm transition-colors',
+            deletingTutorId === preset.id
+              ? 'cursor-not-allowed text-muted-foreground/40'
+              : 'text-muted-foreground/70 hover:text-rose-500 hover:bg-rose-500/10',
+          )}
+          title="Delete tutor"
+        >
+          {deletingTutorId === preset.id ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Trash2 className="h-3.5 w-3.5" />
+          )}
+        </button>
+        <span className="text-[10px] text-muted-foreground/60 shrink-0 w-[88px] text-right truncate">
+          Tutor
+        </span>
+      </div>
+    );
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -524,9 +844,8 @@ export function AgentBar() {
   };
 
   const toggleAgent = (agentId: string) => {
-    const agent = agents.find((a) => a.id === agentId);
-    if (agent?.role === 'teacher') return;
     if (selectedAgentIds.includes(agentId)) {
+      if (selectedAgentIds.length <= 1) return;
       setSelectedAgentIds(selectedAgentIds.filter((id) => id !== agentId));
     } else {
       setSelectedAgentIds([...selectedAgentIds, agentId]);
@@ -534,10 +853,16 @@ export function AgentBar() {
   };
 
   const getAgentName = (agent: { id: string; name: string }) => {
+    // Reason: keep user-customized tutor/presenter names visible after refresh.
+    if (agent.name?.trim()) return agent.name;
     const key = `settings.agentNames.${agent.id}`;
     const translated = t(key);
     return translated !== key ? translated : agent.name;
   };
+
+  const teacherDisplayName = isHydrated
+    ? (teacherAgent ? getAgentName(teacherAgent) : 'AI teacher')
+    : 'AI teacher';
 
   const getAgentRole = (agent: { role: string }) => {
     const key = `settings.agentRoles.${agent.role}`;
@@ -549,11 +874,7 @@ export function AgentBar() {
     <div className="flex items-center gap-1.5 shrink-0">
       {teacherAgent && (
         <div className="size-8 rounded-full overflow-hidden ring-2 ring-blue-400/40 dark:ring-blue-500/30 shrink-0">
-          <img
-            src={teacherAgent.avatar}
-            alt={getAgentName(teacherAgent)}
-            className="size-full object-cover"
-          />
+          <img src={teacherAvatarSrc} alt={teacherDisplayName} className="size-full object-cover" />
         </div>
       )}
 
@@ -609,22 +930,22 @@ export function AgentBar() {
   );
 
   const renderAgentRow = (agent: AgentConfig, agentIndex: number, isTeacher: boolean) => {
-    const isSelected = isTeacher || selectedAgentIds.includes(agent.id);
+    const isSelected = selectedAgentIds.includes(agent.id);
     return (
       <div
         key={agent.id}
-        onClick={isTeacher ? undefined : () => toggleAgent(agent.id)}
+        onClick={() => toggleAgent(agent.id)}
         className={cn(
           'w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg transition-colors',
-          isTeacher ? 'bg-primary/5' : 'cursor-pointer',
+          'cursor-pointer',
+          isTeacher && isSelected && 'bg-primary/5',
           !isTeacher && isSelected && 'bg-primary/5',
-          !isTeacher && !isSelected && 'hover:bg-muted/50',
+          !isSelected && 'hover:bg-muted/50',
         )}
       >
         <Checkbox
           checked={isSelected}
-          disabled={isTeacher}
-          className={cn('pointer-events-none', isTeacher && 'opacity-50')}
+          className="pointer-events-none"
         />
         <div
           className="size-7 rounded-full overflow-hidden shrink-0 ring-1 ring-border/40"
@@ -697,13 +1018,13 @@ export function AgentBar() {
                     style={{ boxShadow: `0 0 0 2px ${teacherAgent.color}30` }}
                   >
                     <img
-                      src={teacherAgent.avatar}
-                      alt={getAgentName(teacherAgent)}
+                      src={teacherAvatarSrc}
+                      alt={teacherDisplayName}
                       className="size-full object-cover"
                     />
                   </div>
                   <span className="text-[13px] font-medium truncate min-w-0 flex-1">
-                    {getAgentName(teacherAgent)}
+                    {teacherDisplayName}
                   </span>
                   {showVoice && (
                     <TeacherVoicePill
@@ -743,6 +1064,31 @@ export function AgentBar() {
 
               {agentMode === 'preset' ? (
                 <div className="max-h-56 overflow-y-auto -mx-0.5">
+                  {teacherAgent && (
+                    <>
+                      <div className="px-2 pt-1 pb-1 text-[10px] uppercase tracking-wide text-muted-foreground/70">
+                        Dynamic tutors (DB)
+                      </div>
+                      {isTutorsLoading && (
+                        <div className="px-2.5 py-1 text-[11px] text-muted-foreground/70">
+                          Loading tutors...
+                        </div>
+                      )}
+                      {!isTutorsLoading && customTutorsError && (
+                        <div className="px-2.5 py-1 text-[11px] text-rose-500/90 truncate">
+                          {customTutorsError}
+                        </div>
+                      )}
+                      {!isTutorsLoading &&
+                        !customTutorsError &&
+                        customTutors.map((preset) => renderDynamicTutorRow(preset))}
+                      {!isTutorsLoading && !customTutorsError && customTutors.length === 0 && (
+                        <div className="px-2.5 py-1 text-[11px] text-muted-foreground/70">
+                          No saved tutors in DB
+                        </div>
+                      )}
+                    </>
+                  )}
                   {agents
                     .filter((a) => a.role !== 'teacher')
                     .map((agent, idx) => renderAgentRow(agent, idx + 1, false))}
@@ -820,6 +1166,36 @@ export function AgentBar() {
           </motion.div>
         )}
       </AnimatePresence>
+      <AlertDialog
+        open={Boolean(pendingDeleteTutor)}
+        onOpenChange={(openState) => {
+          if (!openState) setPendingDeleteTutor(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete tutor?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingDeleteTutor
+                ? `Delete "${pendingDeleteTutor.name}" from saved tutors? This removes the DB record and stored assets.`
+                : 'Delete this tutor from saved tutors?'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={Boolean(deletingTutorId)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={Boolean(deletingTutorId)}
+              onClick={(e) => {
+                e.preventDefault();
+                void confirmDeleteTutor();
+              }}
+              className="bg-rose-600 hover:bg-rose-700 focus-visible:ring-rose-600"
+            >
+              {deletingTutorId ? 'Deleting...' : 'Delete'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

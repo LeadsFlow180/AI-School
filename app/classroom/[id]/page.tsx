@@ -1,8 +1,9 @@
 'use client';
 
-import { Stage } from '@/components/stage';
+import { Stage as StageRoot } from '@/components/stage';
 import { ThemeProvider } from '@/lib/hooks/use-theme';
 import { useStageStore } from '@/lib/store';
+import { useSettingsStore } from '@/lib/store/settings';
 import { loadImageMapping } from '@/lib/utils/image-storage';
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
@@ -15,12 +16,15 @@ import { generateMediaForOutlines } from '@/lib/media/media-orchestrator';
 import { getSessionSafe, getSupabaseClient } from '@/lib/supabase/client';
 import { ClassroomLoadingScene } from '@/components/stage/classroom-loading-scene';
 import { ClassroomTourOverlay } from '@/components/stage/classroom-tour-overlay';
-import type { Scene } from '@/lib/types/stage';
-import type { Action } from '@/lib/types/action';
+import type { Scene, Stage } from '@/lib/types/stage';
+import type { Action, SpeechAction } from '@/lib/types/action';
 import type { Slide } from '@/lib/types/slides';
+import { db } from '@/lib/utils/database';
+import { requestTTSWithJobPolling } from '@/lib/audio/tts-job-client';
+import { splitLongSpeechActions } from '@/lib/audio/tts-utils';
 
 const log = createLogger('Classroom');
-const MIN_LOADING_SCENE_MS = 3400;
+const MIN_LOADING_SCENE_MS = 900;
 
 function getGammaGenerationIdFromUrl(url?: string): string | null {
   if (!url) return null;
@@ -63,6 +67,142 @@ function getStageFreshness(stage: Stage | null, scenes: Scene[]): number {
   return Math.max(stageUpdated, sceneUpdated);
 }
 
+function hasTutorConfig(stage: Stage | null): boolean {
+  const maybe = stage as
+    | (Stage & {
+        tutorConfig?: {
+          voicePreset?: { providerId?: string; voiceId?: string };
+        };
+      })
+    | null;
+  return !!(
+    maybe?.tutorConfig?.voicePreset?.providerId &&
+    maybe?.tutorConfig?.voicePreset?.voiceId
+  );
+}
+
+function countSpeechAudioUrls(scenes: Scene[]): number {
+  let count = 0;
+  for (const scene of scenes) {
+    const actions = scene.actions || [];
+    for (const action of actions) {
+      if (action.type === 'speech') {
+        const speech = action as Action & { audioUrl?: string };
+        if (typeof speech.audioUrl === 'string' && speech.audioUrl.trim().length > 0) {
+          count++;
+        }
+      }
+    }
+  }
+  return count;
+}
+
+function splitLongSpeechInScenes(
+  scenes: Scene[],
+  providerId: string,
+): { scenes: Scene[]; changed: boolean } {
+  let changed = false;
+  const nextScenes = scenes.map((scene) => {
+    const prevActions = scene.actions || [];
+    const nextActions = splitLongSpeechActions(prevActions, providerId);
+    if (nextActions.length !== prevActions.length) {
+      changed = true;
+      return {
+        ...scene,
+        actions: nextActions,
+      };
+    }
+    return scene;
+  });
+  return { scenes: nextScenes, changed };
+}
+
+function buildSpeechReuseKey(
+  text: string,
+  providerId: string,
+  voiceId: string,
+  speed: number,
+): string {
+  return `${providerId}::${voiceId}::${speed}::${text.trim().toLowerCase()}`;
+}
+
+function resolveEffectiveClassroomTTSPayload(stage: Stage | null): {
+  providerId: string;
+  voiceId: string;
+  speed: number;
+  apiKey?: string;
+  baseUrl?: string;
+} | null {
+  const settings = useSettingsStore.getState();
+  if (!settings.ttsEnabled) return null;
+
+  const stageWithTutor = stage as
+    | (Stage & {
+        tutorConfig?: {
+          voicePreset?: { providerId?: string; voiceId?: string };
+        };
+      })
+    | null;
+  const preset = stageWithTutor?.tutorConfig?.voicePreset;
+  const fallbackProviderConfig = settings.ttsProvidersConfig?.[settings.ttsProviderId];
+  // Reason: tutorConfig voicePreset takes priority over global settings provider.
+  // Check the *effective* provider against browser-native (which cannot be server-generated).
+  const providerId = preset?.providerId || settings.ttsProviderId;
+  const voiceId = preset?.voiceId || settings.ttsVoice;
+
+  if (!providerId || !voiceId || providerId === 'browser-native-tts') return null;
+  const providerConfig = settings.ttsProvidersConfig?.[providerId];
+  return {
+    providerId,
+    voiceId,
+    speed: settings.ttsSpeed,
+    apiKey: providerConfig?.apiKey || fallbackProviderConfig?.apiKey || undefined,
+    baseUrl:
+      providerConfig?.serverBaseUrl ||
+      providerConfig?.baseUrl ||
+      fallbackProviderConfig?.serverBaseUrl ||
+      fallbackProviderConfig?.baseUrl ||
+      undefined,
+  };
+}
+
+async function uploadHydratedSpeechAudio(
+  classroomId: string,
+  audioId: string,
+  blob: Blob,
+): Promise<string | null> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+  const session = await getSessionSafe(supabase);
+  const token = session?.access_token;
+  if (!token) return null;
+
+  const ext = blob.type.includes('wav')
+    ? 'wav'
+    : blob.type.includes('mpeg') || blob.type.includes('mp3')
+      ? 'mp3'
+      : blob.type.includes('ogg')
+        ? 'ogg'
+        : blob.type.includes('webm')
+          ? 'webm'
+          : 'bin';
+  const file = new File([blob], `${audioId}.${ext}`, { type: blob.type || 'audio/mpeg' });
+  const form = new FormData();
+  form.append('file', file);
+  form.append('classroomId', classroomId);
+
+  const res = await fetch('/api/classroom/media-upload', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: form,
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json?.success || !json?.src) return null;
+  return String(json.src);
+}
+
 function ensureGammaSpeechActions(scene: Scene): Scene {
   if (isScriptLocked(scene)) return scene;
   const isGenericGammaLine = (text: string): boolean => {
@@ -79,7 +219,7 @@ function ensureGammaSpeechActions(scene: Scene): Scene {
     );
   };
 
-  const existingSpeech = (scene.actions || []).filter((a): a is Action => a.type === 'speech');
+  const existingSpeech = (scene.actions || []).filter((a): a is SpeechAction => a.type === 'speech');
   const hasSpeech = existingSpeech.length > 0;
   const hasDynamicSpeech = existingSpeech.some((a) => !isGenericGammaLine(a.text));
   if (hasSpeech && hasDynamicSpeech) {
@@ -355,6 +495,63 @@ async function convertGammaInteractiveScenesToSlides(scenes: Scene[]): Promise<{
   return { scenes: converted, changed };
 }
 
+/**
+ * Extract tutorConfig from a stage and apply it to the agent registry + TTS settings.
+ * Called both during initial classroom load and after background server refresh,
+ * since the refresh can bring a newer tutorConfig that wasn't in local IndexedDB.
+ */
+async function applyTutorConfigFromStage(stage: Stage | null): Promise<void> {
+  const tutorCfg = (
+    stage as
+      | (Stage & {
+          tutorConfig?: {
+            name?: string;
+            avatar?: string;
+            description?: string;
+            voicePreset?: { id: string; name: string; providerId: string; voiceId: string };
+          };
+        })
+      | null
+  )?.tutorConfig;
+  if (!tutorCfg) return;
+
+  const { useAgentRegistry } = await import('@/lib/orchestration/registry/store');
+  const { useSettingsStore } = await import('@/lib/store/settings');
+  const registry = useAgentRegistry.getState();
+  const settingsState = useSettingsStore.getState();
+  const selectedIds = settingsState.selectedAgentIds;
+  const teacherId =
+    selectedIds.find((id) => registry.getAgent(id)?.role === 'teacher') ||
+    selectedIds[0] ||
+    'default-1';
+  const tutorUpdates = {
+    ...(tutorCfg.name ? { name: tutorCfg.name } : {}),
+    ...(tutorCfg.avatar ? { avatar: tutorCfg.avatar } : {}),
+    ...(tutorCfg.voicePreset
+      ? {
+          voiceConfig: {
+            providerId: tutorCfg.voicePreset.providerId as import('@/lib/audio/types').TTSProviderId,
+            voiceId: tutorCfg.voicePreset.voiceId,
+          },
+        }
+      : {}),
+  };
+  // Ensure default-1 is in the selected list so the teacher is always rendered
+  if (!selectedIds.includes('default-1')) {
+    settingsState.setSelectedAgentIds(['default-1', ...selectedIds]);
+  }
+  registry.updateAgent(teacherId, tutorUpdates);
+  if (teacherId !== 'default-1') {
+    registry.updateAgent('default-1', tutorUpdates);
+  }
+  if (tutorCfg.voicePreset?.providerId && tutorCfg.voicePreset?.voiceId) {
+    settingsState.setTTSProvider(
+      tutorCfg.voicePreset.providerId as import('@/lib/audio/types').TTSProviderId,
+    );
+    settingsState.setTTSVoice(tutorCfg.voicePreset.voiceId);
+  }
+}
+
 export default function ClassroomDetailPage() {
   const params = useParams();
   const searchParams = useSearchParams();
@@ -428,35 +625,52 @@ export default function ClassroomDetailPage() {
 
       await loadFromStorage(classroomId);
 
-      // Always try server classroom for freshness. Local IndexedDB can be stale
-      // across tabs/devices; server copy is the source of truth after edit sync.
-      try {
-        const localStage = useStageStore.getState().stage || null;
-        const localScenes = useStageStore.getState().scenes || [];
-        const localFreshness = getStageFreshness(localStage, localScenes);
+      const cachedStage = useStageStore.getState().stage || null;
+      if (cachedStage) {
+        // Reason: recent classrooms should open from IndexedDB immediately.
+        // Fresh server/audio snapshots are useful, but must not block first paint.
+        void (async () => {
+          try {
+            const localStage = useStageStore.getState().stage || null;
+            const localScenes = useStageStore.getState().scenes || [];
+            const localFreshness = getStageFreshness(localStage, localScenes);
 
-        const serverRes = await fetch(`/api/classroom?id=${encodeURIComponent(classroomId)}`, {
-          cache: 'no-store',
-        });
-        if (serverRes.ok) {
-          const serverJson = await serverRes.json();
-          if (serverJson.success && serverJson.classroom) {
-            const serverStage = serverJson.classroom.stage as Stage;
-            const serverScenes = (serverJson.classroom.scenes || []) as Scene[];
-            const serverFreshness = getStageFreshness(serverStage, serverScenes);
-            if (serverFreshness >= localFreshness) {
-              useStageStore.getState().setStage(serverStage);
-              useStageStore.setState({
-                scenes: serverScenes,
-                currentSceneId: serverScenes[0]?.id ?? null,
-              });
-              // Keep local cache in sync with fresh server data.
-              await useStageStore.getState().saveToStorage();
+            const serverRes = await fetch(`/api/classroom?id=${encodeURIComponent(classroomId)}`, {
+              cache: 'no-store',
+            });
+            if (serverRes.ok) {
+              const serverJson = await serverRes.json();
+              if (serverJson.success && serverJson.classroom) {
+                const serverStage = serverJson.classroom.stage as Stage;
+                const serverScenes = (serverJson.classroom.scenes || []) as Scene[];
+                const serverFreshness = getStageFreshness(serverStage, serverScenes);
+                const localAudioCount = countSpeechAudioUrls(localScenes);
+                const serverAudioCount = countSpeechAudioUrls(serverScenes);
+                const preferServerTutorSnapshot =
+                  !hasTutorConfig(localStage) && hasTutorConfig(serverStage);
+                const preferServerAudioSnapshot = serverAudioCount > localAudioCount;
+                if (
+                  serverFreshness >= localFreshness ||
+                  preferServerTutorSnapshot ||
+                  preferServerAudioSnapshot
+                ) {
+                  useStageStore.getState().setStage(serverStage);
+                  useStageStore.setState({
+                    scenes: serverScenes,
+                    currentSceneId: serverScenes[0]?.id ?? null,
+                  });
+                  await useStageStore.getState().saveToStorage();
+                  // Reason: background refresh may bring a tutorConfig that was missing in
+                  // IndexedDB (e.g. classroom opened in a new tab). Re-apply to agent registry
+                  // and TTS settings so icon/name/voice reflect the saved tutor immediately.
+                  await applyTutorConfigFromStage(serverStage);
+                }
+              }
             }
+          } catch (refreshErr) {
+            log.warn('Server refresh check failed, continuing with local snapshot:', refreshErr);
           }
-        }
-      } catch (refreshErr) {
-        log.warn('Server refresh check failed, continuing with local snapshot:', refreshErr);
+        })();
       }
 
       // If IndexedDB had no data, try server-side storage (API-generated classrooms)
@@ -513,6 +727,46 @@ export default function ClassroomDetailPage() {
       const loadedStageId = useStageStore.getState().stage?.id;
       if (loadedStageId !== classroomId) {
         throw new Error(`Classroom "${classroomId}" was not found.`);
+      }
+
+      // Allen Girls Adventure embed: verify signed redirect before playback.
+      const {
+        buildAgaLaunchContext,
+        captureAgaLaunchFromUrl,
+        getAgaLaunchBundle,
+        parseAgaLaunchPayloadEncoded,
+        setAgaLaunchContext,
+      } = await import('@/lib/aga/launch-payload');
+      captureAgaLaunchFromUrl(classroomId, searchParams);
+      const bundle = getAgaLaunchBundle(classroomId);
+      if (bundle) {
+          const verifyRes = await fetch('/api/learn/verify-launch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              payload: bundle.payload,
+              sig: bundle.sig,
+              classroomId,
+            }),
+          });
+          if (!verifyRes.ok) {
+            const errJson = await verifyRes.json().catch(() => null);
+            const msg =
+              errJson?.message ||
+              errJson?.error ||
+              'Invalid or expired Allen Girls Adventures launch link.';
+            throw new Error(msg);
+          }
+          const verifyJson = await verifyRes.json().catch(() => null);
+          const ctxFromApi = verifyJson?.context;
+          if (ctxFromApi) {
+            setAgaLaunchContext(classroomId, ctxFromApi);
+          } else {
+            const parsed = parseAgaLaunchPayloadEncoded(bundle.payload);
+            if (parsed) {
+              setAgaLaunchContext(classroomId, buildAgaLaunchContext(parsed, classroomId));
+            }
+          }
       }
 
       // Restore completed media generation tasks from IndexedDB
@@ -574,6 +828,191 @@ export default function ClassroomDetailPage() {
             cleanIds && cleanIds.length > 0 ? cleanIds : ['default-1', 'default-2', 'default-3'],
           );
       }
+
+      // Re-apply tutor profile saved with this classroom stage so refresh keeps
+      // the same tutor name/avatar/voice for this specific classroom.
+      // Reason: extracted to applyTutorConfigFromStage so the same logic also runs
+      // after the background server refresh (which may bring a newer tutorConfig).
+      await applyTutorConfigFromStage(useStageStore.getState().stage);
+      // Keep a local reference to tutorCfg for the split-speech step below.
+      const tutorCfg = (
+        useStageStore.getState().stage as
+          | (Stage & {
+              tutorConfig?: {
+                voicePreset?: { providerId?: string; voiceId?: string };
+              };
+            })
+          | null
+      )?.tutorConfig;
+
+      // For cloned/custom voices, split oversized speech text into smaller
+      // speech actions so TTS requests don't timeout (524) on long payloads.
+      {
+        const settingsState = useSettingsStore.getState();
+        const splitProviderId =
+          tutorCfg?.voicePreset?.providerId || settingsState.ttsProviderId || 'browser-native-tts';
+        const currentScenes = useStageStore.getState().scenes || [];
+        const splitResult = splitLongSpeechInScenes(currentScenes, splitProviderId);
+        if (splitResult.changed) {
+          useStageStore.setState({ scenes: splitResult.scenes });
+          await useStageStore.getState().saveToStorage();
+        }
+      }
+
+      // Restore per-user playback progress (slide + action position) from Supabase / IndexedDB.
+      try {
+        const { hydrateClassroomProgress } = await import('@/lib/classroom/classroom-progress');
+        await hydrateClassroomProgress(classroomId);
+      } catch (progressErr) {
+        log.warn('Failed to hydrate classroom playback progress:', progressErr);
+      }
+
+      // New-tab resilience: hydrate missing speech audio in background so
+      // classroom loading UI is never blocked by TTS network calls.
+      void (async () => {
+        try {
+          const stageState = useStageStore.getState().stage || null;
+          const ttsPayload = resolveEffectiveClassroomTTSPayload(stageState);
+          if (ttsPayload) {
+            const scenesToHydrate = useStageStore.getState().scenes || [];
+            let hydratedAny = false;
+            let hydratedCount = 0;
+            const MAX_HYDRATE_ACTIONS = 8;
+            const generatedByKey = new Map<string, { persistedUrl?: string }>();
+
+            for (const scene of scenesToHydrate) {
+              for (const action of scene.actions || []) {
+                if (action.type !== 'speech' || !action.text?.trim()) continue;
+                const speechAction = action as Action & { type: 'speech'; text: string; audioUrl?: string };
+                if (!speechAction.audioUrl?.trim()) continue;
+                generatedByKey.set(
+                  buildSpeechReuseKey(
+                    speechAction.text,
+                    ttsPayload.providerId,
+                    ttsPayload.voiceId,
+                    ttsPayload.speed,
+                  ),
+                  { persistedUrl: speechAction.audioUrl },
+                );
+              }
+            }
+
+            for (const scene of scenesToHydrate) {
+              if (!Array.isArray(scene.actions) || scene.actions.length === 0) continue;
+              for (const action of scene.actions) {
+                if (hydratedCount >= MAX_HYDRATE_ACTIONS) break;
+                if (action.type !== 'speech' || !action.text?.trim()) continue;
+                const speechAction = action as Action & {
+                  type: 'speech';
+                  text: string;
+                  audioId?: string;
+                  audioUrl?: string;
+                };
+                if (speechAction.audioUrl?.trim()) continue;
+                const audioId = speechAction.audioId || `tts_${speechAction.id}`;
+                speechAction.audioId = audioId;
+                const existing = await db.audioFiles.get(audioId);
+                if (existing) continue;
+                const reuseKey = buildSpeechReuseKey(
+                  speechAction.text,
+                  ttsPayload.providerId,
+                  ttsPayload.voiceId,
+                  ttsPayload.speed,
+                );
+                const cachedGeneration = generatedByKey.get(reuseKey);
+                if (cachedGeneration?.persistedUrl) {
+                  speechAction.audioUrl = cachedGeneration.persistedUrl;
+                  hydratedAny = true;
+                  hydratedCount++;
+                  continue;
+                }
+
+                let ttsJson:
+                  | {
+                      success: true;
+                      base64: string;
+                      format: string;
+                    }
+                  | null = null;
+                try {
+                  ttsJson = await requestTTSWithJobPolling(
+                    {
+                      text: speechAction.text,
+                      audioId,
+                      ttsProviderId: ttsPayload.providerId,
+                      ttsVoice: ttsPayload.voiceId,
+                      ttsSpeed: ttsPayload.speed,
+                      ttsApiKey: ttsPayload.apiKey,
+                      ttsBaseUrl: ttsPayload.baseUrl,
+                    },
+                    { maxWaitMs: 90_000, intervalMs: 1_500 },
+                  );
+                } catch {
+                  ttsJson = null;
+                }
+                if (!ttsJson?.success || !ttsJson?.base64 || !ttsJson?.format) continue;
+                let generatedBlob: Blob | null = null;
+                try {
+                  const binary = atob(ttsJson.base64);
+                  const bytes = new Uint8Array(binary.length);
+                  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                  generatedBlob = new Blob([bytes], { type: `audio/${ttsJson.format}` });
+                  await db.audioFiles.put({
+                    id: audioId,
+                    blob: generatedBlob,
+                    format: ttsJson.format,
+                    createdAt: Date.now(),
+                  });
+                } catch {
+                  generatedBlob = null;
+                }
+                try {
+                  if (generatedBlob) {
+                    const uploadedUrl = await uploadHydratedSpeechAudio(classroomId, audioId, generatedBlob);
+                    if (uploadedUrl) {
+                      speechAction.audioUrl = uploadedUrl;
+                    } else {
+                      speechAction.audioUrl = `data:audio/${ttsJson.format};base64,${ttsJson.base64}`;
+                    }
+                  } else {
+                    speechAction.audioUrl = `data:audio/${ttsJson.format};base64,${ttsJson.base64}`;
+                  }
+                } catch {
+                  speechAction.audioUrl = `data:audio/${ttsJson.format};base64,${ttsJson.base64}`;
+                }
+                generatedByKey.set(reuseKey, {
+                  persistedUrl: speechAction.audioUrl,
+                });
+                hydratedAny = true;
+                hydratedCount++;
+              }
+              if (hydratedCount >= MAX_HYDRATE_ACTIONS) break;
+            }
+
+            if (hydratedAny) {
+              useStageStore.setState({ scenes: [...scenesToHydrate] });
+              // Persist regenerated speech audio URLs so future browser/tab loads
+              // read them directly from DB instead of re-generating repeatedly.
+              try {
+                const currentStage = useStageStore.getState().stage as
+                  | (Stage & { audioHydratedAt?: number })
+                  | null;
+                if (currentStage) {
+                  useStageStore.getState().setStage({
+                    ...currentStage,
+                    audioHydratedAt: Date.now(),
+                  });
+                }
+                await useStageStore.getState().saveToStorage();
+              } catch (persistErr) {
+                log.warn('Failed to persist hydrated speech audio URLs:', persistErr);
+              }
+            }
+          }
+        } catch (speechHydrateErr) {
+          log.warn('Failed to hydrate classroom speech audio on load:', speechHydrateErr);
+        }
+      })();
     } catch (error) {
       log.error('Failed to load classroom:', error);
       setError(error instanceof Error ? error.message : 'Failed to load classroom');
@@ -587,7 +1026,7 @@ export default function ClassroomDetailPage() {
       }
       setLoading(false);
     }
-  }, [classroomId, loadFromStorage]);
+  }, [classroomId, loadFromStorage, searchParams]);
 
   useEffect(() => {
     if (!classroomId) {
@@ -708,7 +1147,7 @@ export default function ClassroomDetailPage() {
             </div>
           ) : (
             <>
-              <Stage
+              <StageRoot
                 onRetryOutline={retrySingleOutline}
                 onOpenGuidance={tourOpen ? undefined : () => setTourOpen(true)}
                 onOpenCanvasEdit={

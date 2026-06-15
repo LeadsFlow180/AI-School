@@ -489,8 +489,10 @@ export function useScaleElement(
             const pathFormula = SHAPE_PATH_FORMULAS[el.pathFormula];
 
             let path = '';
-            if ('editable' in pathFormula) path = pathFormula.formula(width, height, el.keypoints!);
-            else path = pathFormula.formula(width, height);
+            if ('editable' in pathFormula) {
+              const values = el.keypoints ?? pathFormula.defaultValue;
+              path = pathFormula.formula(width, height, values);
+            } else path = pathFormula.formula(width, height);
 
             return {
               ...el,

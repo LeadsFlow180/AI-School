@@ -23,7 +23,7 @@
  *                                 └────────────────────┘
  */
 
-import type { Scene } from '@/lib/types/stage';
+import type { Scene, Stage } from '@/lib/types/stage';
 import type { Action, SpeechAction, DiscussionAction } from '@/lib/types/action';
 import type {
   EngineMode,
@@ -37,7 +37,12 @@ import type { AudioPlayer } from '@/lib/utils/audio-player';
 import { ActionEngine } from '@/lib/action/engine';
 import { useCanvasStore } from '@/lib/store/canvas';
 import { useSettingsStore } from '@/lib/store/settings';
+import { useStageStore } from '@/lib/store/stage';
 import { createLogger } from '@/lib/logger';
+import { db } from '@/lib/utils/database';
+import { getSessionSafe, getSupabaseClient } from '@/lib/supabase/client';
+import type { TTSProviderId } from '@/lib/audio/types';
+import { requestTTSWithJobPolling } from '@/lib/audio/tts-job-client';
 
 const log = createLogger('PlaybackEngine');
 
@@ -82,6 +87,11 @@ export class PlaybackEngine {
   private browserTTSChunkIndex: number = 0; // current chunk being spoken
   private browserTTSPausedChunks: string[] = []; // remaining chunks saved on pause (for cancel+re-speak)
   private speechTimerRemaining: number = 0; // remaining ms (set on pause)
+  private classroomAudioUrlIndex: Map<string, string> | null = null;
+  private classroomAudioIndexStageId: string | null = null;
+  private classroomAudioIndexPromise: Promise<void> | null = null;
+  private ttsRegenerationByKey: Map<string, string> = new Map();
+  private ttsRegenerationFailures: Map<string, number> = new Map();
 
   constructor(
     scenes: Scene[],
@@ -391,6 +401,117 @@ export class PlaybackEngine {
     this.callbacks.onModeChange?.(mode);
   }
 
+  private resolveEffectiveTTSRequest(): {
+    providerId: TTSProviderId;
+    voiceId: string;
+    speed: number;
+    apiKey?: string;
+    baseUrl?: string;
+  } | null {
+    const settings = useSettingsStore.getState();
+    if (!settings.ttsEnabled) return null;
+
+    const stage = useStageStore.getState().stage as
+      | (Stage & {
+          tutorConfig?: {
+            voicePreset?: { providerId?: string; voiceId?: string };
+          };
+        })
+      | null;
+    const preset = stage?.tutorConfig?.voicePreset;
+    const fallbackProviderConfig = settings.ttsProvidersConfig?.[settings.ttsProviderId];
+    // Reason: tutorConfig.voicePreset takes priority over global settings provider.
+    // Check the *effective* provider against browser-native so a saved custom-cloned-tts
+    // tutor isn't silenced just because global settings still has browser-native-tts.
+    const providerId = (preset?.providerId || settings.ttsProviderId) as TTSProviderId;
+    const voiceId = preset?.voiceId || settings.ttsVoice;
+    if (!providerId || !voiceId || providerId === 'browser-native-tts') return null;
+
+    const providerConfig = settings.ttsProvidersConfig?.[providerId];
+    return {
+      providerId,
+      voiceId,
+      speed: settings.ttsSpeed,
+      apiKey: providerConfig?.apiKey || fallbackProviderConfig?.apiKey || undefined,
+      baseUrl:
+        providerConfig?.serverBaseUrl ||
+        providerConfig?.baseUrl ||
+        fallbackProviderConfig?.serverBaseUrl ||
+        fallbackProviderConfig?.baseUrl ||
+        undefined,
+    };
+  }
+
+  private buildSpeechReuseKey(text: string, providerId: string, voiceId: string, speed: number): string {
+    return `${providerId}::${voiceId}::${speed}::${text.trim().toLowerCase()}`;
+  }
+
+  private async uploadRegeneratedSpeechAudio(stageId: string, audioId: string, blob: Blob): Promise<string | null> {
+    try {
+      const supabase = getSupabaseClient();
+      if (!supabase) return null;
+      const session = await getSessionSafe(supabase);
+      const token = session?.access_token;
+      if (!token) return null;
+
+      const ext = blob.type.includes('wav')
+        ? 'wav'
+        : blob.type.includes('mpeg') || blob.type.includes('mp3')
+          ? 'mp3'
+          : blob.type.includes('ogg')
+            ? 'ogg'
+            : blob.type.includes('webm')
+              ? 'webm'
+              : 'bin';
+      const file = new File([blob], `${audioId}.${ext}`, { type: blob.type || 'audio/mpeg' });
+      const form = new FormData();
+      form.append('file', file);
+      form.append('classroomId', stageId);
+
+      const res = await fetch('/api/classroom/media-upload', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.success || !json?.src) return null;
+      return String(json.src);
+    } catch {
+      return null;
+    }
+  }
+
+  private persistRegeneratedSpeechAudio(
+    sceneId: string,
+    actionId: string,
+    audioId: string,
+    audioUrl: string,
+  ): void {
+    try {
+      const state = useStageStore.getState();
+      if (!state.stage) return;
+      const nextScenes = (state.scenes || []).map((scene) => {
+        if (scene.id !== sceneId) return scene;
+        const nextActions = (scene.actions || []).map((action) => {
+          if (action.id !== actionId || action.type !== 'speech') return action;
+          return {
+            ...action,
+            audioId,
+            audioUrl,
+          };
+        });
+        return {
+          ...scene,
+          actions: nextActions,
+        };
+      });
+      useStageStore.setState({ scenes: nextScenes });
+      void state.saveToStorage();
+    } catch {
+      // best-effort persistence only
+    }
+  }
+
   private restoreSavedLectureState(): void {
     if (this.savedSceneIndex !== null && this.savedActionIndex !== null) {
       this.sceneIndex = this.savedSceneIndex;
@@ -456,6 +577,11 @@ export class PlaybackEngine {
       case 'speech': {
         const speechAction = action as SpeechAction;
         this.callbacks.onSpeechStart?.(speechAction.text);
+        const upcomingSpeech = this.findUpcomingSpeechAction();
+        if (upcomingSpeech) {
+          // Warm up the next clip while current speech is playing to reduce boundaries gap.
+          this.audioPlayer.preload(upcomingSpeech.audioId || '', upcomingSpeech.audioUrl);
+        }
 
         // onEnded → processNext; if paused, resume() will call processNext
         this.audioPlayer.onEnded(() => {
@@ -490,22 +616,164 @@ export class PlaybackEngine {
           }, readingMs);
         };
 
+        const tryHydrateSpeechAudioFromClassroomDb = async (): Promise<boolean> => {
+          const currentScene = this.scenes[this.sceneIndex];
+          const stageId = currentScene?.stageId;
+          if (!stageId) return false;
+
+          // Load and cache classroom-level speech audio URLs once per stage.
+          if (this.classroomAudioIndexStageId !== stageId || !this.classroomAudioUrlIndex) {
+            if (!this.classroomAudioIndexPromise) {
+              this.classroomAudioIndexPromise = (async () => {
+                try {
+                  const res = await fetch(`/api/classroom?id=${encodeURIComponent(stageId)}`, {
+                    cache: 'no-store',
+                  });
+                  const json = await res.json().catch(() => ({}));
+                  if (!res.ok || !json?.success || !json?.classroom?.scenes) {
+                    this.classroomAudioUrlIndex = new Map();
+                    this.classroomAudioIndexStageId = stageId;
+                    return;
+                  }
+                  const scenes = json.classroom.scenes as Array<{
+                    actions?: Array<{ id?: string; type?: string; audioUrl?: string }>;
+                  }>;
+                  const index = new Map<string, string>();
+                  for (const s of scenes) {
+                    const actions = s.actions || [];
+                    for (const a of actions) {
+                      if (
+                        a.type === 'speech' &&
+                        typeof a.id === 'string' &&
+                        typeof a.audioUrl === 'string' &&
+                        a.audioUrl.trim().length > 0
+                      ) {
+                        index.set(a.id, a.audioUrl);
+                      }
+                    }
+                  }
+                  this.classroomAudioUrlIndex = index;
+                  this.classroomAudioIndexStageId = stageId;
+                } catch {
+                  this.classroomAudioUrlIndex = new Map();
+                  this.classroomAudioIndexStageId = stageId;
+                } finally {
+                  this.classroomAudioIndexPromise = null;
+                }
+              })();
+            }
+            await this.classroomAudioIndexPromise;
+          }
+
+          const foundUrl = this.classroomAudioUrlIndex?.get(speechAction.id);
+          if (!foundUrl) return false;
+          speechAction.audioUrl = foundUrl;
+          return true;
+        };
+
+        const tryRegenerateSpeechAudio = async (): Promise<boolean> => {
+          const ttsRequest = this.resolveEffectiveTTSRequest();
+          if (!ttsRequest) return false;
+          if (!speechAction.text?.trim()) return false;
+          const audioId = speechAction.audioId || `tts_${speechAction.id}`;
+          const reuseKey = this.buildSpeechReuseKey(
+            speechAction.text,
+            ttsRequest.providerId,
+            ttsRequest.voiceId,
+            ttsRequest.speed,
+          );
+          const cachedDataUrl = this.ttsRegenerationByKey.get(reuseKey);
+          if (cachedDataUrl) {
+            speechAction.audioId = audioId;
+            speechAction.audioUrl = cachedDataUrl;
+            return true;
+          }
+          const lastFailedAt = this.ttsRegenerationFailures.get(reuseKey) || 0;
+          if (Date.now() - lastFailedAt < 120_000) {
+            return false;
+          }
+          try {
+            const data = await requestTTSWithJobPolling(
+              {
+                text: speechAction.text,
+                audioId,
+                ttsProviderId: ttsRequest.providerId,
+                ttsVoice: ttsRequest.voiceId,
+                ttsSpeed: ttsRequest.speed,
+                ttsApiKey: ttsRequest.apiKey,
+                ttsBaseUrl: ttsRequest.baseUrl,
+              },
+              { maxWaitMs: 90_000, intervalMs: 1_500 },
+            );
+            if (!data?.success || !data?.base64 || !data?.format) {
+              this.ttsRegenerationFailures.set(reuseKey, Date.now());
+              return false;
+            }
+
+            const dataUrl = `data:audio/${data.format};base64,${data.base64}`;
+            speechAction.audioId = audioId;
+            speechAction.audioUrl = dataUrl;
+
+            // Cache locally for this browser session to avoid repeated synth calls.
+            const binary = atob(data.base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            const blob = new Blob([bytes], { type: `audio/${data.format}` });
+            await db.audioFiles.put({
+              id: audioId,
+              blob,
+              format: data.format,
+              createdAt: Date.now(),
+            });
+
+            const currentSceneId = this.scenes[this.sceneIndex]?.id;
+            const currentStageId = this.scenes[this.sceneIndex]?.stageId;
+            const uploadedUrl =
+              currentStageId && audioId ? await this.uploadRegeneratedSpeechAudio(currentStageId, audioId, blob) : null;
+            if (uploadedUrl) {
+              speechAction.audioUrl = uploadedUrl;
+            }
+            this.ttsRegenerationByKey.set(reuseKey, speechAction.audioUrl || dataUrl);
+            this.ttsRegenerationFailures.delete(reuseKey);
+            if (currentSceneId) {
+              this.persistRegeneratedSpeechAudio(
+                currentSceneId,
+                speechAction.id,
+                audioId,
+                speechAction.audioUrl || dataUrl,
+              );
+            }
+            return true;
+          } catch {
+            this.ttsRegenerationFailures.set(reuseKey, Date.now());
+            return false;
+          }
+        };
+
         this.audioPlayer
           .play(speechAction.audioId || '', speechAction.audioUrl)
-          .then((audioStarted) => {
+          .then(async (audioStarted) => {
             if (!audioStarted) {
-              // No pre-generated audio — try browser-native TTS if selected
-              const settings = useSettingsStore.getState();
-              if (
-                settings.ttsEnabled &&
-                settings.ttsProviderId === 'browser-native-tts' &&
-                typeof window !== 'undefined' &&
-                window.speechSynthesis
-              ) {
-                this.playBrowserTTS(speechAction);
-              } else {
-                scheduleReadingTimer();
+              const hydratedFromDb = await tryHydrateSpeechAudioFromClassroomDb();
+              if (hydratedFromDb) {
+                const replayedFromDb = await this.audioPlayer.play(
+                  speechAction.audioId || '',
+                  speechAction.audioUrl,
+                );
+                if (replayedFromDb) return;
               }
+              const regenerated = await tryRegenerateSpeechAudio();
+              if (regenerated) {
+                const replayed = await this.audioPlayer.play(
+                  speechAction.audioId || '',
+                  speechAction.audioUrl,
+                );
+                if (replayed) return;
+              }
+              // No pre-generated audio and server regeneration failed.
+              // Keep playback progression without switching to a different voice
+              // so classroom voice identity remains consistent with cloned tutor.
+              scheduleReadingTimer();
             }
           })
           .catch((err) => {
@@ -733,5 +1001,28 @@ export class PlaybackEngine {
       this.browserTTSPausedChunks = [];
       window.speechSynthesis?.cancel();
     }
+  }
+
+  /**
+   * Finds the next speech action from the current playback cursor.
+   * Cursor already points to the "next action" because processNext increments
+   * actionIndex before entering the switch block.
+   */
+  private findUpcomingSpeechAction(): SpeechAction | null {
+    let sceneCursor = this.sceneIndex;
+    let actionCursor = this.actionIndex;
+    while (sceneCursor < this.scenes.length) {
+      const actions = this.scenes[sceneCursor]?.actions || [];
+      while (actionCursor < actions.length) {
+        const next = actions[actionCursor];
+        if (next?.type === 'speech') {
+          return next as SpeechAction;
+        }
+        actionCursor += 1;
+      }
+      sceneCursor += 1;
+      actionCursor = 0;
+    }
+    return null;
   }
 }

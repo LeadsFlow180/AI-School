@@ -7,12 +7,14 @@ import { useSettingsStore } from '@/lib/store/settings';
 import { db } from '@/lib/utils/database';
 import type { SceneOutline, PdfImage, ImageMapping } from '@/lib/types/generation';
 import type { AgentInfo } from '@/lib/generation/generation-pipeline';
-import type { Scene } from '@/lib/types/stage';
+import type { Scene, Stage } from '@/lib/types/stage';
 import type { Action, SpeechAction } from '@/lib/types/action';
 import type { TTSProviderId } from '@/lib/audio/types';
 import { splitLongSpeechActions } from '@/lib/audio/tts-utils';
 import { generateMediaForOutlines, reconcileGeneratedImageSources } from '@/lib/media/media-orchestrator';
 import { createLogger } from '@/lib/logger';
+import { getSessionSafe, getSupabaseClient } from '@/lib/supabase/client';
+import { requestTTSWithJobPolling } from '@/lib/audio/tts-job-client';
 
 const log = createLogger('SceneGenerator');
 const MAX_STEP_RETRIES = 2;
@@ -141,40 +143,70 @@ async function fetchSceneActions(
   return response.json();
 }
 
+function getEffectiveTTSRequestConfig(): {
+  providerId: TTSProviderId;
+  voiceId: string;
+  speed: number;
+  apiKey?: string;
+  baseUrl?: string;
+} {
+  const settings = useSettingsStore.getState();
+  const stage = useStageStore.getState().stage as
+    | (Stage & {
+        tutorConfig?: {
+          voicePreset?: { providerId?: string; voiceId?: string };
+        };
+      })
+    | null;
+  const tutorPreset = stage?.tutorConfig?.voicePreset;
+  const fallbackProviderConfig = settings.ttsProvidersConfig?.[settings.ttsProviderId];
+  const effectiveProviderId = (tutorPreset?.providerId || settings.ttsProviderId) as TTSProviderId;
+  const effectiveVoiceId = tutorPreset?.voiceId || settings.ttsVoice;
+  const effectiveProviderConfig = settings.ttsProvidersConfig?.[effectiveProviderId];
+
+  return {
+    providerId: effectiveProviderId,
+    voiceId: effectiveVoiceId,
+    speed: settings.ttsSpeed,
+    apiKey: effectiveProviderConfig?.apiKey || fallbackProviderConfig?.apiKey || undefined,
+    baseUrl:
+      effectiveProviderConfig?.serverBaseUrl ||
+      effectiveProviderConfig?.baseUrl ||
+      fallbackProviderConfig?.serverBaseUrl ||
+      fallbackProviderConfig?.baseUrl ||
+      undefined,
+  };
+}
+
 /** Generate TTS for one speech action and store in IndexedDB */
 export async function generateAndStoreTTS(
   audioId: string,
   text: string,
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<{ blob: Blob; format: string }> {
   const settings = useSettingsStore.getState();
   if (settings.ttsProviderId === 'browser-native-tts') return;
 
-  const ttsProviderConfig = settings.ttsProvidersConfig?.[settings.ttsProviderId];
-  const response = await fetch('/api/generate/tts', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+  const ttsRequest = getEffectiveTTSRequestConfig();
+  if (signal?.aborted) throw new Error('TTS request aborted');
+  const data = await requestTTSWithJobPolling(
+    {
       text,
       audioId,
-      ttsProviderId: settings.ttsProviderId,
-      ttsVoice: settings.ttsVoice,
-      ttsSpeed: settings.ttsSpeed,
-      ttsApiKey: ttsProviderConfig?.apiKey || undefined,
-      ttsBaseUrl: ttsProviderConfig?.baseUrl || undefined,
-    }),
-    signal,
-  });
-
-  const data = await response
-    .json()
-    .catch(() => ({ success: false, error: response.statusText || 'Invalid TTS response' }));
-  if (!response.ok || !data.success || !data.base64 || !data.format) {
-    const err = new Error(
-      data.details || data.error || `TTS request failed: HTTP ${response.status}`,
-    );
+      ttsProviderId: ttsRequest.providerId,
+      ttsVoice: ttsRequest.voiceId,
+      ttsSpeed: ttsRequest.speed,
+      ttsApiKey: ttsRequest.apiKey,
+      ttsBaseUrl: ttsRequest.baseUrl,
+    },
+    { maxWaitMs: 120_000, intervalMs: 1_500 },
+  ).catch((error) => {
+    const err = error instanceof Error ? error : new Error(String(error));
     log.warn('TTS failed for', audioId, ':', err);
     throw err;
+  });
+  if (data.ttsDebug) {
+    log.info('[TTS Debug]', data.ttsDebug);
   }
 
   const binary = atob(data.base64);
@@ -189,6 +221,44 @@ export async function generateAndStoreTTS(
     format: data.format,
     createdAt: Date.now(),
   });
+  return { blob, format: data.format };
+}
+
+async function uploadSpeechAudioForScene(
+  classroomId: string,
+  audioId: string,
+  blob: Blob,
+): Promise<string | null> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+  const session = await getSessionSafe(supabase);
+  const token = session?.access_token;
+  if (!token) return null;
+
+  const ext = blob.type.includes('wav')
+    ? 'wav'
+    : blob.type.includes('mpeg') || blob.type.includes('mp3')
+      ? 'mp3'
+      : blob.type.includes('ogg')
+        ? 'ogg'
+        : blob.type.includes('webm')
+          ? 'webm'
+          : 'bin';
+  const file = new File([blob], `${audioId}.${ext}`, { type: blob.type || 'audio/mpeg' });
+  const form = new FormData();
+  form.append('file', file);
+  form.append('classroomId', classroomId);
+
+  const res = await fetch('/api/classroom/media-upload', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: form,
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json?.success || !json?.src) return null;
+  return String(json.src);
 }
 
 /** Generate TTS for all speech actions in a scene. Returns result. */
@@ -196,7 +266,7 @@ async function generateTTSForScene(
   scene: Scene,
   signal?: AbortSignal,
 ): Promise<{ success: boolean; failedCount: number; error?: string }> {
-  const providerId = useSettingsStore.getState().ttsProviderId;
+  const providerId = getEffectiveTTSRequestConfig().providerId;
   scene.actions = splitLongSpeechActions(scene.actions || [], providerId);
   const speechActions = scene.actions.filter(
     (a): a is SpeechAction => a.type === 'speech' && !!a.text,
@@ -210,7 +280,19 @@ async function generateTTSForScene(
     const audioId = `tts_${action.id}`;
     action.audioId = audioId;
     try {
-      await generateAndStoreTTS(audioId, action.text, signal);
+      const { blob } = await generateAndStoreTTS(audioId, action.text, signal);
+      try {
+        const uploadedUrl = await uploadSpeechAudioForScene(scene.stageId, audioId, blob);
+        if (uploadedUrl) {
+          action.audioUrl = uploadedUrl;
+        }
+      } catch (uploadErr) {
+        log.warn('Failed to upload scene speech audio; keeping local cache only.', {
+          stageId: scene.stageId,
+          audioId,
+          error: uploadErr instanceof Error ? uploadErr.message : String(uploadErr),
+        });
+      }
     } catch (error) {
       failedCount++;
       lastError = error instanceof Error ? error.message : `TTS failed for action ${action.id}`;

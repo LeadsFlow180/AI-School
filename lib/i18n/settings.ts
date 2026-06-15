@@ -52,12 +52,12 @@ export const settingsZhCN = {
     selectedAgents: '选中的智能体',
     required: '必选',
     agentNames: {
-      'default-1': 'AI教师',
-      'default-2': 'AI助教',
-      'default-3': '显眼包',
-      'default-4': '好奇宝宝',
-      'default-5': '笔记员',
-      'default-6': '思考者',
+      'default-1': 'AI Teacher',
+      'default-2': 'AI Assistant',
+      'default-3': 'Class Clown',
+      'default-4': 'Curious Mind',
+      'default-5': 'Note Taker',
+      'default-6': 'Deep Thinker',
     },
     agentRoles: {
       teacher: '教师',

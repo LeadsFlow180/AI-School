@@ -2,15 +2,17 @@
  * Shared TTS utilities used by both client-side and server-side generation.
  */
 
-import type { TTSProviderId } from './types';
 import type { Action, SpeechAction } from '@/lib/types/action';
 import { createLogger } from '@/lib/logger';
 
 const log = createLogger('TTS');
 
 /** Provider-specific max text length limits. */
-export const TTS_MAX_TEXT_LENGTH: Partial<Record<TTSProviderId, number>> = {
+export const TTS_MAX_TEXT_LENGTH: Partial<Record<string, number>> = {
   'glm-tts': 1024,
+  // Cloned voice servers are more likely to timeout on large payloads.
+  // Keep chunks small so one slide narration can still be synthesized reliably.
+  'custom-cloned-tts': Number(process.env.NEXT_PUBLIC_TTS_CLONED_MAX_TEXT_LENGTH || 180),
 };
 
 /**
@@ -79,7 +81,7 @@ export function splitLongSpeechText(text: string, maxLength: number): string[] {
  * within the TTS provider's text length limit. Each sub-action gets its
  * own independent audio file — no byte concatenation needed.
  */
-export function splitLongSpeechActions(actions: Action[], providerId: TTSProviderId): Action[] {
+export function splitLongSpeechActions(actions: Action[], providerId: string): Action[] {
   const maxLength = TTS_MAX_TEXT_LENGTH[providerId];
   if (!maxLength) return actions;
 

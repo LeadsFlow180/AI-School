@@ -22,16 +22,56 @@ import {
 import { getCurrentModelConfig } from '@/lib/utils/model-config';
 import { db } from '@/lib/utils/database';
 import { MAX_PDF_CONTENT_CHARS, MAX_VISION_IMAGES } from '@/lib/constants/generation';
+import type { TTSProviderId } from '@/lib/audio/types';
+import { splitLongSpeechActions } from '@/lib/audio/tts-utils';
 import { nanoid } from 'nanoid';
 import type { Stage } from '@/lib/types/stage';
 import type { SceneOutline, PdfImage, ImageMapping } from '@/lib/types/generation';
 import { AgentRevealModal } from '@/components/agent/agent-reveal-modal';
 import { createLogger } from '@/lib/logger';
 import { type GenerationSessionState, ALL_STEPS, getActiveSteps } from './types';
+import { buildClassroomFromGamma } from '@/lib/gamma/classroom-builder';
+import type { GammaGenerationStepId } from '@/lib/gamma/types';
 import type { ProviderId } from '@/lib/ai/providers';
 import { StepVisualizer } from './components/visualizers';
+import { getSessionSafe, getSupabaseClient } from '@/lib/supabase/client';
 
 const log = createLogger('GenerationPreview');
+
+async function uploadSpeechAudio(
+  classroomId: string,
+  audioId: string,
+  blob: Blob,
+): Promise<string | null> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+  const session = await getSessionSafe(supabase);
+  const token = session?.access_token;
+  if (!token) return null;
+
+  const ext = blob.type.includes('wav')
+    ? 'wav'
+    : blob.type.includes('mpeg') || blob.type.includes('mp3')
+      ? 'mp3'
+      : blob.type.includes('ogg')
+        ? 'ogg'
+        : blob.type.includes('webm')
+          ? 'webm'
+          : 'bin';
+  const file = new File([blob], `${audioId}.${ext}`, { type: blob.type || 'audio/mpeg' });
+  const form = new FormData();
+  form.append('file', file);
+  form.append('classroomId', classroomId);
+
+  const res = await fetch('/api/classroom/media-upload', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json?.success || !json?.src) return null;
+  return String(json.src);
+}
 
 function GenerationPreviewContent() {
   const router = useRouter();
@@ -94,11 +134,15 @@ function GenerationPreviewContent() {
   const getApiHeaders = (forcedModel?: { providerId: ProviderId; modelId: string }) => {
     const defaultModelConfig = getCurrentModelConfig();
     const settings = useSettingsStore.getState();
-    const forcedProvider = forcedModel ? settings.providersConfig[forcedModel.providerId] : undefined;
+    const forcedProvider = forcedModel
+      ? settings.providersConfig[forcedModel.providerId]
+      : undefined;
     const canUseForcedModel = Boolean(
       forcedModel &&
-        forcedProvider &&
-        (!forcedProvider.requiresApiKey || forcedProvider.apiKey || forcedProvider.isServerConfigured),
+      forcedProvider &&
+      (!forcedProvider.requiresApiKey ||
+        forcedProvider.apiKey ||
+        forcedProvider.isServerConfigured),
     );
     const resolvedProviderId = canUseForcedModel
       ? forcedModel!.providerId
@@ -110,7 +154,8 @@ function GenerationPreviewContent() {
       apiKey: resolvedProvider?.apiKey || defaultModelConfig.apiKey,
       baseUrl: resolvedProvider?.baseUrl || defaultModelConfig.baseUrl,
       providerType:
-        resolvedProvider?.type || (resolvedProviderId === 'google' ? 'google' : defaultModelConfig.providerType),
+        resolvedProvider?.type ||
+        (resolvedProviderId === 'google' ? 'google' : defaultModelConfig.providerType),
       requiresApiKey: resolvedProvider?.requiresApiKey ?? defaultModelConfig.requiresApiKey,
     };
     const imageProviderConfig = settings.imageProvidersConfig?.[settings.imageProviderId];
@@ -164,6 +209,28 @@ function GenerationPreviewContent() {
     setCurrentStepIndex(0);
 
     try {
+      if (currentSession.generationMode === 'gamma') {
+        const gammaSteps = getActiveSteps(currentSession);
+        const stepIndexFor = (stepId: GammaGenerationStepId) =>
+          Math.max(0, gammaSteps.findIndex((s) => s.id === stepId));
+
+        const { stageId } = await buildClassroomFromGamma({
+          prompt: currentSession.requirements.requirement,
+          language:
+            currentSession.requirements.language === 'zh-CN' ? 'zh-CN' : 'en-US',
+          tutorConfig: currentSession.tutorConfig,
+          signal,
+          onProgress: ({ stepId, statusMessage }) => {
+            setCurrentStepIndex(stepIndexFor(stepId));
+            setStatusMessage(statusMessage);
+          },
+        });
+
+        sessionStorage.removeItem('generationSession');
+        router.push(`/classroom/${stageId}`);
+        return;
+      }
+
       // Compute active steps for this session (recomputed after session mutations)
       let activeSteps = getActiveSteps(currentSession);
 
@@ -393,6 +460,20 @@ function GenerationPreviewContent() {
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
+      const stageWithTutor = stage as Stage & {
+        tutorConfig?: {
+          name?: string;
+          avatar?: string;
+          description?: string;
+          voicePreset?: {
+            id: string;
+            name: string;
+            providerId: string;
+            voiceId: string;
+          };
+        };
+      };
+      stageWithTutor.tutorConfig = currentSession.tutorConfig;
 
       if (settings.agentMode === 'auto') {
         const agentStepIdx = activeSteps.findIndex((s) => s.id === 'agent-generation');
@@ -452,13 +533,29 @@ function GenerationPreviewContent() {
 
           const getAvailableVoicesForGeneration = () => {
             const providers = getAvailableProvidersWithVoices(settings.ttsProvidersConfig);
-            return providers.flatMap((p) =>
+            const voices = providers.flatMap((p) =>
               p.voices.map((v) => ({
                 providerId: p.providerId,
                 voiceId: v.id,
                 voiceName: v.name,
               })),
             );
+
+            const preset = currentSession.tutorConfig?.voicePreset;
+            if (
+              preset &&
+              !voices.some(
+                (v) => v.providerId === preset.providerId && v.voiceId === preset.voiceId,
+              )
+            ) {
+              voices.unshift({
+                providerId: preset.providerId as TTSProviderId,
+                voiceId: preset.voiceId,
+                voiceName: `${preset.name} (cloned)`,
+              });
+            }
+
+            return voices;
           };
 
           // No outlines yet — agent generation uses only stage name + description
@@ -471,6 +568,7 @@ function GenerationPreviewContent() {
               availableAvatars: allAvatars.map((a) => a.path),
               avatarDescriptions: allAvatars.map((a) => ({ path: a.path, desc: a.desc })),
               availableVoices: getAvailableVoicesForGeneration(),
+              preferredTutor: currentSession.tutorConfig,
             }),
             signal,
           });
@@ -732,6 +830,14 @@ function GenerationPreviewContent() {
       // Generate TTS for first scene (part of actions step — blocking)
       if (settings.ttsEnabled && settings.ttsProviderId !== 'browser-native-tts') {
         const ttsProviderConfig = settings.ttsProvidersConfig?.[settings.ttsProviderId];
+        const tutorVoicePreset = currentSession.tutorConfig?.voicePreset;
+        const effectiveProviderId = (tutorVoicePreset?.providerId ||
+          settings.ttsProviderId) as import('@/lib/audio/types').TTSProviderId;
+        const effectiveVoiceId = tutorVoicePreset?.voiceId || settings.ttsVoice;
+        const effectiveProviderConfig = settings.ttsProvidersConfig?.[effectiveProviderId];
+        // Keep one logical narration per slide, but split oversized TTS payloads
+        // into smaller speech actions to avoid upstream timeout (524) on cloned voices.
+        data.scene.actions = splitLongSpeechActions(data.scene.actions || [], effectiveProviderId);
         const speechActions = (data.scene.actions || []).filter(
           (a: { type: string; text?: string }) => a.type === 'speech' && a.text,
         );
@@ -747,11 +853,16 @@ function GenerationPreviewContent() {
               body: JSON.stringify({
                 text: action.text,
                 audioId,
-                ttsProviderId: settings.ttsProviderId,
-                ttsVoice: settings.ttsVoice,
+                ttsProviderId: effectiveProviderId,
+                ttsVoice: effectiveVoiceId,
                 ttsSpeed: settings.ttsSpeed,
-                ttsApiKey: ttsProviderConfig?.apiKey || undefined,
-                ttsBaseUrl: ttsProviderConfig?.baseUrl || undefined,
+                ttsApiKey: effectiveProviderConfig?.apiKey || ttsProviderConfig?.apiKey || undefined,
+                ttsBaseUrl:
+                  effectiveProviderConfig?.serverBaseUrl ||
+                  effectiveProviderConfig?.baseUrl ||
+                  ttsProviderConfig?.serverBaseUrl ||
+                  ttsProviderConfig?.baseUrl ||
+                  undefined,
               }),
               signal,
             });
@@ -764,6 +875,9 @@ function GenerationPreviewContent() {
               ttsFailCount++;
               continue;
             }
+            if (ttsData.ttsDebug) {
+              log.info('[TTS Debug]', ttsData.ttsDebug);
+            }
             const binary = atob(ttsData.base64);
             const bytes = new Uint8Array(binary.length);
             for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -774,6 +888,14 @@ function GenerationPreviewContent() {
               format: ttsData.format,
               createdAt: Date.now(),
             });
+            try {
+              const uploadedUrl = await uploadSpeechAudio(stage.id, audioId, blob);
+              if (uploadedUrl) {
+                action.audioUrl = uploadedUrl;
+              }
+            } catch (uploadErr) {
+              log.warn('[TTS] Failed to upload first-scene speech clip', uploadErr);
+            }
           } catch (err) {
             log.warn(`[TTS] Failed for ${audioId}:`, err);
             ttsFailCount++;

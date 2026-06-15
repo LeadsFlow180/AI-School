@@ -131,13 +131,98 @@
   }
 }
 
-/* Hide scrollbar by default, show on hover */
-@utility scrollbar-hide {
-  &::-webkit-scrollbar {
+@layer utilities {
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
     display: none;
   }
-  -ms-overflow-style: none;
-  scrollbar-width: none;
+
+  /* Slide studio / edit panels — thin primary-tinted scrollbar */
+  .scrollbar-studio {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--primary) / 0.45) transparent;
+  }
+
+  .scrollbar-studio::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .scrollbar-studio::-webkit-scrollbar-track {
+    margin: 6px 0;
+    background: transparent;
+    border-radius: 999px;
+  }
+
+  .scrollbar-studio::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background: linear-gradient(
+      180deg,
+      hsl(var(--primary) / 0.42) 0%,
+      hsl(var(--primary) / 0.28) 100%
+    );
+    background-clip: padding-box;
+  }
+
+  .scrollbar-studio::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(
+      180deg,
+      hsl(var(--primary) / 0.62) 0%,
+      hsl(var(--primary) / 0.48) 100%
+    );
+    background-clip: padding-box;
+  }
+
+  .scrollbar-studio::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  .cursor-studio-crosshair {
+    cursor:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20' fill='none'%3E%3Cpath d='M10 4v12M4 10h12' stroke='%237c3aed' stroke-width='1.5' stroke-linecap='round'/%3E%3Ccircle cx='10' cy='10' r='1.25' fill='%237c3aed'/%3E%3C/svg%3E")
+        10 10,
+      crosshair;
+  }
+
+  .cursor-studio-grab {
+    cursor: grab;
+  }
+
+  .cursor-studio-grabbing {
+    cursor: grabbing;
+  }
+
+  .cursor-studio-move {
+    cursor:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none'%3E%3Cpath d='M12 4v4M12 16v4M4 12h4M16 12h4' stroke='%236366f1' stroke-width='1.5' stroke-linecap='round'/%3E%3Ccircle cx='12' cy='12' r='2.5' fill='%237c3aed' stroke='%23fff' stroke-width='1'/%3E%3C/svg%3E")
+        12 12,
+      move;
+  }
+}
+
+@layer components {
+  .edit-studio .edit-canvas-workspace {
+    cursor:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20' fill='none'%3E%3Cpath d='M10 4v12M4 10h12' stroke='%237c3aed' stroke-width='1.5' stroke-linecap='round'/%3E%3Ccircle cx='10' cy='10' r='1.25' fill='%237c3aed'/%3E%3C/svg%3E")
+        10 10,
+      crosshair;
+  }
+
+  .edit-studio .edit-canvas-workspace .cursor-move {
+    cursor:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none'%3E%3Cpath d='M12 4v4M12 16v4M4 12h4M16 12h4' stroke='%236366f1' stroke-width='1.5' stroke-linecap='round'/%3E%3Ccircle cx='12' cy='12' r='2.5' fill='%237c3aed' stroke='%23fff' stroke-width='1'/%3E%3C/svg%3E")
+        12 12,
+      move;
+  }
+
+  .edit-studio .prosemirror-editor {
+    cursor: text;
+  }
 }
 
 /* Shimmer sweep for skeleton loading */
@@ -147,5 +232,20 @@
   }
   100% {
     transform: translateX(100%);
+  }
+}
+
+@keyframes auth-eye-close {
+  0% {
+    transform: translateY(-3px) scaleY(0.35);
+    opacity: 0.3;
+  }
+  55% {
+    transform: translateY(1px) scaleY(1.12);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(0) scaleY(1);
+    opacity: 1;
   }
 }

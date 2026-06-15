@@ -21,6 +21,7 @@ interface StoredChunk {
 export class SupabaseVectorStore {
   private supabase: SupabaseClient;
   private tableName: string;
+  private tableAvailable: boolean = true;
 
   constructor(supabaseUrl: string, supabaseKey: string, tableName: string = 'document_chunks') {
     this.supabase = createClient(supabaseUrl, supabaseKey);
@@ -34,26 +35,19 @@ export class SupabaseVectorStore {
       const { data, error } = await this.supabase.from(this.tableName).select('id').limit(1);
 
       if (error) {
-        if (error.code === 'PGRST116') {
-          // Table doesn't exist
-          log.error(`❌ Table ${this.tableName} does not exist in Supabase!`);
-          log.error(
-            '📋 Please run the SQL migration from supabase-schema.sql in your Supabase dashboard',
+        if (this.isMissingTableError(error)) {
+          this.tableAvailable = false;
+          log.warn(
+            `Table ${this.tableName} is missing in Supabase schema cache. RAG list/search will return empty until migration is applied.`,
           );
-          log.error(
-            '🔗 Go to: https://supabase.com/dashboard/project/sdgruffbgmighsqzfrvw -> SQL Editor',
-          );
-          log.error('📄 Copy and paste the contents of supabase-schema.sql and run it');
-          throw new Error(
-            `Table ${this.tableName} does not exist. Please create it with the schema from supabase-schema.sql`,
-          );
-        } else {
-          // Other connection error
-          log.error('❌ Supabase connection error:', error.message);
-          throw new Error(`Supabase connection failed: ${error.message}`);
+          return;
         }
+        // Other connection error
+        log.error('❌ Supabase connection error:', error.message);
+        throw new Error(`Supabase connection failed: ${error.message}`);
       }
 
+      this.tableAvailable = true;
       log.info('✅ Supabase vector store initialized successfully');
     } catch (error) {
       log.error('❌ Error initializing Supabase vector store:', error);
@@ -63,6 +57,11 @@ export class SupabaseVectorStore {
 
   async addDocuments(chunks: DocumentChunk[]): Promise<void> {
     try {
+      if (!this.tableAvailable) {
+        throw new Error(
+          `Table ${this.tableName} does not exist. Please create it with the schema from supabase-schema.sql`,
+        );
+      }
       const records: StoredChunk[] = chunks.map((chunk) => ({
         id: chunk.id,
         content: chunk.content,
@@ -93,6 +92,9 @@ export class SupabaseVectorStore {
     threshold: number = 0.7,
   ): Promise<DocumentChunk[]> {
     try {
+      if (!this.tableAvailable) {
+        return [];
+      }
       // Use Supabase's vector similarity search
       const { data, error } = await this.supabase.rpc('similarity_search', {
         query_embedding: queryEmbedding,
@@ -228,6 +230,10 @@ export class SupabaseVectorStore {
 
   async deleteDocument(fileName: string): Promise<void> {
     try {
+      if (!this.tableAvailable) {
+        log.warn(`Skipping delete for ${fileName}: table ${this.tableName} is missing.`);
+        return;
+      }
       const { error } = await this.supabase
         .from(this.tableName)
         .delete()
@@ -246,9 +252,16 @@ export class SupabaseVectorStore {
 
   async getAllDocuments(): Promise<string[]> {
     try {
+      if (!this.tableAvailable) {
+        return [];
+      }
       const { data, error } = await this.supabase.from(this.tableName).select('metadata');
 
       if (error) {
+        if (this.isMissingTableError(error)) {
+          this.tableAvailable = false;
+          return [];
+        }
         throw error;
       }
 
@@ -270,9 +283,16 @@ export class SupabaseVectorStore {
 
   async getAllChunks(): Promise<DocumentChunk[]> {
     try {
+      if (!this.tableAvailable) {
+        return [];
+      }
       const { data, error } = await this.supabase.from(this.tableName).select('*');
 
       if (error) {
+        if (this.isMissingTableError(error)) {
+          this.tableAvailable = false;
+          return [];
+        }
         throw error;
       }
 
@@ -290,6 +310,9 @@ export class SupabaseVectorStore {
 
   async clearAll(): Promise<void> {
     try {
+      if (!this.tableAvailable) {
+        return;
+      }
       const { error } = await this.supabase.from(this.tableName).delete().neq('id', ''); // Delete all rows
 
       if (error) {
@@ -301,5 +324,17 @@ export class SupabaseVectorStore {
       log.error('Error clearing Supabase vector store:', error);
       throw new Error('Failed to clear vector store');
     }
+  }
+
+  private isMissingTableError(error: { code?: string; message?: string }): boolean {
+    const code = String(error.code || '');
+    const message = String(error.message || '').toLowerCase();
+    return (
+      code === 'PGRST116' ||
+      code === 'PGRST205' ||
+      message.includes('could not find the table') ||
+      message.includes('relation') ||
+      message.includes('does not exist')
+    );
   }
 }

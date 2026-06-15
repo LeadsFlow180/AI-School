@@ -38,6 +38,17 @@ interface RequestBody {
   availableAvatars: string[];
   avatarDescriptions?: Array<{ path: string; desc: string }>;
   availableVoices?: Array<{ providerId: string; voiceId: string; voiceName: string }>;
+  preferredTutor?: {
+    name?: string;
+    avatar?: string;
+    description?: string;
+    voicePreset?: {
+      id: string;
+      name: string;
+      providerId: string;
+      voiceId: string;
+    };
+  };
 }
 
 function stripCodeFences(text: string): string {
@@ -59,6 +70,7 @@ export async function POST(req: NextRequest) {
       availableAvatars,
       avatarDescriptions,
       availableVoices,
+      preferredTutor,
     } = body;
 
     // ── Validate required fields ──
@@ -105,6 +117,24 @@ export async function POST(req: NextRequest) {
   - Try to use different voices for each agent`
       : '';
 
+    const preferredTutorVoiceId = preferredTutor?.voicePreset
+      ? `${preferredTutor.voicePreset.providerId}::${preferredTutor.voicePreset.voiceId}`
+      : '';
+    const preferredTutorPrompt = [
+      preferredTutor?.avatar
+        ? `- The teacher agent should use this avatar path: ${preferredTutor.avatar}`
+        : '',
+      preferredTutor?.name ? `- The teacher agent name should be: ${preferredTutor.name}` : '',
+      preferredTutor?.description
+        ? `- Teacher short description: ${preferredTutor.description}`
+        : '',
+      preferredTutorVoiceId
+        ? `- The teacher agent MUST use voice: ${preferredTutorVoiceId} (this is a pre-cloned tutor voice preset)`
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
+
     const voiceJsonField = voiceListStr
       ? ',\n      "voice": "string (voice id from available list, e.g. \'qwen-tts::Cherry\')"'
       : '';
@@ -127,6 +157,7 @@ Requirements:
 - Each agent must be assigned one color from this list: ${JSON.stringify(COLOR_PALETTE)}
   - Each agent must have a different color
 ${voicePrompt}
+${preferredTutorPrompt}
 
 Return a JSON object with this exact structure:
 {
@@ -205,12 +236,24 @@ Return a JSON object with this exact structure:
         }
       }
 
+      if (agent.role === 'teacher' && preferredTutor?.voicePreset) {
+        // Reason: user-selected tutor voice must be used for the teacher every time.
+        voiceConfig = {
+          providerId: preferredTutor.voicePreset.providerId,
+          voiceId: preferredTutor.voicePreset.voiceId,
+        };
+      }
+
+      const avatarOverride =
+        agent.role === 'teacher' && preferredTutor?.avatar ? preferredTutor.avatar : undefined;
+      const nameOverride = agent.role === 'teacher' && preferredTutor?.name ? preferredTutor.name : undefined;
+
       return {
         id: `gen-${nanoid(8)}`,
-        name: agent.name,
+        name: nameOverride || agent.name,
         role: agent.role,
         persona: agent.persona,
-        avatar: agent.avatar || availableAvatars[index % availableAvatars.length],
+        avatar: avatarOverride || agent.avatar || availableAvatars[index % availableAvatars.length],
         color: agent.color || COLOR_PALETTE[index % COLOR_PALETTE.length],
         priority:
           agent.priority ?? (agent.role === 'teacher' ? 10 : agent.role === 'assistant' ? 7 : 5),

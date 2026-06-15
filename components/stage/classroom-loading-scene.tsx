@@ -382,9 +382,9 @@ export function ClassroomLoadingScene() {
             animate={{
               opacity: [0.2, 0.88, 0.62, 0.94, 0.5],
               scale: [0.88, 1, 0.96, 1.02, 0.95],
-              x: spark.driftX,
-              y: spark.driftY,
-              rotate: spark.rotate,
+              x: [...spark.driftX],
+              y: [...spark.driftY],
+              rotate: [...spark.rotate],
             }}
             transition={{
               duration: spark.duration,

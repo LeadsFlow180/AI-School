@@ -229,6 +229,10 @@ export async function getVectorStore(vectorDB?: string): Promise<VectorStore> {
   console.log('  - process.env.VECTOR_DB:', process.env.VECTOR_DB);
   console.log('  - Final dbType:', dbType);
   console.log('  - SUPABASE_URL:', process.env.SUPABASE_URL ? '✅ set' : '❌ not set');
+  console.log(
+    '  - SUPABASE_SERVICE_ROLE_KEY:',
+    process.env.SUPABASE_SERVICE_ROLE_KEY ? '✅ set' : '❌ not set',
+  );
   console.log('  - SUPABASE_ANON_KEY:', process.env.SUPABASE_ANON_KEY ? '✅ set' : '❌ not set');
 
   // Force Supabase-only mode for RAG documents
@@ -239,7 +243,9 @@ export async function getVectorStore(vectorDB?: string): Promise<VectorStore> {
   }
 
   const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+  // Reason: RAG ingestion writes vectors and must bypass RLS on server routes.
+  // Always prefer service role key to avoid 42501 policy violations.
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
 
   if (!supabaseUrl || !supabaseKey) {
     const errorMsg =

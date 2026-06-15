@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
+import { useStageStore } from '@/lib/store';
 import type { Scene, StageMode } from '@/lib/types/stage';
 import { SlideEditor as SlideRenderer } from '../slide-renderer/Editor';
 import { QuizView } from '../scene-renderers/quiz-view';
@@ -13,6 +14,8 @@ interface SceneRendererProps {
 }
 
 export function SceneRenderer({ scene, mode }: SceneRendererProps) {
+  const classroomId = useStageStore((s) => s.stage?.id ?? null);
+
   const renderer = useMemo(() => {
     switch (scene.type) {
       case 'slide':
@@ -20,7 +23,14 @@ export function SceneRenderer({ scene, mode }: SceneRendererProps) {
         return <SlideRenderer mode={mode} />;
       case 'quiz':
         if (scene.content.type !== 'quiz') return <div>Invalid quiz content</div>;
-        return <QuizView key={scene.id} questions={scene.content.questions} sceneId={scene.id} />;
+        return (
+          <QuizView
+            key={scene.id}
+            questions={scene.content.questions}
+            sceneId={scene.id}
+            classroomId={classroomId ?? undefined}
+          />
+        );
       case 'interactive':
         if (scene.content.type !== 'interactive') return <div>Invalid interactive content</div>;
         return <InteractiveRenderer content={scene.content} mode={mode} sceneId={scene.id} />;
@@ -30,7 +40,7 @@ export function SceneRenderer({ scene, mode }: SceneRendererProps) {
       default:
         return <div>Unknown scene type</div>;
     }
-  }, [scene, mode]);
+  }, [scene, mode, classroomId]);
 
   return <div className="w-full h-full">{renderer}</div>;
 }

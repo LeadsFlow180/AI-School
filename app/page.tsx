@@ -24,6 +24,9 @@ import {
   Database,
   UserRound,
   LogOut,
+  ShieldCheck,
+  Sparkles,
+  Wand2,
 } from 'lucide-react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { createLogger } from '@/lib/logger';
@@ -38,13 +41,14 @@ import { nanoid } from 'nanoid';
 import { storePdfBlob } from '@/lib/utils/image-storage';
 import type { UserRequirements } from '@/lib/types/generation';
 import { useSettingsStore } from '@/lib/store/settings';
-import { useStageStore } from '@/lib/store/stage';
+import { useAgentRegistry } from '@/lib/orchestration/registry/store';
 import { useUserProfileStore, AVATAR_OPTIONS } from '@/lib/store/user-profile';
 import {
   StageListItem,
   listStages,
   deleteStageData,
   getFirstSlideByStages,
+  saveStageData,
 } from '@/lib/utils/stage-storage';
 import { ThumbnailSlide } from '@/components/slide-renderer/components/ThumbnailSlide';
 import type { Slide } from '@/lib/types/slides';
@@ -57,8 +61,11 @@ import { clearSupabaseAuthStorage, getSessionSafe, getSupabaseClient } from '@/l
 import { KidsGuideOverlay } from '@/components/stage/kids-guide-overlay';
 import { KidsParallaxBackground } from '@/components/stage/kids-parallax-background';
 import { syncClassroomToSupabase } from '@/lib/supabase/classroom-sync';
-import type { QuizQuestion, Scene, Stage } from '@/lib/types/stage';
-import type { Action } from '@/lib/types/action';
+import type { Scene, Stage } from '@/lib/types/stage';
+import type { TutorVoicePreset } from '@/lib/types/tutor-voice';
+import type { TTSProviderId } from '@/lib/audio/types';
+import { createDefaultSlideContent } from '@/lib/api/stage-api-defaults';
+import type { GenerationSessionState } from '@/app/generation-preview/types';
 
 const log = createLogger('Home');
 
@@ -67,6 +74,16 @@ const RAG_STORAGE_KEY = 'ragEnabled';
 const LANGUAGE_STORAGE_KEY = 'generationLanguage';
 const RECENT_OPEN_STORAGE_KEY = 'recentClassroomsOpen';
 const REQUIREMENT_DRAFT_STORAGE_KEY = 'requirementDraft';
+const MAX_TUTOR_AVATAR_UPLOAD_BYTES = 2 * 1024 * 1024;
+const MAX_TUTOR_REFERENCE_AUDIO_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+function sortRecentsClassrooms(items: StageListItem[]): StageListItem[] {
+  return [...items].sort((a, b) => {
+    if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
+    if (a.createdAt !== b.createdAt) return b.createdAt - a.createdAt;
+    return a.id.localeCompare(b.id);
+  });
+}
 
 interface FormState {
   pdfFile: File | null;
@@ -74,6 +91,12 @@ interface FormState {
   language: 'zh-CN' | 'en-US';
   webSearch: boolean;
   enableRAG: boolean;
+  tutorName: string;
+  tutorTitle: string;
+  tutorDescription: string;
+  tutorVoiceReferenceUrl: string;
+  tutorAvatar: string;
+  tutorVoicePresetId: string;
 }
 
 interface SupabaseClassroomRow {
@@ -85,327 +108,14 @@ interface SupabaseClassroomRow {
   updated_at: string;
 }
 
-type GammaJson = {
-  success?: boolean;
-  error?: string;
-  details?: string;
-  generationId?: string;
-  status?: string;
-  gammaUrl?: string;
-  exportUrl?: string;
-  pageCount?: number;
-  ragUsed?: boolean;
-};
-
-type GammaScriptJson = {
-  success?: boolean;
-  scripts?: Array<{ pageNumber: number; lines: string[] }>;
-  error?: string;
-};
-
-type GammaQuizJson = {
-  success?: boolean;
-  quizzes?: Array<{ afterPageNumber: number; questions: QuizQuestion[] }>;
-  error?: string;
-};
-
-async function loadPdfJsWithWorker() {
-  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
-  const workerUrl = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
-  if (pdfjs.GlobalWorkerOptions?.workerSrc !== workerUrl) {
-    pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
-  }
-  return pdfjs;
-}
-
-async function renderGammaPdfPagesToImages(
-  generationId: string,
-  pageCountHint: number,
-): Promise<{ images: string[]; pageTexts: string[]; pageCount: number }> {
-  const exportUrl = `/api/gamma/export/${encodeURIComponent(generationId)}`;
-  const exportRes = await fetch(exportUrl, { method: 'GET' });
-  if (!exportRes.ok) {
-    throw new Error(`Failed to download Gamma export PDF (${exportRes.status})`);
-  }
-  const pdfBytes = new Uint8Array(await exportRes.arrayBuffer());
-  const pdfjs = await loadPdfJsWithWorker();
-  const loadingTask = pdfjs.getDocument({
-    data: pdfBytes,
-    useWorkerFetch: false,
-    isEvalSupported: false,
-  } as never);
-  const pdf = await loadingTask.promise;
-
-  const pageCount = Math.max(1, Math.min(50, Math.min(pdf.numPages || 1, pageCountHint || 50)));
-  const images: string[] = [];
-  const pageTexts: string[] = [];
-
-  for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
-    try {
-      const page = await pdf.getPage(pageNumber);
-      const textContent = await page.getTextContent();
-      const rawText = textContent.items
-        .map((item) => {
-          if (typeof item === 'object' && item && 'str' in item) {
-            return String((item as { str: string }).str || '');
-          }
-          return '';
-        })
-        .join(' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-      // Keep richer extracted text so narration can cover more complete slide content.
-      pageTexts.push(rawText.slice(0, 2500));
-
-      const viewport = page.getViewport({ scale: 1.5 });
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.floor(viewport.width));
-      canvas.height = Math.max(1, Math.floor(viewport.height));
-      const context = canvas.getContext('2d');
-      if (!context) throw new Error('Could not create canvas context for PDF rendering');
-      await page.render({ canvasContext: context, viewport } as never).promise;
-      images.push(canvas.toDataURL('image/png'));
-    } catch {
-      // Fallback: if browser PDF rendering fails for a page, try server-rendered page image.
-      try {
-        const pageRes = await fetch(
-          `/api/gamma/page-image/${encodeURIComponent(generationId)}/${pageNumber}`,
-          { method: 'GET' },
-        );
-        if (!pageRes.ok) {
-          images.push('');
-          pageTexts.push('');
-          continue;
-        }
-        const blob = await pageRes.blob();
-        const dataUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(String(reader.result || ''));
-          reader.onerror = () => reject(new Error('Could not convert Gamma page image to data URL'));
-          reader.readAsDataURL(blob);
-        });
-        images.push(dataUrl);
-        pageTexts.push('');
-      } catch {
-        // Keep flow alive: this page will fallback to interactive viewer scene.
-        images.push('');
-        pageTexts.push('');
-      }
-    }
-  }
-
-  return { images, pageTexts, pageCount };
-}
-
-async function generateGammaScriptsByAI(
-  lessonTitle: string,
-  pageTexts: string[],
-  language: 'zh-CN' | 'en-US',
-): Promise<Map<number, string[]>> {
-  const settings = useSettingsStore.getState();
-  const selectedProviderId = settings.providerId;
-  const selectedModelId = settings.modelId;
-  const selectedProvider = settings.providersConfig[selectedProviderId];
-  const aiHeaders = {
-    'Content-Type': 'application/json',
-    'x-model': `${selectedProviderId}:${selectedModelId}`,
-    'x-api-key': selectedProvider?.apiKey || '',
-    'x-base-url': selectedProvider?.baseUrl || '',
-    'x-provider-type': selectedProvider?.type || '',
-    'x-requires-api-key': selectedProvider?.requiresApiKey ? 'true' : 'false',
-  };
-
-  const payload = {
-    lessonTitle,
-    language,
-    slides: pageTexts.map((text, idx) => ({
-      pageNumber: idx + 1,
-      title: `Slide ${idx + 1}`,
-      text: text || '',
-    })),
-  };
-
-  const res = await fetch('/api/gamma/scripts', {
-    method: 'POST',
-    headers: aiHeaders,
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    throw new Error(`Gamma script API failed (${res.status})`);
-  }
-  const json = (await res.json()) as GammaScriptJson;
-  if (!json.success || !Array.isArray(json.scripts)) {
-    throw new Error(json.error || 'Gamma script generation failed');
-  }
-
-  const map = new Map<number, string[]>();
-  for (const s of json.scripts) {
-    if (!Number.isFinite(s.pageNumber) || s.pageNumber < 1) continue;
-    const lines = Array.isArray(s.lines)
-      ? s.lines.map((l) => String(l || '').trim()).filter(Boolean).slice(0, 6)
-      : [];
-    if (lines.length > 0) map.set(s.pageNumber, lines);
-  }
-  return map;
-}
-
-async function generateGammaQuizzesByAI(
-  lessonTitle: string,
-  pageTexts: string[],
-): Promise<Map<number, QuizQuestion[]>> {
-  const settings = useSettingsStore.getState();
-  const selectedProviderId = settings.providerId;
-  const selectedModelId = settings.modelId;
-  const selectedProvider = settings.providersConfig[selectedProviderId];
-  const aiHeaders = {
-    'Content-Type': 'application/json',
-    'x-model': `${selectedProviderId}:${selectedModelId}`,
-    'x-api-key': selectedProvider?.apiKey || '',
-    'x-base-url': selectedProvider?.baseUrl || '',
-    'x-provider-type': selectedProvider?.type || '',
-    'x-requires-api-key': selectedProvider?.requiresApiKey ? 'true' : 'false',
-  };
-
-  const payload = {
-    lessonTitle,
-    slides: pageTexts.map((text, idx) => ({
-      pageNumber: idx + 1,
-      title: `Slide ${idx + 1}`,
-      text: text || '',
-    })),
-  };
-
-  const res = await fetch('/api/gamma/quizzes', {
-    method: 'POST',
-    headers: aiHeaders,
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    throw new Error(`Gamma quiz API failed (${res.status})`);
-  }
-  const json = (await res.json()) as GammaQuizJson;
-  if (!json.success || !Array.isArray(json.quizzes)) {
-    throw new Error(json.error || 'Gamma quiz generation failed');
-  }
-
-  const map = new Map<number, QuizQuestion[]>();
-  for (const quiz of json.quizzes) {
-    if (!Number.isFinite(quiz.afterPageNumber) || quiz.afterPageNumber < 1) continue;
-    if (!Array.isArray(quiz.questions) || quiz.questions.length === 0) continue;
-    const normalizedQuestions = quiz.questions
-      .map((q) => ({
-        id: q.id || nanoid(10),
-        type: q.type === 'multiple' ? ('multiple' as const) : ('single' as const),
-        question: String(q.question || '').trim(),
-        options: Array.isArray(q.options)
-          ? q.options
-              .map((opt) => ({
-                label: String(opt?.label || '').trim(),
-                value: String(opt?.value || '').trim(),
-              }))
-              .filter((opt) => opt.label && opt.value)
-              .slice(0, 4)
-          : [],
-        answer: Array.isArray(q.answer)
-          ? q.answer.map((a) => String(a || '').trim()).filter(Boolean).slice(0, 2)
-          : [],
-        analysis: String(q.analysis || '').trim() || 'Review the key concept from the previous slides.',
-        hasAnswer: true,
-        points: Number.isFinite(q.points) ? Math.max(1, Number(q.points)) : 1,
-      }))
-      .filter((q) => q.question.length > 0 && q.options.length >= 2 && q.answer.length >= 1);
-    if (normalizedQuestions.length > 0) {
-      map.set(quiz.afterPageNumber, normalizedQuestions.slice(0, 10));
-    }
-  }
-
-  return map;
-}
-
-function buildGammaPdfPageUrl(baseUrl: string, pageNumber: number): string {
-  if (!baseUrl.trim()) return '';
-  const suffix = `page=${pageNumber}&view=FitH`;
-  return baseUrl.includes('#') ? `${baseUrl}&${suffix}` : `${baseUrl}#${suffix}`;
-}
-
-function buildGammaSlideSpeech(pageNumber: number, pageText?: string): string {
-  const cleaned = (pageText || '').trim();
-  if (!cleaned) {
-    return `For slide ${pageNumber}, we will connect this part to the lesson goal and focus on the most important takeaway before moving on.`;
-  }
-  const normalized = cleaned.replace(/\s+/g, ' ').trim();
-  const snippet = normalized.slice(0, 180);
-  return `On slide ${pageNumber}, notice this key content: ${snippet}. I will break it down step by step and explain why it matters.`;
-}
-
-function buildGammaSlideScript(pageNumber: number, pageText: string, lessonTitle: string): string[] {
-  const cleaned = pageText
-    .replace(/^on slide\s+\d+\s*,?\s*we focus on\s*/i, '')
-    .replace(/^slide\s+\d+\s+focuses on\s*/i, '')
-    .trim();
-  if (!cleaned) {
-    return [
-      `This is slide ${pageNumber} in our lesson on ${lessonTitle}. I will explain the visual content and the key takeaway for this section.`,
-      `As you watch this slide, focus on the main concept and how it connects with the previous part of the lesson.`,
-      `After this explanation, you should be able to summarize the central idea in your own words.`,
-    ];
-  }
-
-  const normalized = cleaned.replace(/\s+/g, ' ').trim();
-  const chunks = normalized
-    .split(/[.?!]\s+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const primary = chunks[0] || normalized.slice(0, 180);
-  const secondary = chunks.slice(1).join('. ').slice(0, 220);
-
-  return [
-    `Slide ${pageNumber} covers: ${primary}.`,
-    secondary
-      ? `In this part, notice that ${secondary}. Think about why this matters before we move on.`
-      : `Pay attention to the examples and structure shown here, because they are important for understanding the next slide.`,
-    `Try to identify one key term or relationship from this slide that you can reuse in the next section.`,
-  ];
-}
-
-async function fetchGammaPageImageDataUrl(generationId: string, pageNumber: number): Promise<string | null> {
-  const pageRes = await fetch(`/api/gamma/page-image/${encodeURIComponent(generationId)}/${pageNumber}`, {
-    method: 'GET',
-  });
-  if (!pageRes.ok) return null;
-  const blob = await pageRes.blob();
-  const dataUrl = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = () => reject(new Error('Could not convert Gamma page image to data URL'));
-    reader.readAsDataURL(blob);
-  });
-  return dataUrl || null;
-}
-
-async function fillMissingGammaPageImages(
-  generationId: string,
-  images: string[],
-  pageCount: number,
-): Promise<string[]> {
-  const out = [...images];
-  for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
-    if (out[pageNumber - 1]) continue;
-    // Retry twice for transient server/image conversion failures.
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const image = await fetchGammaPageImageDataUrl(generationId, pageNumber);
-        if (image) {
-          out[pageNumber - 1] = image;
-          break;
-        }
-      } catch {
-        // ignore and retry
-      }
-    }
-  }
-  return out;
-}
+const emptyTutorFormFields = {
+  tutorName: '',
+  tutorTitle: '',
+  tutorDescription: '',
+  tutorVoiceReferenceUrl: '',
+  tutorAvatar: '',
+  tutorVoicePresetId: '',
+} as const;
 
 const initialFormState: FormState = {
   pdfFile: null,
@@ -413,7 +123,30 @@ const initialFormState: FormState = {
   language: 'zh-CN',
   webSearch: false,
   enableRAG: false,
+  ...emptyTutorFormFields,
 };
+
+function toTutorVoicePreset(raw: Record<string, unknown>): TutorVoicePreset {
+  return {
+    id: String(raw.id || ''),
+    name: String(raw.name || ''),
+    title: raw.title ? String(raw.title) : String(raw.name || ''),
+    description: raw.description ? String(raw.description) : null,
+    providerId: String(raw.provider_id || raw.providerId || ''),
+    providerVoiceId: String(raw.provider_voice_id || raw.providerVoiceId || ''),
+    referenceUrl: raw.reference_url
+      ? String(raw.reference_url)
+      : raw.referenceUrl
+        ? String(raw.referenceUrl)
+        : null,
+    avatar: raw.avatar ? String(raw.avatar) : null,
+    metadata:
+      raw.metadata && typeof raw.metadata === 'object'
+        ? (raw.metadata as Record<string, unknown>)
+        : null,
+    createdAt: raw.created_at ? String(raw.created_at) : raw.createdAt ? String(raw.createdAt) : undefined,
+  };
+}
 
 function HomePage() {
   const { t, locale, setLocale } = useI18n();
@@ -426,8 +159,11 @@ function HomePage() {
   >(undefined);
 
   // Draft cache for requirement text
-  const { cachedValue: cachedRequirement, updateCache: updateRequirementCache } =
-    useDraftCache<string>({ key: REQUIREMENT_DRAFT_STORAGE_KEY });
+  const {
+    cachedValue: cachedRequirement,
+    updateCache: updateRequirementCache,
+    clearCache: clearRequirementCache,
+  } = useDraftCache<string>({ key: REQUIREMENT_DRAFT_STORAGE_KEY });
 
   // Model setup state
   const currentModelId = useSettingsStore((s) => s.modelId);
@@ -488,24 +224,505 @@ function HomePage() {
   const [recentPage, setRecentPage] = useState(1);
   const [recentsSource, setRecentsSource] = useState<'local' | 'remote'>('local');
   const [totalClassroomsCount, setTotalClassroomsCount] = useState(0);
-  const [gammaBusy, setGammaBusy] = useState(false);
-  const gammaRunRef = useRef(0);
   const [gammaSelected, setGammaSelected] = useState(false);
+  const [customVoices, setCustomVoices] = useState<TutorVoicePreset[]>([]);
+  const [isVoicesLoading, setIsVoicesLoading] = useState(false);
+  const [isCreatingVoice, setIsCreatingVoice] = useState(false);
+  const [isUploadingReferenceAudio, setIsUploadingReferenceAudio] = useState(false);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const classroomsLoadSeqRef = useRef(0);
+  const recentsRefreshScheduledAtRef = useRef(0);
+  const tutorPrefsHydratedRef = useRef(false);
+  const tutorFieldsTouchedRef = useRef(false);
+  const formRef = useRef(form);
+  formRef.current = form;
   const RECENTS_PER_PAGE = 8;
 
   const verifyAdminStatus = async (accessToken: string) => {
-    const res = await fetch('/api/auth/admin-status', {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-    });
-    if (!res.ok) return false;
-    const json = await res.json();
-    return !!json?.success && !!json?.isAdmin;
+    const supabase = getSupabaseClient();
+    if (!supabase || !accessToken) return false;
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const res = await fetch('/api/auth/admin-status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: accessToken }),
+          credentials: 'omit',
+          cache: 'no-store',
+        });
+        if (res.ok) {
+          const json = (await res.json()) as { isAdmin?: boolean };
+          return !!json.isAdmin;
+        }
+      } catch {
+        // Fallback to direct query below when local API route is transiently unavailable.
+      }
+
+      const session = await getSessionSafe(supabase);
+      const userId = session?.user?.id;
+      if (!userId) return false;
+      const { data, error } = await supabase
+        .from('admin_users')
+        .select('user_id')
+        .eq('user_id', userId)
+        .maybeSingle();
+      if (!error) return !!data;
+
+      await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+    }
+    return false;
   };
+
+  const updateAgent = useAgentRegistry((s) => s.updateAgent);
+  const getAgent = useAgentRegistry((s) => s.getAgent);
+  const selectedAgentIds = useSettingsStore((s) => s.selectedAgentIds);
+  const setSelectedAgentIds = useSettingsStore((s) => s.setSelectedAgentIds);
+  const setTTSProvider = useSettingsStore((s) => s.setTTSProvider);
+  const setTTSVoice = useSettingsStore((s) => s.setTTSVoice);
+
+  const applyTutorToPresenters = useCallback(
+    (voice?: TutorVoicePreset) => {
+      const currentForm = formRef.current;
+      const tutorName = voice?.name?.trim() || currentForm.tutorName.trim() || 'AI Tutor';
+      const tutorAvatar =
+        voice?.avatar?.trim() || currentForm.tutorAvatar || '/avatars/teacher.png';
+      const teacherAgentId =
+        selectedAgentIds.find((id) => getAgent(id)?.role === 'teacher') || 'default-1';
+
+      updateAgent(teacherAgentId, {
+        name: tutorName,
+        avatar: tutorAvatar,
+        ...(voice
+          ? {
+              voiceConfig: {
+                providerId: voice.providerId as TTSProviderId,
+                voiceId: voice.providerVoiceId,
+              },
+            }
+          : {}),
+      });
+
+      if (voice) {
+        setTTSProvider(voice.providerId as TTSProviderId);
+        setTTSVoice(voice.providerVoiceId);
+      }
+
+      if (!selectedAgentIds.includes(teacherAgentId)) {
+        setSelectedAgentIds([teacherAgentId, ...selectedAgentIds]);
+      }
+    },
+    [getAgent, selectedAgentIds, setSelectedAgentIds, setTTSProvider, setTTSVoice, updateAgent],
+  );
+
+  const loadCustomVoices = useCallback(async () => {
+    const supabase = getSupabaseClient();
+    if (!supabase || !isAuthenticated || !isAdminUser) {
+      setCustomVoices([]);
+      return;
+    }
+
+    setIsVoicesLoading(true);
+    try {
+      const session = await getSessionSafe(supabase);
+      const token = session?.access_token;
+      if (!token) {
+        setCustomVoices([]);
+        return;
+      }
+
+      const res = await fetch('/api/admin/custom-voices', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const json = await res.json();
+      const errorMessage =
+        typeof json?.error === 'string'
+          ? json.error
+          : typeof json?.message === 'string'
+            ? json.message
+            : typeof json?.error?.message === 'string'
+              ? json.error.message
+              : typeof json?.error?.details === 'string'
+                ? json.error.details
+                : null;
+      if (!res.ok || !json?.success) {
+        setCustomVoices([]);
+        log.warn(
+          `Custom tutor voices unavailable (DB only mode). ${errorMessage || 'Failed to load custom voices'}`,
+        );
+        return;
+      }
+
+      const rawVoices = Array.isArray(json.voices)
+        ? (json.voices as Array<Record<string, unknown>>)
+        : [];
+      const voices = rawVoices.map((v) => toTutorVoicePreset(v));
+
+      setCustomVoices(voices);
+    } catch (err) {
+      setCustomVoices([]);
+      log.warn('Failed to load custom tutor voices (DB only mode).', err);
+    } finally {
+      setIsVoicesLoading(false);
+    }
+  }, [isAuthenticated, isAdminUser]);
+
+  const savePreferredTutorToDb = useCallback(
+    async (preferredTutor: TutorVoicePreset | null) => {
+      const supabase = getSupabaseClient();
+      if (!supabase || !isAuthenticated || !isAdminUser) return;
+      const session = await getSessionSafe(supabase);
+      const token = session?.access_token;
+      if (!token) return;
+      await fetch('/api/admin/tutor-preference', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          preferredTutor: preferredTutor
+            ? {
+                id: preferredTutor.id,
+                name: preferredTutor.name,
+                title: preferredTutor.title,
+                description: preferredTutor.description,
+                avatar: preferredTutor.avatar,
+                providerId: preferredTutor.providerId,
+                providerVoiceId: preferredTutor.providerVoiceId,
+              }
+            : null,
+        }),
+      });
+    },
+    [isAuthenticated, isAdminUser],
+  );
+
+  const loadPreferredTutorFromDb = useCallback(async () => {
+    const supabase = getSupabaseClient();
+    if (!supabase || !isAuthenticated || !isAdminUser) return null;
+    const session = await getSessionSafe(supabase);
+    const token = session?.access_token;
+    if (!token) return null;
+    const res = await fetch('/api/admin/tutor-preference', {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || !json?.success || !json?.preferredTutor) return null;
+    const preferred = json.preferredTutor as Record<string, unknown>;
+    const providerId = String(preferred.providerId || '');
+    const providerVoiceId = String(preferred.providerVoiceId || '');
+    if (!providerId || !providerVoiceId) return null;
+    return {
+      id: String(preferred.id || `${providerId}::${providerVoiceId}`),
+      name: String(preferred.name || preferred.title || 'AI Tutor'),
+      title: String(preferred.title || preferred.name || 'AI Tutor'),
+      description:
+        preferred.description !== undefined && preferred.description !== null
+          ? String(preferred.description)
+          : null,
+      providerId,
+      providerVoiceId,
+      referenceUrl: null,
+      avatar:
+        preferred.avatar !== undefined && preferred.avatar !== null ? String(preferred.avatar) : null,
+    } as TutorVoicePreset;
+  }, [isAuthenticated, isAdminUser]);
+
+  const loadTutorPreferenceFromLatestClassroom = useCallback(async () => {
+    const supabase = getSupabaseClient();
+    if (!supabase || !isAuthenticated || !isAdminUser) return;
+    try {
+      const session = await getSessionSafe(supabase);
+      const userId = session?.user?.id;
+      if (!userId) return;
+
+      const { data, error } = await supabase
+        .from('classrooms')
+        .select('stage_data, updated_at')
+        .eq('user_id', userId)
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error || !data?.stage_data) return;
+
+      const stageData = data.stage_data as
+        | {
+            tutorConfig?: {
+              name?: string;
+              avatar?: string;
+              description?: string;
+              voicePreset?: {
+                id?: string;
+                name?: string;
+                providerId?: string;
+                voiceId?: string;
+              };
+            };
+          }
+        | undefined;
+      const tutor = stageData?.tutorConfig;
+      const voicePreset = tutor?.voicePreset;
+      if (!voicePreset?.providerId || !voicePreset?.voiceId) return;
+
+      const asPreset: TutorVoicePreset = {
+        id: voicePreset.id || `${voicePreset.providerId}::${voicePreset.voiceId}`,
+        name: tutor?.name || voicePreset.name || 'AI Tutor',
+        title: tutor?.name || voicePreset.name || 'AI Tutor',
+        description: tutor?.description || null,
+        providerId: voicePreset.providerId,
+        providerVoiceId: voicePreset.voiceId,
+        referenceUrl: null,
+        avatar: tutor?.avatar || null,
+      };
+
+      setForm((prev) => ({
+        ...prev,
+        tutorName: asPreset.name || prev.tutorName,
+        tutorTitle: asPreset.title || prev.tutorTitle,
+        tutorDescription: asPreset.description || prev.tutorDescription,
+        tutorAvatar: asPreset.avatar || prev.tutorAvatar,
+        tutorVoicePresetId: asPreset.id,
+      }));
+      applyTutorToPresenters(asPreset);
+    } catch (err) {
+      log.warn('Failed to restore tutor preference from latest classroom.', err);
+    }
+  }, [applyTutorToPresenters, isAuthenticated, isAdminUser]);
+
+  const handleCreateCustomVoice = useCallback(async () => {
+    if (!form.tutorName.trim() || !form.tutorVoiceReferenceUrl.trim()) {
+      toast.error('Tutor name and uploaded reference audio are required.');
+      return;
+    }
+
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      toast.error('Supabase is not configured.');
+      return;
+    }
+
+    const session = await getSessionSafe(supabase);
+    const token = session?.access_token;
+    if (!token) {
+      toast.error('Please login again before creating a tutor.');
+      return;
+    }
+
+    setIsCreatingVoice(true);
+    try {
+      const res = await fetch('/api/admin/custom-voices', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          name: form.tutorName.trim(),
+          title: form.tutorTitle.trim() || form.tutorName.trim(),
+          description: form.tutorDescription.trim(),
+          referenceUrl: form.tutorVoiceReferenceUrl.trim(),
+          avatar: form.tutorAvatar,
+          providerId: 'custom-cloned-tts',
+        }),
+      });
+
+      const json = await res.json();
+      if (!res.ok || !json?.success) {
+        throw new Error(json?.error || 'Failed to create tutor');
+      }
+
+      toast.success('Tutor created.');
+      if (json.voice?.id) {
+        const selectedId = String(json.voice.id);
+        setForm((prev) => ({ ...prev, tutorVoicePresetId: selectedId }));
+        const createdVoice: TutorVoicePreset = {
+          id: selectedId,
+          name: String(json.voice.name || form.tutorName.trim() || 'AI Tutor'),
+          title: String(
+            json.voice.title || form.tutorTitle.trim() || form.tutorName.trim() || 'AI Tutor',
+          ),
+          description:
+            json.voice.description !== undefined && json.voice.description !== null
+              ? String(json.voice.description)
+              : form.tutorDescription.trim() || null,
+          providerId: String(json.voice.provider_id || 'custom-cloned-tts'),
+          providerVoiceId: String(json.voice.provider_voice_id || ''),
+          referenceUrl: json.voice.reference_url ? String(json.voice.reference_url) : null,
+          avatar:
+            json.voice.avatar !== undefined && json.voice.avatar !== null
+              ? String(json.voice.avatar)
+              : form.tutorAvatar,
+        };
+        setCustomVoices((prev) => {
+          return [createdVoice, ...prev.filter((v) => v.id !== createdVoice.id)];
+        });
+        setForm((prev) => ({
+          ...prev,
+          tutorName: createdVoice.name || prev.tutorName,
+          tutorTitle: createdVoice.title || prev.tutorTitle,
+          tutorDescription: createdVoice.description || '',
+          tutorVoiceReferenceUrl: createdVoice.referenceUrl || prev.tutorVoiceReferenceUrl,
+          tutorAvatar: createdVoice.avatar || prev.tutorAvatar,
+        }));
+        applyTutorToPresenters(createdVoice);
+        void savePreferredTutorToDb(createdVoice);
+      } else {
+        applyTutorToPresenters();
+      }
+      await loadCustomVoices();
+    } catch (err) {
+      log.error('Failed to create custom tutor voice:', err);
+      toast.error(err instanceof Error ? err.message : 'Failed to create tutor');
+    } finally {
+      setIsCreatingVoice(false);
+    }
+  }, [applyTutorToPresenters, form, loadCustomVoices, savePreferredTutorToDb]);
+
+  const handleTutorAvatarUpload = useCallback((file: File | null) => {
+    if (!file) return;
+
+    if (file.type !== 'image/png') {
+      toast.error('Only PNG avatar files are supported.');
+      return;
+    }
+
+    if (file.size > MAX_TUTOR_AVATAR_UPLOAD_BYTES) {
+      toast.error('PNG avatar must be <= 2MB.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result || '');
+      if (!dataUrl.startsWith('data:image/png')) {
+        toast.error('Invalid PNG image data.');
+        return;
+      }
+      setForm((prev) => ({ ...prev, tutorAvatar: dataUrl }));
+      toast.success('Tutor avatar uploaded.');
+    };
+    reader.onerror = () => {
+      toast.error('Failed to read PNG avatar file.');
+    };
+    reader.readAsDataURL(file);
+  }, []);
+
+  const handleTutorReferenceAudioUpload = useCallback(async (file: File | null) => {
+    if (!file) return;
+
+    if (!file.type.startsWith('audio/')) {
+      toast.error('Only audio files are supported for voice cloning reference.');
+      return;
+    }
+
+    if (file.size > MAX_TUTOR_REFERENCE_AUDIO_UPLOAD_BYTES) {
+      toast.error('Reference audio must be <= 20MB.');
+      return;
+    }
+
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      toast.error('Supabase is not configured.');
+      return;
+    }
+
+    try {
+      setIsUploadingReferenceAudio(true);
+      const session = await getSessionSafe(supabase);
+      const token = session?.access_token;
+      if (!token) {
+        toast.error('Please login again before uploading reference audio.');
+        return;
+      }
+
+      const body = new FormData();
+      body.append('file', file);
+      const res = await fetch('/api/admin/custom-voices/upload-reference', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body,
+      });
+      const json = await res.json();
+      const errorMessage =
+        typeof json?.error === 'string'
+          ? json.error
+          : typeof json?.message === 'string'
+            ? json.message
+            : typeof json?.error?.message === 'string'
+              ? json.error.message
+              : typeof json?.error?.details === 'string'
+                ? json.error.details
+                : null;
+      if (!res.ok || !json?.success || !json?.referenceUrl) {
+        // Reason: keep voice cloning usable even if Storage bucket/config is temporarily unavailable.
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = String(reader.result || '');
+          if (!dataUrl.startsWith('data:audio/')) {
+            toast.error(errorMessage || 'Failed to upload reference audio');
+            return;
+          }
+          setForm((prev) => ({ ...prev, tutorVoiceReferenceUrl: dataUrl }));
+          toast.success('Reference audio loaded locally. You can continue voice creation.');
+        };
+        reader.onerror = () => {
+          toast.error(errorMessage || 'Failed to upload reference audio');
+        };
+        reader.readAsDataURL(file);
+        return;
+      }
+
+      setForm((prev) => ({ ...prev, tutorVoiceReferenceUrl: String(json.referenceUrl) }));
+      toast.success('Reference audio uploaded.');
+    } catch (err) {
+      log.warn('Failed to upload tutor reference audio on server. Using local fallback.', err);
+      // Reason: keep voice cloning usable even if Storage bucket/config is temporarily unavailable.
+      try {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = String(reader.result || '');
+          if (!dataUrl.startsWith('data:audio/')) {
+            toast.error(err instanceof Error ? err.message : 'Failed to upload reference audio');
+            return;
+          }
+          setForm((prev) => ({ ...prev, tutorVoiceReferenceUrl: dataUrl }));
+          toast.success('Reference audio loaded locally. You can continue voice creation.');
+        };
+        reader.onerror = () => {
+          toast.error(err instanceof Error ? err.message : 'Failed to upload reference audio');
+        };
+        reader.readAsDataURL(file);
+      } catch {
+        toast.error(err instanceof Error ? err.message : 'Failed to upload reference audio');
+      }
+    } finally {
+      setIsUploadingReferenceAudio(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!form.tutorName.trim() && !form.tutorAvatar.trim()) return;
+    const selected = customVoices.find((voice) => voice.id === form.tutorVoicePresetId);
+    applyTutorToPresenters(selected);
+  }, [
+    applyTutorToPresenters,
+    customVoices,
+    form.tutorAvatar,
+    form.tutorName,
+    form.tutorVoicePresetId,
+  ]);
+
+  useEffect(() => {
+    if (!form.tutorVoicePresetId) return;
+    const selected = customVoices.find((voice) => voice.id === form.tutorVoicePresetId);
+    if (!selected) return;
+    applyTutorToPresenters(selected);
+  }, [applyTutorToPresenters, customVoices, form.tutorVoicePresetId]);
 
   // Close dropdowns when clicking outside
   useEffect(() => {
@@ -521,160 +738,184 @@ function HomePage() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [languageOpen, themeOpen, profileCardOpen]);
 
-  const loadClassrooms = useCallback(async (targetPage: number = recentPage) => {
-    const requestSeq = ++classroomsLoadSeqRef.current;
-    const isLatest = () => requestSeq === classroomsLoadSeqRef.current;
-    if (isLatest()) {
-      setIsRecentsLoading(true);
-    }
-    const applyClassrooms = (nextClassrooms: StageListItem[], nextThumbs: Record<string, Slide>) => {
-      if (!isLatest()) return;
-      setClassrooms(nextClassrooms);
-      setThumbnails(nextThumbs);
-    };
-
-    try {
-      const loadLocalFallback = async (reason: string) => {
-        const localList = await listStages();
-        if (isLatest()) {
-          setRecentsSource('local');
-          setTotalClassroomsCount(localList.length);
-        }
-        console.info(
-          `[Recents] Using local IndexedDB fallback (${reason}). Loaded ${localList.length} classrooms.`,
-        );
-        if (localList.length > 0) {
-          const slides = await getFirstSlideByStages(localList.map((c) => c.id));
-          applyClassrooms(localList, slides);
-        } else {
-          applyClassrooms(localList, {});
-        }
+  const loadClassrooms = useCallback(
+    async (targetPage: number = recentPage) => {
+      const requestSeq = ++classroomsLoadSeqRef.current;
+      const isLatest = () => requestSeq === classroomsLoadSeqRef.current;
+      if (isLatest()) {
+        setIsRecentsLoading(true);
+      }
+      const applyClassrooms = (
+        nextClassrooms: StageListItem[],
+        nextThumbs: Record<string, Slide>,
+      ) => {
+        if (!isLatest()) return;
+        setClassrooms(nextClassrooms);
+        setThumbnails(nextThumbs);
       };
 
-      const supabase = getSupabaseClient();
-      if (isAuthenticated && isAdminUser && supabase) {
-        // Clear immediately so we never show the previous page while this page is loading.
-        if (isLatest()) {
-          setRecentsSource('remote');
-          setThumbnails({});
-          setClassrooms([]);
-        }
-        const session = await getSessionSafe(supabase);
-        const currentUserId = session?.user?.id;
-
-        if (!currentUserId) {
-          await loadLocalFallback('no active user session');
-          return;
-        }
-
-        const from = Math.max(0, (targetPage - 1) * RECENTS_PER_PAGE);
-        const to = from + RECENTS_PER_PAGE - 1;
-
-        const { data, error, count } = await supabase
-          .from('classrooms')
-          .select('id, user_id, name, description, scenes_data, created_at, updated_at', {
-            count: 'exact',
-          })
-          .eq('user_id', currentUserId)
-          .order('updated_at', { ascending: false })
-          .range(from, to);
-
-        if (!error && data) {
-          const rows = data as SupabaseClassroomRow[];
-          if (isLatest()) {
-            setRecentsSource('remote');
-            setRecentPage(targetPage);
-            let nextTotal = count ?? null;
-            // Fallback: if Supabase didn't return count for this query,
-            // fetch exact count once so pagination always spans all pages.
-            if (nextTotal === null && totalClassroomsCount === 0) {
-              const { count: exactCount } = await supabase
-                .from('classrooms')
-                .select('id', { count: 'exact', head: true })
-                .eq('user_id', currentUserId);
-              nextTotal = exactCount ?? null;
-            }
-            setTotalClassroomsCount(nextTotal ?? rows.length);
-          }
-          const list: StageListItem[] = rows.map((row) => {
-            const scenes = Array.isArray(row.scenes_data) ? row.scenes_data : [];
-            return {
-              id: row.id,
-              name: row.name || 'Untitled Stage',
-              description: row.description ?? '',
-              sceneCount: scenes.length,
-              createdAt: Date.parse(row.created_at) || Date.now(),
-              updatedAt: Date.parse(row.updated_at) || Date.now(),
-            };
-          });
-          // Apply classroom titles immediately; thumbnails will be filled one-by-one
-          // so the user sees content much sooner.
-          if (isLatest()) {
-            setClassrooms(list);
-            setThumbnails({});
-          }
-
-          // Fill thumbnails incrementally (per card) for a "one by one" feel.
-          for (const row of rows) {
-            if (!isLatest()) return;
-            const scenes = Array.isArray(row.scenes_data) ? row.scenes_data : [];
-            const firstSlideScene = scenes.find(
-              (scene): scene is { content?: { type?: string; canvas?: Slide } } =>
-                typeof scene === 'object' &&
-                scene !== null &&
-                typeof (scene as { content?: { type?: string } }).content?.type === 'string' &&
-                (scene as { content?: { type?: string } }).content?.type === 'slide',
-            );
-            const maybeCanvas = firstSlideScene?.content;
-            if (maybeCanvas?.type === 'slide' && maybeCanvas.canvas) {
-              const canvas = maybeCanvas.canvas;
-              setThumbnails((prev) => ({ ...prev, [row.id]: canvas }));
-              // Yield so React can paint updates between cards.
-              // eslint-disable-next-line no-await-in-loop
-              await new Promise((r) => setTimeout(r, 0));
-            }
-          }
-
-          console.info(
-            `[Recents] Loaded ${list.length} classrooms from Supabase for admin ${currentUserId}.`,
-          );
-          if (list.length === 0) {
-            await loadLocalFallback('Supabase returned zero classrooms');
-          }
-          return;
-        }
-
-        console.warn(
-          `[Recents] Supabase fetch failed (${error?.message ?? 'unknown error'}). Falling back to local IndexedDB.`,
-        );
-        await loadLocalFallback(`Supabase fetch failed: ${error?.message ?? 'unknown error'}`);
-        return;
-      }
-
-      await loadLocalFallback('unauthenticated or non-admin mode');
-    } catch (err) {
-      log.error('Failed to load classrooms:', err);
       try {
-        const localList = await listStages();
-        if (isLatest()) {
-          setRecentsSource('local');
-          setTotalClassroomsCount(localList.length);
-        }
-        if (localList.length > 0) {
-          const slides = await getFirstSlideByStages(localList.map((c) => c.id));
-          applyClassrooms(localList, slides);
-        } else {
+        const loadLocalFallback = async (reason: string) => {
+          const localList = sortRecentsClassrooms(await listStages());
+          if (isLatest()) {
+            setRecentsSource('local');
+            setTotalClassroomsCount(localList.length);
+            setRecentPage(targetPage);
+          }
+          console.info(
+            `[Recents] Using local IndexedDB fallback (${reason}). Loaded ${localList.length} classrooms.`,
+          );
+          // Render list immediately; do thumbnail work in background so Recents opens fast.
           applyClassrooms(localList, {});
+          const pageStart = Math.max(0, (targetPage - 1) * RECENTS_PER_PAGE);
+          const pageEnd = pageStart + RECENTS_PER_PAGE;
+          const visibleIds = localList.slice(pageStart, pageEnd).map((c) => c.id);
+          if (visibleIds.length > 0) {
+            void (async () => {
+              try {
+                const slides = await getFirstSlideByStages(visibleIds);
+                if (!isLatest()) return;
+                setThumbnails((prev) => ({ ...prev, ...slides }));
+              } catch (thumbErr) {
+                log.warn('Failed to load local Recents thumbnails:', thumbErr);
+              }
+            })();
+          }
+        };
+
+        const supabase = getSupabaseClient();
+        if (isAuthenticated && isAdminUser && supabase) {
+          if (isLatest()) setRecentsSource('remote');
+          const session = await getSessionSafe(supabase);
+          const currentUserId = session?.user?.id;
+
+          if (!currentUserId) {
+            await loadLocalFallback('no active user session');
+            return;
+          }
+
+          const from = Math.max(0, (targetPage - 1) * RECENTS_PER_PAGE);
+          const to = from + RECENTS_PER_PAGE - 1;
+
+          const { data, error, count } = await supabase
+            .from('classrooms')
+            .select('id, user_id, name, description, scenes_data, created_at, updated_at', {
+              count: 'exact',
+            })
+            .eq('user_id', currentUserId)
+            .order('updated_at', { ascending: false })
+            .range(from, to);
+
+          if (!error && data) {
+            const rows = data as SupabaseClassroomRow[];
+            if (isLatest()) {
+              setRecentsSource('remote');
+              setRecentPage(targetPage);
+              let nextTotal = count ?? null;
+              // Fallback: if Supabase didn't return count for this query,
+              // fetch exact count once so pagination always spans all pages.
+              if (nextTotal === null && totalClassroomsCount === 0) {
+                const { count: exactCount } = await supabase
+                  .from('classrooms')
+                  .select('id', { count: 'exact', head: true })
+                  .eq('user_id', currentUserId);
+                nextTotal = exactCount ?? null;
+              }
+              setTotalClassroomsCount(nextTotal ?? rows.length);
+            }
+            const list: StageListItem[] = sortRecentsClassrooms(
+              rows.map((row) => {
+                const scenes = Array.isArray(row.scenes_data) ? row.scenes_data : [];
+                return {
+                  id: row.id,
+                  name: row.name || 'Untitled Stage',
+                  description: row.description ?? '',
+                  sceneCount: scenes.length,
+                  createdAt: Date.parse(row.created_at) || Date.now(),
+                  updatedAt: Date.parse(row.updated_at) || Date.now(),
+                };
+              }),
+            );
+            // Apply classroom titles immediately; thumbnails will be filled one-by-one
+            // so the user sees content much sooner.
+            if (isLatest()) {
+              setClassrooms(list);
+              setThumbnails({});
+            }
+
+            // Fill thumbnails incrementally (per card) for a "one by one" feel.
+            for (const row of rows) {
+              if (!isLatest()) return;
+              const scenes = Array.isArray(row.scenes_data) ? row.scenes_data : [];
+              const firstSlideScene = scenes.find(
+                (scene): scene is { content?: { type?: string; canvas?: Slide } } =>
+                  typeof scene === 'object' &&
+                  scene !== null &&
+                  typeof (scene as { content?: { type?: string } }).content?.type === 'string' &&
+                  (scene as { content?: { type?: string } }).content?.type === 'slide',
+              );
+              const maybeCanvas = firstSlideScene?.content;
+              if (maybeCanvas?.type === 'slide' && maybeCanvas.canvas) {
+                const canvas = maybeCanvas.canvas;
+                setThumbnails((prev) => ({ ...prev, [row.id]: canvas }));
+                // Yield so React can paint updates between cards.
+                // eslint-disable-next-line no-await-in-loop
+                await new Promise((r) => setTimeout(r, 0));
+              }
+            }
+
+            console.info(
+              `[Recents] Loaded ${list.length} classrooms from Supabase for admin ${currentUserId}.`,
+            );
+            if (list.length === 0) {
+              await loadLocalFallback('Supabase returned zero classrooms');
+            }
+            return;
+          }
+
+          console.warn(
+            `[Recents] Supabase fetch failed (${error?.message ?? 'unknown error'}). Falling back to local IndexedDB.`,
+          );
+          await loadLocalFallback(`Supabase fetch failed: ${error?.message ?? 'unknown error'}`);
+          return;
         }
-      } catch (fallbackErr) {
-        log.error('Failed to recover Recents from local IndexedDB fallback:', fallbackErr);
+
+        await loadLocalFallback('unauthenticated or non-admin mode');
+      } catch (err) {
+        log.error('Failed to load classrooms:', err);
+        try {
+          const localList = sortRecentsClassrooms(await listStages());
+          if (isLatest()) {
+            setRecentsSource('local');
+            setTotalClassroomsCount(localList.length);
+            setRecentPage(targetPage);
+          }
+          applyClassrooms(localList, {});
+          const pageStart = Math.max(0, (targetPage - 1) * RECENTS_PER_PAGE);
+          const pageEnd = pageStart + RECENTS_PER_PAGE;
+          const visibleIds = localList.slice(pageStart, pageEnd).map((c) => c.id);
+          if (visibleIds.length > 0) {
+            void (async () => {
+              try {
+                const slides = await getFirstSlideByStages(visibleIds);
+                if (!isLatest()) return;
+                setThumbnails((prev) => ({ ...prev, ...slides }));
+              } catch (thumbErr) {
+                log.warn('Failed to load fallback Recents thumbnails:', thumbErr);
+              }
+            })();
+          }
+        } catch (fallbackErr) {
+          log.error('Failed to recover Recents from local IndexedDB fallback:', fallbackErr);
+        }
+      } finally {
+        if (isLatest()) {
+          setIsRecentsLoading(false);
+        }
       }
-    } finally {
-      if (isLatest()) {
-        setIsRecentsLoading(false);
-      }
-    }
-  }, [isAuthenticated, isAdminUser, recentPage]);
+    },
+    [isAuthenticated, isAdminUser, recentPage],
+  );
 
   useEffect(() => {
     // Clear stale media store to prevent cross-course thumbnail contamination.
@@ -682,7 +923,6 @@ function HomePage() {
     // (gen_img_1, etc.) collide with other courses' placeholders.
     useMediaGenerationStore.getState().revokeObjectUrls();
     useMediaGenerationStore.setState({ tasks: {} });
-
   }, []);
 
   useEffect(() => {
@@ -745,15 +985,39 @@ function HomePage() {
 
   useEffect(() => {
     if (!authReady) return;
-    const handleRefresh = () => {
+    if (!isAuthenticated) {
+      router.replace('/auth');
+    }
+  }, [authReady, isAuthenticated, router]);
+
+  useEffect(() => {
+    if (!authReady || !isAuthenticated || !isAdminUser) return;
+    if (tutorPrefsHydratedRef.current) return;
+    tutorPrefsHydratedRef.current = true;
+
+    setForm((prev) => ({ ...prev, ...emptyTutorFormFields }));
+    void loadCustomVoices();
+  }, [authReady, isAuthenticated, isAdminUser, loadCustomVoices]);
+
+  useEffect(() => {
+    if (!authReady) return;
+    const scheduleRecentsRefresh = () => {
+      const now = Date.now();
+      // # Reason: focus/pageshow/visibility often fire together on back navigation.
+      // Coalesce near-simultaneous events into one reload to avoid UI jumpiness.
+      if (now - recentsRefreshScheduledAtRef.current < 500) return;
+      recentsRefreshScheduledAtRef.current = now;
       void loadClassrooms(recentPage);
     };
+    const handleRefresh = () => {
+      scheduleRecentsRefresh();
+    };
     const handlePageShow = () => {
-      void loadClassrooms(recentPage);
+      scheduleRecentsRefresh();
     };
     const handleVisibility = () => {
       if (!document.hidden) {
-        void loadClassrooms(recentPage);
+        scheduleRecentsRefresh();
       }
     };
     window.addEventListener('focus', handleRefresh);
@@ -786,9 +1050,20 @@ function HomePage() {
       // If logged in, also delete remote classroom row from Supabase.
       const supabase = getSupabaseClient();
       if (isAuthenticated && supabase) {
-        const { error: remoteDeleteError } = await supabase.from('classrooms').delete().eq('id', id);
-        if (remoteDeleteError) {
-          throw remoteDeleteError;
+        const session = await getSessionSafe(supabase);
+        const token = session?.access_token;
+        if (!token) {
+          throw new Error('Missing session token for classroom delete.');
+        }
+        const remoteDeleteRes = await fetch(`/api/classroom?id=${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+        if (!remoteDeleteRes.ok) {
+          const remoteDeleteJson = await remoteDeleteRes.json().catch(() => ({}));
+          throw new Error(remoteDeleteJson?.error || 'Failed to delete remote classroom.');
         }
       }
 
@@ -799,7 +1074,27 @@ function HomePage() {
     }
   };
 
+  const markTutorFieldsTouched = () => {
+    tutorFieldsTouchedRef.current = true;
+  };
+
+  const clearTutorFields = useCallback(() => {
+    markTutorFieldsTouched();
+    setForm((prev) => ({ ...prev, ...emptyTutorFormFields }));
+    void savePreferredTutorToDb(null);
+  }, [savePreferredTutorToDb]);
+
   const updateForm = <K extends keyof FormState>(field: K, value: FormState[K]) => {
+    if (
+      field === 'tutorName' ||
+      field === 'tutorTitle' ||
+      field === 'tutorDescription' ||
+      field === 'tutorAvatar' ||
+      field === 'tutorVoiceReferenceUrl' ||
+      field === 'tutorVoicePresetId'
+    ) {
+      markTutorFieldsTouched();
+    }
     setForm((prev) => ({ ...prev, [field]: value }));
     try {
       if (field === 'webSearch') localStorage.setItem(WEB_SEARCH_STORAGE_KEY, String(value));
@@ -810,6 +1105,11 @@ function HomePage() {
       /* ignore */
     }
   };
+
+  const clearRequirementDraft = useCallback(() => {
+    setForm((prev) => ({ ...prev, requirement: '' }));
+    clearRequirementCache();
+  }, [clearRequirementCache]);
 
   const showSetupToast = (icon: React.ReactNode, title: string, desc: string) => {
     toast.custom(
@@ -868,6 +1168,23 @@ function HomePage() {
 
     try {
       const userProfile = useUserProfileStore.getState();
+      const selectedTeacherAgent =
+        selectedAgentIds
+          .map((id) => getAgent(id))
+          .find((agent) => agent?.role === 'teacher') || getAgent('default-1');
+      const teacherVoiceConfig = selectedTeacherAgent?.voiceConfig;
+      const selectedVoicePreset =
+        customVoices.find((v) => v.id === form.tutorVoicePresetId) ||
+        customVoices.find(
+          (v) =>
+            v.providerId === teacherVoiceConfig?.providerId &&
+            v.providerVoiceId === teacherVoiceConfig?.voiceId,
+        );
+      if (selectedVoicePreset) {
+        applyTutorToPresenters(selectedVoicePreset);
+      } else {
+        applyTutorToPresenters();
+      }
       const requirements: UserRequirements = {
         requirement: form.requirement,
         language: form.language,
@@ -900,6 +1217,36 @@ function HomePage() {
       const sessionState = {
         sessionId: nanoid(),
         requirements,
+        tutorConfig: {
+          name:
+            selectedVoicePreset?.name ||
+            selectedTeacherAgent?.name ||
+            form.tutorName ||
+            'AI Tutor',
+          avatar:
+            selectedVoicePreset?.avatar ||
+            selectedTeacherAgent?.avatar ||
+            form.tutorAvatar ||
+            AVATAR_OPTIONS[1],
+          description:
+            selectedVoicePreset?.description || selectedVoicePreset?.title || form.tutorDescription || '',
+          ...((selectedVoicePreset || teacherVoiceConfig)
+            ? {
+                voicePreset: {
+                  id: selectedVoicePreset?.id || `${teacherVoiceConfig?.providerId || 'tts'}::${teacherVoiceConfig?.voiceId || 'default'}`,
+                  name:
+                    selectedVoicePreset?.name ||
+                    selectedTeacherAgent?.name ||
+                    form.tutorName ||
+                    'AI Tutor',
+                  providerId:
+                    selectedVoicePreset?.providerId || teacherVoiceConfig?.providerId || 'browser-native-tts',
+                  voiceId:
+                    selectedVoicePreset?.providerVoiceId || teacherVoiceConfig?.voiceId || 'default',
+                },
+              }
+            : {}),
+        },
         pdfText: '',
         pdfImages: [],
         imageStorageIds: [],
@@ -912,6 +1259,7 @@ function HomePage() {
       };
       sessionStorage.setItem('generationSession', JSON.stringify(sessionState));
 
+      clearRequirementDraft();
       router.push('/generation-preview');
     } catch (err) {
       log.error('Error preparing generation:', err);
@@ -920,7 +1268,6 @@ function HomePage() {
   };
 
   const handleGammaGenerate = async () => {
-    if (gammaBusy) return;
     if (!isAuthenticated || !isAdminUser) {
       toast.error('Admin login required to generate classrooms.');
       router.push('/auth');
@@ -932,249 +1279,78 @@ function HomePage() {
     }
 
     setError(null);
-    setGammaBusy(true);
-    const runId = Date.now();
-    gammaRunRef.current = runId;
+
     try {
-      const startRes = await fetch('/api/gamma/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: form.requirement.trim(),
-          numCards: 10,
-          exportAs: 'pdf',
-          textMode: 'generate',
-          format: 'presentation',
-          enableRAG: form.enableRAG || undefined,
-        }),
-      });
-      const startData = (await startRes.json()) as GammaJson;
-      if (!startData.success || !startData.generationId) {
-        toast.error(startData.error || 'Could not start Gamma generation');
-        return;
-      }
-      if (form.enableRAG && !startData.ragUsed) {
-        toast.warning(
-          form.language === 'zh-CN'
-            ? '已启用 RAG，但未找到相关参考文档，将仅根据标题生成幻灯片。'
-            : 'RAG is enabled but no matching reference documents were found. Slides will be generated from the title only.',
+      const selectedTeacherAgent =
+        selectedAgentIds
+          .map((id) => getAgent(id))
+          .find((agent) => agent?.role === 'teacher') || getAgent('default-1');
+      const teacherVoiceConfig = selectedTeacherAgent?.voiceConfig;
+      const selectedVoicePreset =
+        customVoices.find((v) => v.id === form.tutorVoicePresetId) ||
+        customVoices.find(
+          (v) =>
+            v.providerId === teacherVoiceConfig?.providerId &&
+            v.providerVoiceId === teacherVoiceConfig?.voiceId,
         );
-      }
-      let last: GammaJson = {};
-      for (let i = 0; i < 120; i++) {
-        if (gammaRunRef.current !== runId) return;
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-        const pollRes = await fetch(`/api/gamma/generations/${startData.generationId}`);
-        last = (await pollRes.json()) as GammaJson;
-        if (!last.success) {
-          toast.error(last.error || 'Gamma polling failed');
-          return;
-        }
-        if (last.status === 'completed' || last.status === 'failed') break;
-      }
-
-      if (last.status === 'completed' && last.gammaUrl) {
-        if (gammaRunRef.current !== runId) return;
-        const now = Date.now();
-        const stageId = nanoid(10);
-        const stage: Stage = {
-          id: stageId,
-          name: form.requirement.trim().slice(0, 120) || 'Gamma Presentation',
-          description: 'Generated via Gamma AI',
-          createdAt: now,
-          updatedAt: now,
-          language: form.language,
-          style: 'professional',
-        };
-        const exportBaseUrl = `/api/gamma/export/${encodeURIComponent(startData.generationId)}`;
-        const pageCountHint = Math.max(1, Math.min(50, Math.floor(last.pageCount ?? 1)));
-        let renderedPageImages: string[] = [];
-        let renderedPageTexts: string[] = [];
-        let resolvedPageCount = pageCountHint;
-      try {
-          const rendered = await renderGammaPdfPagesToImages(startData.generationId, pageCountHint);
-          renderedPageImages = rendered.images;
-          renderedPageTexts = rendered.pageTexts;
-          resolvedPageCount = rendered.pageCount;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          toast.warning('Some Gamma slides could not convert. Using viewer fallback for those pages.');
-          console.warn('[gamma] page image download failed', {
-            message,
-          });
-        }
-
-        renderedPageImages = await fillMissingGammaPageImages(
-        startData.generationId,
-        renderedPageImages,
-        resolvedPageCount,
-      );
-
-        let aiScripts = new Map<number, string[]>();
-        try {
-          aiScripts = await generateGammaScriptsByAI(stage.name, renderedPageTexts, form.language);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.warn('[gamma] ai script generation failed, using local fallback scripts', { message });
-        }
-        let aiQuizzes = new Map<number, QuizQuestion[]>();
-        try {
-          aiQuizzes = await generateGammaQuizzesByAI(stage.name, renderedPageTexts);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.warn('[gamma] ai quiz generation failed, continuing without quizzes', { message });
-        }
-
-        const missingPages = renderedPageImages
-          .map((img, idx) => ({ idx, ok: typeof img === 'string' && img.length > 0 }))
-          .filter((x) => !x.ok)
-          .map((x) => x.idx + 1);
-        if (missingPages.length > 0) {
-          toast.error(
-            `Could not prepare local slide snapshot for pages: ${missingPages.join(', ')}. Please retry generation.`,
-          );
-          return;
-        }
-
-        const pageCount = resolvedPageCount;
-        const slideScenes: Scene[] = Array.from({ length: pageCount }, (_, idx) => {
-          const pageNumber = idx + 1;
-          const pageImage = renderedPageImages[idx];
-          const pageText = renderedPageTexts[idx];
-          const slideScript =
-            aiScripts.get(pageNumber) ||
-            buildGammaSlideScript(
-          pageNumber,
-          pageText || '',
-          stage.name || 'this topic',
-            );
-          const narrationLines =
-            slideScript.length > 0
-              ? slideScript
-              : [buildGammaSlideSpeech(pageNumber, pageText), buildGammaSlideSpeech(pageNumber, pageText)];
-          const narrationActions = narrationLines
-            .map((line) => line.trim())
-            .filter(Boolean)
-            .map(
-              (line) =>
-                ({
-                  id: nanoid(10),
-                  type: 'speech',
-                  text: line,
-                }) as Action,
-            );
-          return {
-            id: nanoid(12),
-            stageId,
-            type: 'slide',
-            title: `Gamma Slide ${pageNumber}`,
-            order: pageNumber,
-            content: {
-              type: 'slide',
-              canvas: {
-                id: nanoid(12),
-                viewportSize: 1000,
-                viewportRatio: 0.5625,
-                theme: {
-                  backgroundColor: '#ffffff',
-                  themeColors: ['#5b9bd5', '#ed7d31', '#a5a5a5', '#ffc000', '#4472c4'],
-                  fontColor: '#333333',
-                  fontName: 'Microsoft Yahei',
-                },
-                elements: [
-                  {
-                    type: 'image',
-                    id: nanoid(12),
-                    left: 0,
-                    top: 0,
-                    width: 1000,
-                    height: 563,
-                    rotate: 0,
-                    fixedRatio: false,
-                    src: pageImage,
-                  },
-                ],
-              } as Slide,
-            },
-            actions:
-              pageNumber === 1
-                ? ([
-                    {
-                      id: nanoid(10),
-                      type: 'speech',
-                      text: `Welcome everyone. We will learn ${stage.name} together. I will guide you through each slide and explain the key concepts clearly.`,
-                    },
-                    ...narrationActions,
-                    {
-                      id: nanoid(10),
-                      type: 'discussion',
-                      topic: 'Let us begin with your first impressions of this topic.',
-                      prompt:
-                        'Ask the student one warm-up question about the lesson topic and respond supportively.',
-                    },
-                  ] as Action[])
-                : (narrationActions as Action[]),
-            createdAt: now,
-            updatedAt: now,
-          };
-        });
-        const scenes: Scene[] = [];
-        for (const slideScene of slideScenes) {
-          scenes.push(slideScene);
-          const afterPageNumber = slideScene.order;
-          const quizQuestions = aiQuizzes.get(afterPageNumber);
-          if (!quizQuestions || quizQuestions.length === 0) continue;
-          scenes.push({
-            id: nanoid(12),
-            stageId,
-            type: 'quiz',
-            title: `Quick Check ${afterPageNumber}`,
-            order: scenes.length + 1,
-            content: {
-              type: 'quiz',
-              questions: quizQuestions,
-            },
-            actions: [
-              {
-                id: nanoid(10),
-                type: 'speech',
-                text: 'Great progress. Let us do a quick quiz to check your understanding before we continue.',
-              },
-            ] as Action[],
-            createdAt: now,
-            updatedAt: now,
-          });
-        }
-        scenes.forEach((scene, index) => {
-          scene.order = index + 1;
-        });
-
-        const stageStore = useStageStore.getState();
-        stageStore.setStage(stage);
-        scenes.forEach((scene) => stageStore.addScene(scene));
-        stageStore.setCurrentSceneId(scenes[0].id);
-        await stageStore.saveToStorage();
-        try {
-          await syncClassroomToSupabase({
-            stage,
-            scenes,
-            chats: [],
-          });
-        } catch (syncError) {
-          console.warn('[gamma] explicit supabase sync failed', syncError);
-        }
-
-        toast.success('Gamma slides generated successfully.');
-        router.push(`/classroom/${stageId}`);
+      if (selectedVoicePreset) {
+        applyTutorToPresenters(selectedVoicePreset);
       } else {
-        toast.error(last.error || 'Gamma generation failed');
+        applyTutorToPresenters();
       }
+
+      const sessionState: GenerationSessionState = {
+        sessionId: nanoid(),
+        generationMode: 'gamma',
+        requirements: {
+          requirement: form.requirement,
+          language: form.language,
+        },
+        tutorConfig: {
+          name:
+            selectedVoicePreset?.name ||
+            selectedTeacherAgent?.name ||
+            form.tutorName ||
+            'AI Tutor',
+          avatar:
+            selectedVoicePreset?.avatar ||
+            selectedTeacherAgent?.avatar ||
+            form.tutorAvatar ||
+            AVATAR_OPTIONS[1],
+          description:
+            selectedVoicePreset?.description || selectedVoicePreset?.title || form.tutorDescription || '',
+          ...((selectedVoicePreset || teacherVoiceConfig)
+            ? {
+                voicePreset: {
+                  id:
+                    selectedVoicePreset?.id ||
+                    `${teacherVoiceConfig?.providerId || 'tts'}::${teacherVoiceConfig?.voiceId || 'default'}`,
+                  name:
+                    selectedVoicePreset?.name ||
+                    selectedTeacherAgent?.name ||
+                    form.tutorName ||
+                    'AI Tutor',
+                  providerId:
+                    selectedVoicePreset?.providerId || teacherVoiceConfig?.providerId || 'browser-native-tts',
+                  voiceId:
+                    selectedVoicePreset?.providerVoiceId || teacherVoiceConfig?.voiceId || 'default',
+                },
+              }
+            : {}),
+        },
+        pdfText: '',
+        pdfImages: [],
+        imageStorageIds: [],
+        sceneOutlines: null,
+        currentStep: 'generating',
+      };
+      sessionStorage.setItem('generationSession', JSON.stringify(sessionState));
+
+      clearRequirementDraft();
+      router.push('/generation-preview');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Gamma request failed');
-    } finally {
-      if (gammaRunRef.current === runId) {
-        setGammaBusy(false);
-      }
+      log.error('Error preparing Gamma generation:', err);
+      setError(err instanceof Error ? err.message : t('upload.generateFailed'));
     }
   };
 
@@ -1191,7 +1367,7 @@ function HomePage() {
   };
 
   const canGenerate = !!form.requirement.trim() && isAuthenticated && isAdminUser;
-  const canGenerateNow = canGenerate && !gammaBusy;
+  const canGenerateNow = canGenerate;
   const showAuthenticatedUi = authReady && isAuthenticated;
   const totalRecentItems = recentsSource === 'remote' ? totalClassroomsCount : classrooms.length;
   const totalRecentPages = Math.max(1, Math.ceil(totalRecentItems / RECENTS_PER_PAGE));
@@ -1225,7 +1401,7 @@ function HomePage() {
 
     try {
       setProfileCardOpen(false);
-      const { error } = await supabase.auth.signOut({ scope: 'global' });
+      const { error } = await supabase.auth.signOut({ scope: 'local' });
       if (error) {
         throw error;
       }
@@ -1234,8 +1410,12 @@ function HomePage() {
       setAuthUserEmail('');
       toast.success('Logged out successfully.');
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unable to log out.';
-      toast.error(`Logout failed: ${message}`);
+      // Keep UX stable even when Supabase endpoints are temporarily unreachable.
+      log.warn('Logout network issue; clearing local auth state.', err);
+      setIsAuthenticated(false);
+      setIsAdminUser(false);
+      setAuthUserEmail('');
+      toast.success('Logged out locally.');
     } finally {
       // Force-clear auth caches so UI cannot remain in a stale logged-in state.
       try {
@@ -1246,6 +1426,77 @@ function HomePage() {
       window.location.replace('/auth');
     }
   };
+
+  const ensureGuidanceClassroom = useCallback(async (): Promise<string> => {
+    const guidanceId = 'Q_aCAqhuTq';
+
+    try {
+      const existingRes = await fetch(`/api/classroom?id=${encodeURIComponent(guidanceId)}`, {
+        cache: 'no-store',
+      });
+      if (existingRes.ok) {
+        const existingJson = await existingRes.json().catch(() => null);
+        if (existingJson?.success && existingJson?.classroom) {
+          return guidanceId;
+        }
+      }
+    } catch (error) {
+      log.warn('Guidance classroom existence check failed; attempting recreation:', error);
+    }
+
+    const now = Date.now();
+    const stage: Stage = {
+      id: guidanceId,
+      name: 'Guidance Classroom',
+      description: 'Built-in guided classroom used for the onboarding tour.',
+      createdAt: now,
+      updatedAt: now,
+      language: locale,
+      style: 'presentation',
+      agentIds: ['default-1', 'default-2', 'default-3'],
+    };
+    const sceneId = `scene_${nanoid(8)}`;
+    const scene: Scene = {
+      id: sceneId,
+      stageId: guidanceId,
+      type: 'slide',
+      title: 'Welcome to Guidance',
+      order: 0,
+      content: createDefaultSlideContent(),
+      actions: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    await saveStageData(guidanceId, {
+      stage,
+      scenes: [scene],
+      currentSceneId: sceneId,
+      chats: [],
+    });
+
+    try {
+      await syncClassroomToSupabase({
+        stage,
+        scenes: [scene],
+        chats: [],
+      });
+    } catch (error) {
+      log.warn('Failed to sync recreated guidance classroom to Supabase:', error);
+    }
+
+    return guidanceId;
+  }, [locale]);
+
+  const handleOpenGuidance = useCallback(async () => {
+    try {
+      const guidanceId = await ensureGuidanceClassroom();
+      router.push(`/classroom/${encodeURIComponent(guidanceId)}?tour=1`);
+    } catch (error) {
+      log.error('Failed to open guidance classroom:', error);
+      toast.error('Unable to open guidance classroom right now. Please try again.');
+    }
+  }, [ensureGuidanceClassroom, router]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -1259,12 +1510,16 @@ function HomePage() {
     }
   };
 
+  if (authReady && !isAuthenticated) {
+    return null;
+  }
+
   return (
-    <div className="relative min-h-[100dvh] w-full bg-[linear-gradient(to_bottom,rgba(250,250,250,1),rgba(244,244,245,0.95))] dark:bg-[linear-gradient(to_bottom,rgba(9,9,11,1),rgba(15,23,42,0.95))] flex flex-col items-center p-3 pt-20 sm:p-4 sm:pt-20 md:p-8 md:pt-16 overflow-x-hidden">
+    <div className="relative min-h-[100dvh] w-full bg-[radial-gradient(circle_at_12%_8%,rgba(99,102,241,0.22),transparent_34%),radial-gradient(circle_at_90%_12%,rgba(6,182,212,0.22),transparent_30%),radial-gradient(circle_at_50%_120%,rgba(124,58,237,0.16),transparent_45%),linear-gradient(to_bottom,#f8fafc,#eaf0ff_45%,#f8fafc)] dark:bg-[radial-gradient(circle_at_12%_8%,rgba(129,140,248,0.34),transparent_40%),radial-gradient(circle_at_90%_12%,rgba(34,211,238,0.28),transparent_34%),radial-gradient(circle_at_50%_120%,rgba(167,139,250,0.24),transparent_45%),linear-gradient(to_bottom,#020617,#0b1227_45%,#020617)] flex flex-col items-center p-3 pt-20 sm:p-4 sm:pt-20 md:p-8 md:pt-16 overflow-x-hidden">
       {/* ═══ Top-right pill (unchanged) ═══ */}
       <div
         ref={toolbarRef}
-        className="fixed top-2 inset-x-2 sm:top-4 sm:right-4 sm:inset-x-auto z-50 flex items-center justify-between sm:justify-start gap-1 bg-white/90 dark:bg-zinc-900/85 backdrop-blur-xl px-2 py-1.5 sm:px-2.5 rounded-full border border-zinc-200/80 dark:border-zinc-700/60 shadow-sm"
+        className="fixed top-2 inset-x-2 sm:top-4 sm:right-4 sm:inset-x-auto z-50 flex items-center justify-between sm:justify-start gap-1 bg-white/74 dark:bg-slate-900/72 backdrop-blur-2xl px-2 py-1.5 sm:px-2.5 rounded-full border border-white/90 dark:border-slate-700/80 shadow-[0_18px_40px_-26px_rgba(30,41,59,0.85)] ring-1 ring-white/50 dark:ring-white/10"
       >
         {/* Language Selector */}
         <div className="relative">
@@ -1376,7 +1631,7 @@ function HomePage() {
 
         <button
           type="button"
-          onClick={() => router.push('/classroom/Q_aCAqhuTq?tour=1')}
+          onClick={() => void handleOpenGuidance()}
           className="flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs font-semibold text-violet-700 bg-violet-50/75 border border-violet-200/80 transition-all hover:bg-violet-100 dark:text-violet-200 dark:bg-violet-900/30 dark:border-violet-700/70 dark:hover:bg-violet-800/40"
         >
           <BookOpen className="size-3.5 shrink-0" />
@@ -1408,7 +1663,9 @@ function HomePage() {
                 <p
                   className={cn(
                     'mt-2 text-xs font-medium',
-                    isAdminUser ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400',
+                    isAdminUser
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-amber-600 dark:text-amber-400',
                   )}
                 >
                   {isAdminUser ? 'Admin access enabled' : 'Logged in, but not in admin_users'}
@@ -1473,12 +1730,10 @@ function HomePage() {
       {/* ═══ Background Decor ═══ */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div
-          className="absolute top-0 left-1/4 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl animate-pulse"
-          style={{ animationDuration: '4s' }}
+          className="absolute -top-24 left-[10%] w-[30rem] h-[30rem] bg-indigo-300/14 dark:bg-indigo-500/16 rounded-full blur-3xl"
         />
         <div
-          className="absolute bottom-0 right-1/4 w-96 h-96 bg-purple-500/10 rounded-full blur-3xl animate-pulse"
-          style={{ animationDuration: '6s' }}
+          className="absolute -bottom-20 right-[8%] w-[28rem] h-[28rem] bg-sky-300/14 dark:bg-cyan-400/14 rounded-full blur-3xl"
         />
       </div>
       <KidsParallaxBackground />
@@ -1489,12 +1744,12 @@ function HomePage() {
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6, ease: 'easeOut' }}
-          className={cn(
-            'relative z-20 w-full max-w-[900px] flex flex-col items-center',
-            classrooms.length === 0
-              ? 'justify-center min-h-[calc(100dvh-10rem)] sm:min-h-[calc(100dvh-8rem)]'
-              : 'mt-[5.5rem] sm:mt-[8vh]',
-          )}
+        className={cn(
+          'relative z-20 w-full max-w-[900px] flex flex-col items-center',
+          classrooms.length === 0
+            ? 'justify-center min-h-[calc(100dvh-10rem)] sm:min-h-[calc(100dvh-8rem)]'
+            : 'mt-[5.5rem] sm:mt-[8vh]',
+        )}
       >
         {/* ── Logo ── */}
         <motion.img
@@ -1511,24 +1766,53 @@ function HomePage() {
           className="h-12 md:h-16 mb-2 -ml-2 md:-ml-3"
         />
 
-        {/* ── Slogan ── */}
+        <motion.p
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.16 }}
+          className="text-[11px] sm:text-xs font-medium tracking-[0.12em] uppercase text-zinc-500/90 dark:text-zinc-400 mb-2"
+        >
+          Allen Girls Adventure
+        </motion.p>
+
+        {/* ── Hero heading ── */}
         <motion.h1
           initial={{ opacity: 0, y: 6 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.2 }}
-          className="text-center text-xl sm:text-2xl md:text-3xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 mb-2"
+          className="text-center text-2xl sm:text-3xl md:text-[2.35rem] font-medium tracking-tight text-zinc-900 dark:text-zinc-100 mb-2"
         >
-          Create interactive classrooms in minutes
+          Create beautiful interactive classrooms with ease
         </motion.h1>
 
         <motion.p
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.25 }}
-          className="text-sm md:text-[15px] text-muted-foreground/85 mb-6 sm:mb-8 text-center max-w-[680px] px-1"
+          className="text-sm md:text-[15px] text-muted-foreground/80 mb-5 sm:mb-6 text-center max-w-[700px] px-1 leading-relaxed"
         >
-          {t('home.slogan')}
+          Plan engaging lessons, shape the learning flow, and let AI help you bring each classroom
+          to life in a calm, simple workflow.
         </motion.p>
+        <motion.div
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.28 }}
+          className="mb-5 sm:mb-6 flex flex-wrap items-center justify-center gap-2"
+        >
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-zinc-200/80 bg-white/92 px-3 py-1 text-[11px] font-normal text-zinc-700 dark:border-slate-700 dark:bg-slate-900/65 dark:text-zinc-200">
+            <Sparkles className="size-3 text-indigo-400" />
+            Clean classroom visuals
+          </span>
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-zinc-200/80 bg-white/92 px-3 py-1 text-[11px] font-normal text-zinc-700 dark:border-slate-700 dark:bg-slate-900/65 dark:text-zinc-200">
+            <Wand2 className="size-3 text-sky-400" />
+            Smooth content generation
+          </span>
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-zinc-200/80 bg-white/92 px-3 py-1 text-[11px] font-normal text-zinc-700 dark:border-slate-700 dark:bg-slate-900/65 dark:text-zinc-200">
+            <ShieldCheck className="size-3 text-violet-400" />
+            Gentle, reliable workflow
+          </span>
+        </motion.div>
 
         {/* ── Unified input area ── */}
         <motion.div
@@ -1537,9 +1821,9 @@ function HomePage() {
           transition={{ delay: 0.35 }}
           className="w-full"
         >
-          <div className="w-full rounded-2xl sm:rounded-3xl border border-zinc-200/80 dark:border-zinc-700/60 bg-white/95 dark:bg-zinc-900/90 backdrop-blur-xl shadow-md transition-shadow focus-within:shadow-lg">
-            <div className="px-3 sm:px-4 pt-3">
-              <span className="inline-flex items-center rounded-full border border-zinc-300/80 dark:border-zinc-600/70 bg-zinc-100/90 dark:bg-zinc-800/70 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-zinc-700 dark:text-zinc-300">
+          <div className="relative overflow-hidden w-full rounded-2xl sm:rounded-3xl border border-white/90 dark:border-slate-700/70 bg-white/88 dark:bg-slate-900/78 backdrop-blur-xl shadow-[0_24px_70px_-38px_rgba(30,41,59,0.7)] ring-1 ring-white/70 dark:ring-white/10 transition-all duration-300 focus-within:shadow-[0_28px_76px_-32px_rgba(30,41,59,0.72)]">
+            <div className="px-4 sm:px-5 pt-4">
+              <span className="inline-flex items-center rounded-full border border-zinc-200/80 dark:border-slate-700/70 bg-white/90 dark:bg-slate-900/70 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.08em] text-zinc-600 dark:text-zinc-300">
                 AI Classroom Studio
               </span>
             </div>
@@ -1559,22 +1843,27 @@ function HomePage() {
                   ? t('upload.requirementPlaceholder')
                   : 'Login as admin to enter prompt and generate classroom.'
               }
-              className="w-full resize-none border-0 bg-transparent px-3.5 sm:px-5 pt-2 pb-2 text-[14px] leading-relaxed placeholder:text-muted-foreground/50 focus:outline-none min-h-[128px] sm:min-h-[150px] max-h-[320px]"
+              className="w-full resize-none border-0 bg-transparent px-4 sm:px-5 pt-3 pb-2 text-[14px] leading-relaxed placeholder:text-muted-foreground/60 focus:outline-none min-h-[132px] sm:min-h-[152px] max-h-[320px]"
               value={form.requirement}
               onChange={(e) => updateForm('requirement', e.target.value)}
               onKeyDown={handleKeyDown}
               rows={4}
               disabled={!isAuthenticated || !isAdminUser}
             />
+            <div className="px-4 sm:px-5 pb-2">
+              <p className="text-[11px] text-muted-foreground/75">
+                Example: "Teach me Python basics in 30 minutes" or "Explain Fourier Transform on whiteboard".
+              </p>
+            </div>
 
             {/* Toolbar row */}
-            <div className="px-3 pb-1 flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-x-4 gap-y-2">
+            <div className="px-4 pb-2 flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-x-4 gap-y-2 border-t border-border/50 pt-3">
               <div className="grid grid-cols-1 min-[420px]:grid-cols-2 gap-2 w-full sm:w-auto sm:flex sm:flex-wrap sm:items-center">
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="h-8 gap-1.5 border-border/80 bg-background/70 text-xs font-medium shadow-none hover:bg-accent rounded-lg w-full sm:w-auto"
+                  className="h-8 gap-1.5 border-border/80 bg-background/80 text-xs font-medium shadow-none hover:bg-accent rounded-md w-full sm:w-auto"
                   onClick={goToCreatorProfile}
                 >
                   <UserRound className="size-3.5" />
@@ -1584,7 +1873,7 @@ function HomePage() {
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="h-8 gap-1.5 border-border/80 bg-background/70 text-xs font-medium shadow-none hover:bg-accent rounded-lg w-full sm:w-auto"
+                  className="h-8 gap-1.5 border-border/80 bg-background/80 text-xs font-medium shadow-none hover:bg-accent rounded-md w-full sm:w-auto"
                   onClick={() => {
                     // Persist immediately so text is not lost if the debounced draft write has not run yet.
                     try {
@@ -1612,8 +1901,156 @@ function HomePage() {
               </label>
             </div>
 
+            {isAuthenticated && isAdminUser && (
+              <div className="mx-4 mb-3 rounded-xl border border-zinc-200/80 dark:border-zinc-700/60 bg-zinc-50/60 dark:bg-zinc-900/40 p-3.5 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.08em] text-zinc-700 dark:text-zinc-300">
+                      Tutor Voice Cloning
+                    </p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      Save a reusable tutor profile with voice reference and avatar.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-xs rounded-md text-muted-foreground"
+                      onClick={() => clearTutorFields()}
+                    >
+                      Clear
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs rounded-md"
+                      disabled={isCreatingVoice}
+                      onClick={() => void handleCreateCustomVoice()}
+                    >
+                      {isCreatingVoice ? 'Creating tutor...' : 'Create Tutor'}
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                  <label className="text-[11px] text-muted-foreground/90 flex flex-col gap-1">
+                    Tutor Name
+                    <input
+                      value={form.tutorName}
+                      onChange={(e) => updateForm('tutorName', e.target.value)}
+                      placeholder="Shown in presenter list"
+                      className="h-9 rounded-md border border-border/80 bg-background/90 px-2.5 text-xs text-foreground"
+                    />
+                  </label>
+                  <label className="text-[11px] text-muted-foreground/90 flex flex-col gap-1">
+                    Tutor Title
+                    <input
+                      value={form.tutorTitle}
+                      onChange={(e) => updateForm('tutorTitle', e.target.value)}
+                      placeholder="e.g. Python Coach"
+                      className="h-9 rounded-md border border-border/80 bg-background/90 px-2.5 text-xs text-foreground"
+                    />
+                  </label>
+                  <UITextarea
+                    value={form.tutorDescription}
+                    onChange={(e) => updateForm('tutorDescription', e.target.value)}
+                    placeholder="Tutor description"
+                    className="min-h-[64px] text-xs border-border/80 bg-background/90"
+                  />
+                  <label className="text-xs text-muted-foreground flex flex-col gap-1">
+                    Reference Audio (Upload)
+                    <input
+                      type="file"
+                      accept="audio/*"
+                      disabled={isUploadingReferenceAudio}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0] || null;
+                        void handleTutorReferenceAudioUpload(file);
+                        e.currentTarget.value = '';
+                      }}
+                      className="h-9 rounded-md border border-border/80 bg-background/90 px-2.5 py-1 text-xs file:mr-2 file:rounded-md file:border file:border-border/50 file:bg-muted/35 file:px-2 file:py-0.5 file:text-xs file:font-medium"
+                    />
+                    <span className="text-[10px] text-muted-foreground/80 truncate">
+                      {isUploadingReferenceAudio
+                        ? 'Uploading reference audio...'
+                        : form.tutorVoiceReferenceUrl.trim()
+                          ? 'Using uploaded reference audio'
+                        : 'Upload .wav/.mp3/.m4a reference audio (max 20MB)'}
+                    </span>
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                  <label className="text-xs text-muted-foreground flex flex-col gap-1">
+                    Tutor Avatar
+                    <input
+                      type="file"
+                      accept="image/png"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0] || null;
+                        handleTutorAvatarUpload(file);
+                        e.currentTarget.value = '';
+                      }}
+                      className="h-8 rounded-md border border-border/80 bg-background/90 px-2.5 py-1 text-xs file:mr-2 file:rounded-md file:border file:border-border/50 file:bg-muted/35 file:px-2 file:py-0.5 file:text-xs file:font-medium"
+                    />
+                    <span className="text-[10px] text-muted-foreground/80 truncate">
+                      {form.tutorAvatar.startsWith('data:image/png')
+                        ? 'Using uploaded PNG avatar'
+                        : 'Upload a PNG avatar for the tutor'}
+                    </span>
+                  </label>
+
+                  <label className="text-xs text-muted-foreground flex flex-col gap-1">
+                    Saved Tutor Preset
+                    <select
+                      value={form.tutorVoicePresetId}
+                      onChange={(e) => {
+                        const presetId = e.target.value;
+                        markTutorFieldsTouched();
+                        if (!presetId) {
+                          setForm((prev) => ({ ...prev, ...emptyTutorFormFields }));
+                          void savePreferredTutorToDb(null);
+                          return;
+                        }
+                        const voice = customVoices.find((v) => v.id === presetId);
+                        if (!voice) {
+                          updateForm('tutorVoicePresetId', presetId);
+                          return;
+                        }
+                        setForm((prev) => ({
+                          ...prev,
+                          tutorVoicePresetId: presetId,
+                          tutorName: voice.name || '',
+                          tutorTitle: voice.title || voice.name || '',
+                          tutorDescription: voice.description || '',
+                          tutorVoiceReferenceUrl: voice.referenceUrl || '',
+                          tutorAvatar: voice.avatar || '',
+                        }));
+                        applyTutorToPresenters(voice);
+                        void savePreferredTutorToDb(voice);
+                      }}
+                      className="h-8 rounded-md border border-border/80 bg-background/90 px-2.5 text-xs text-foreground"
+                    >
+                      <option value="">No preset selected</option>
+                      {customVoices.map((voice) => (
+                        <option key={voice.id} value={voice.id}>
+                          {voice.name} ({voice.providerId}:{voice.providerVoiceId})
+                        </option>
+                      ))}
+                    </select>
+                    {isVoicesLoading && (
+                      <span className="text-[10px]">Loading tutor presets...</span>
+                    )}
+                  </label>
+                </div>
+              </div>
+            )}
+
             {/* Toolbar row */}
-            <div className="px-3 pb-3 flex flex-wrap sm:flex-nowrap items-end gap-2">
+            <div className="px-4 pb-4 flex flex-wrap sm:flex-nowrap items-end gap-2">
               <div className="min-w-0 w-full sm:flex-1">
                 <GenerationToolbar
                   language={form.language}
@@ -1659,7 +2096,7 @@ function HomePage() {
                 className={cn(
                   'h-10 rounded-xl flex items-center justify-center gap-1.5 transition-all px-4 min-w-[130px] w-[calc(100%-3rem)] min-[420px]:w-auto sm:w-auto sm:shrink-0',
                   canGenerateNow
-                    ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 hover:opacity-95 shadow-sm cursor-pointer'
+                    ? 'bg-gradient-to-r from-indigo-600 via-violet-600 to-sky-600 text-white hover:brightness-110 shadow-[0_16px_34px_-18px_rgba(79,70,229,0.85)] cursor-pointer'
                     : 'bg-muted text-muted-foreground/40 cursor-not-allowed',
                 )}
               >
@@ -1691,9 +2128,9 @@ function HomePage() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.5 }}
-          className="relative z-30 mt-8 sm:mt-10 w-full max-w-6xl flex flex-col items-center pointer-events-auto rounded-2xl sm:rounded-3xl border border-white/55 bg-white/65 px-3 sm:px-5 py-4 sm:py-5 shadow-[0_24px_50px_-32px_rgba(15,23,42,0.45)] backdrop-blur-xl dark:border-slate-700/70 dark:bg-slate-900/55"
+          className="relative z-30 mt-8 sm:mt-10 w-full max-w-6xl flex flex-col items-center pointer-events-auto rounded-2xl sm:rounded-3xl border border-white/90 bg-white/84 px-3 sm:px-5 py-4 sm:py-5 shadow-[0_28px_64px_-36px_rgba(15,23,42,0.72)] ring-1 ring-white/65 backdrop-blur-xl dark:border-slate-700/70 dark:bg-slate-900/74 dark:ring-white/10"
         >
-          {/* Trigger — divider-line with centered text */}
+          {/* Trigger / header */}
           <button
             onClick={() => {
               const next = !recentOpen;
@@ -1704,23 +2141,32 @@ function HomePage() {
                 /* ignore */
               }
             }}
-            className="group w-full flex items-center gap-4 py-2.5 cursor-pointer"
+            className="group w-full rounded-2xl border border-border/50 bg-white/70 dark:bg-slate-900/45 px-3.5 py-3 flex items-center justify-between gap-3 text-left transition-colors hover:border-border"
           >
-            <div className="flex-1 h-px bg-border/40 group-hover:bg-border/70 transition-colors" />
-            <span className="shrink-0 inline-flex items-center gap-2 rounded-full border border-violet-200/70 bg-violet-50/80 px-3 py-1.5 text-[13px] font-semibold text-violet-700 dark:border-violet-700/60 dark:bg-violet-900/30 dark:text-violet-200 transition-colors select-none">
-              <Clock className="size-3.5 text-violet-500" />
-              {t('classroom.recentClassrooms')}
-              <span className="inline-flex items-center justify-center rounded-full bg-violet-600 px-1.5 py-0.5 text-[10px] tabular-nums text-white">
-                {isRecentsLoading && classrooms.length === 0 ? '...' : totalRecentItems}
+            <div className="min-w-0">
+              <div className="inline-flex items-center gap-2 text-sm font-semibold text-foreground">
+                <Clock className="size-4 text-violet-500" />
+                <span>{t('classroom.recentClassrooms')}</span>
+                <span className="inline-flex items-center justify-center rounded-full bg-violet-600 px-1.5 py-0.5 text-[10px] tabular-nums text-white">
+                  {isRecentsLoading && classrooms.length === 0 ? '...' : totalRecentItems}
+                </span>
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {recentsSource === 'remote' ? 'Synced from cloud storage' : 'Loaded from local cache'}
+              </p>
+            </div>
+            <div className="inline-flex items-center gap-2 shrink-0">
+              <span className="rounded-full border border-border/60 bg-background/70 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                {totalRecentPages > 1 ? `Page ${recentPage}/${totalRecentPages}` : 'Single page'}
               </span>
               <motion.div
                 animate={{ rotate: recentOpen ? 180 : 0 }}
-                transition={{ duration: 0.3, ease: 'easeInOut' }}
+                transition={{ duration: 0.25, ease: 'easeInOut' }}
+                className="rounded-full border border-border/60 bg-background/70 p-1"
               >
-                <ChevronDown className="size-3.5 text-violet-500" />
+                <ChevronDown className="size-3.5 text-muted-foreground" />
               </motion.div>
-            </span>
-            <div className="flex-1 h-px bg-border/40 group-hover:bg-border/70 transition-colors" />
+            </div>
           </button>
 
           {/* Expandable content */}
@@ -1769,7 +2215,9 @@ function HomePage() {
                           confirmingDelete={pendingDeleteId === classroom.id}
                           onConfirmDelete={() => confirmDelete(classroom.id)}
                           onCancelDelete={() => setPendingDeleteId(null)}
-                          onClick={() => router.push(`/classroom/${encodeURIComponent(classroom.id)}`)}
+                          onClick={() =>
+                            router.push(`/classroom/${encodeURIComponent(classroom.id)}`)
+                          }
                         />
                       </motion.div>
                     ))}
@@ -1787,12 +2235,12 @@ function HomePage() {
                         setRecentPage(nextPage);
                         void loadClassrooms(nextPage);
                       }}
-                      className="h-8 rounded-full px-3 text-xs"
+                      className="h-8 rounded-lg px-3 text-xs border-border/70 bg-background/75"
                     >
                       <ChevronLeft className="size-3.5" />
                       <span className="hidden sm:inline ml-1">Prev</span>
                     </Button>
-                    <span className="rounded-full border border-violet-200/70 bg-violet-50 px-2.5 sm:px-3 py-1 text-[11px] sm:text-xs font-semibold text-violet-700 dark:border-violet-700/60 dark:bg-violet-900/30 dark:text-violet-200 whitespace-nowrap">
+                    <span className="rounded-lg border border-border/70 bg-background/75 px-2.5 sm:px-3 py-1 text-[11px] sm:text-xs font-semibold text-foreground/85 whitespace-nowrap">
                       Page {recentPage} of {totalRecentPages}
                     </span>
                     <Button
@@ -1805,7 +2253,7 @@ function HomePage() {
                         setRecentPage(nextPage);
                         void loadClassrooms(nextPage);
                       }}
-                      className="h-8 rounded-full px-3 text-xs"
+                      className="h-8 rounded-lg px-3 text-xs border-border/70 bg-background/75"
                     >
                       <span className="hidden sm:inline mr-1">Next</span>
                       <ChevronRight className="size-3.5" />
@@ -1819,7 +2267,7 @@ function HomePage() {
       )}
 
       {/* Footer — flows with content, at the very end */}
-      <div className="mt-auto pt-12 pb-4 text-center text-xs text-muted-foreground/40">
+      <div className="mt-auto pt-12 pb-4 text-center text-xs text-muted-foreground/55">
         Allen Girls Adventure Open Source Project
       </div>
     </div>
@@ -2154,13 +2602,13 @@ function ClassroomCard({
 
   return (
     <div
-      className="group cursor-pointer rounded-2xl border border-white/70 bg-white/80 p-2 shadow-[0_12px_30px_-24px_rgba(15,23,42,0.85)] transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_18px_40px_-24px_rgba(59,130,246,0.45)] dark:border-slate-700/70 dark:bg-slate-900/70"
+      className="group cursor-pointer rounded-2xl border border-white/90 bg-white/86 p-2.5 shadow-[0_12px_28px_-22px_rgba(15,23,42,0.65)] ring-1 ring-white/60 transition-all duration-300 hover:-translate-y-1 hover:shadow-[0_20px_40px_-22px_rgba(79,70,229,0.3)] dark:border-slate-700/70 dark:bg-slate-900/74 dark:ring-white/10"
       onClick={confirmingDelete ? undefined : onClick}
     >
       {/* Thumbnail — large radius, no border, subtle bg */}
       <div
         ref={thumbRef}
-        className="relative w-full aspect-[16/9] rounded-xl bg-slate-100 dark:bg-slate-800/80 overflow-hidden transition-transform duration-300 group-hover:scale-[1.015]"
+        className="relative w-full aspect-[16/9] rounded-xl bg-slate-100 dark:bg-slate-800/80 overflow-hidden ring-1 ring-black/5 dark:ring-white/10 transition-transform duration-300 group-hover:scale-[1.015]"
       >
         {slide ? (
           <ThumbnailSlide
@@ -2235,13 +2683,18 @@ function ClassroomCard({
       </div>
 
       {/* Info — outside the thumbnail */}
-      <div className="mt-2.5 px-1">
-        <span className="mb-1.5 inline-flex items-center rounded-full border border-violet-200/70 bg-violet-50 px-2 py-0.5 text-[11px] font-semibold text-violet-700 dark:border-violet-700/60 dark:bg-violet-900/30 dark:text-violet-200">
-          {classroom.sceneCount} {t('classroom.slides')} · {formatDate(classroom.updatedAt)}
-        </span>
+      <div className="mt-2.5 px-1.5">
+        <div className="mb-1.5 flex items-center justify-between gap-2">
+          <span className="inline-flex items-center rounded-md border border-violet-200/80 bg-violet-50/90 px-2 py-0.5 text-[11px] font-semibold text-violet-700 dark:border-violet-700/60 dark:bg-violet-900/30 dark:text-violet-200">
+            {classroom.sceneCount} {t('classroom.slides')}
+          </span>
+          <span className="text-[11px] text-muted-foreground whitespace-nowrap">
+            {formatDate(classroom.updatedAt)}
+          </span>
+        </div>
         <Tooltip>
           <TooltipTrigger asChild>
-            <p className="font-semibold text-[15px] truncate text-foreground/90 min-w-0">
+            <p className="font-semibold text-[14px] leading-snug line-clamp-2 text-foreground/90 min-w-0 min-h-[2.4em]">
               {classroom.name}
             </p>
           </TooltipTrigger>

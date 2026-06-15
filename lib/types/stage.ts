@@ -25,6 +25,8 @@ export interface Stage {
   whiteboard?: Whiteboard[];
   // Agent IDs selected when this classroom was created
   agentIds?: string[];
+  /** Set when server-side speech clips were hydrated into the stage payload */
+  audioHydratedAt?: number;
 }
 
 /**

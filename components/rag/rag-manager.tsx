@@ -111,17 +111,25 @@ export function RAGManager() {
   }, []);
 
   return (
-    <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>RAG Document Management</CardTitle>
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <p className="text-xs font-semibold uppercase tracking-[0.12em] text-indigo-600 dark:text-indigo-300">
+          Knowledge Base
+        </p>
+        <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+          Manage RAG Documents
+        </h1>
+      </div>
+      <Card className="border-white/80 dark:border-slate-700/70 bg-white/72 dark:bg-slate-900/58 backdrop-blur-md shadow-[0_16px_36px_-26px_rgba(15,23,42,0.5)]">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-xl">RAG Document Management</CardTitle>
           <CardDescription>
             Upload PDF documents to enable Retrieval-Augmented Generation (RAG) for more accurate
             responses. PDFs need selectable text (not scanned images only). On a deployed server,
             indexes are in memory until restarted—use local dev for persistent testing.
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <div className="space-y-4">
             <div>
               <input
@@ -135,7 +143,7 @@ export function RAGManager() {
               <Button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={isUploading}
-                className="w-full"
+                className="w-full h-10 rounded-lg bg-gradient-to-r from-indigo-600 via-violet-600 to-sky-600 text-white hover:brightness-110"
               >
                 {isUploading ? (
                   <>
@@ -152,31 +160,36 @@ export function RAGManager() {
             </div>
 
             <div className="space-y-2">
-              <h3 className="text-sm font-medium">Indexed Documents</h3>
+              <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">
+                Indexed Documents
+              </h3>
               {isLoading ? (
-                <div className="flex items-center justify-center py-4">
+                <div className="flex items-center justify-center py-6 rounded-lg border border-white/70 dark:border-slate-700/70 bg-white/45 dark:bg-slate-900/45">
                   <Loader2 className="h-4 w-4 animate-spin" />
                   <span className="ml-2">Loading documents...</span>
                 </div>
               ) : documents.length === 0 ? (
-                <p className="text-sm text-muted-foreground py-4">
-                  No documents indexed yet. Upload a PDF to get started.
-                </p>
+                <div className="rounded-lg border border-white/70 dark:border-slate-700/70 bg-white/45 dark:bg-slate-900/45 px-4 py-6 text-center">
+                  <p className="text-sm text-muted-foreground">
+                    No documents indexed yet. Upload a PDF to get started.
+                  </p>
+                </div>
               ) : (
                 <div className="space-y-2">
                   {documents.map((doc) => (
                     <div
                       key={doc.fileName}
-                      className="flex items-center justify-between p-3 border rounded-lg"
+                      className="flex items-center justify-between p-3 border border-white/75 dark:border-slate-700/70 rounded-lg bg-white/55 dark:bg-slate-900/45"
                     >
                       <div className="flex items-center space-x-2">
-                        <FileText className="h-4 w-4" />
+                        <FileText className="h-4 w-4 text-indigo-500" />
                         <span className="text-sm font-medium">{doc.fileName}</span>
                       </div>
                       <Button
                         variant="outline"
                         size="sm"
                         onClick={() => handleDeleteDocument(doc.fileName)}
+                        className="rounded-md border-white/70 dark:border-slate-700/70 bg-white/60 dark:bg-slate-900/50"
                       >
                         <Trash2 className="h-4 w-4" />
                       </Button>

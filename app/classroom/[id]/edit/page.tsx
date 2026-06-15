@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { SceneProvider } from '@/lib/contexts/scene-context';
 import { useStageStore } from '@/lib/store';
+import { useSnapshotStore } from '@/lib/store/snapshot';
 import { useCanvasStore } from '@/lib/store/canvas';
 import { SceneRenderer } from '@/components/stage/scene-renderer';
 import { useMediaGenerationStore } from '@/lib/store/media-generation';
@@ -13,6 +14,76 @@ import type { Scene } from '@/lib/types/stage';
 import type { Action } from '@/lib/types/action';
 import type { PPTElement } from '@/lib/types/slides';
 import { nanoid } from 'nanoid';
+import { Layers, LayoutGrid, Loader2 } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { SlideTextRichToolbar } from '@/components/slide-renderer/Editor/Canvas/Operate/SlideTextRichToolbar';
+import { EditCanvasActionPanel } from '@/components/classroom/edit-canvas-action-panel';
+import { EditCanvasAmbient } from '@/components/classroom/edit-canvas-ambient';
+import { EditCanvasHeader } from '@/components/classroom/edit-canvas-header';
+import { EditCanvasPanel } from '@/components/classroom/edit-canvas-panel';
+import { EditCanvasSlideButton } from '@/components/classroom/edit-canvas-slide-button';
+import {
+  editAccentGradient,
+  editCanvasChromeBar,
+  editCanvasFrame,
+  editCanvasWorkspace,
+  editGlassPanel,
+  editPanelBody,
+  editStudioBackdrop,
+} from '@/lib/classroom/edit-canvas-styles';
+import {
+  adjustElementOpacity,
+  applySlideElements,
+  alignElementsToCanvas,
+  boldTextElements,
+  createArrowLineElement,
+  createCalloutShapeElement,
+  createCaptionElement,
+  createHighlightBarElement,
+  createImportantBadgeElement,
+  createStickyNoteElement,
+  createTitleBannerElement,
+  deleteSidebarElements,
+  distributeElementsHorizontally,
+  duplicateElements,
+  flipElementsHorizontal,
+  flipElementsVertical,
+  italicTextElements,
+  removeEditOverlayTexts,
+  reorderElement,
+  resolveTargetElementIds,
+  widenTextElements,
+} from '@/lib/classroom/edit-slide-tools';
+import { ElementAlignCommands } from '@/lib/types/edit';
+
+type TesseractBbox = { x0: number; y0: number; x1: number; y1: number };
+
+type TesseractLineLike = {
+  text?: string;
+  bbox?: TesseractBbox;
+};
+
+function flattenTesseractLines(page: {
+  blocks?: { paragraphs?: { lines?: TesseractLineLike[] }[] }[] | null;
+}): TesseractLineLike[] {
+  if (!page.blocks) return [];
+  return page.blocks.flatMap((block) =>
+    (block.paragraphs ?? []).flatMap((paragraph) => paragraph.lines ?? []),
+  );
+}
+
+function getImageNaturalSize(src: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () =>
+      resolve({
+        width: Math.max(1, img.naturalWidth),
+        height: Math.max(1, img.naturalHeight),
+      });
+    img.onerror = () => resolve({ width: 1, height: 1 });
+    img.src = src;
+  });
+}
 
 export default function ClassroomEditCanvasPage() {
   const params = useParams();
@@ -29,6 +100,13 @@ export default function ClassroomEditCanvasPage() {
   const scenes = useStageStore((s) => s.scenes);
   const currentSceneId = useStageStore((s) => s.currentSceneId);
   const handleElementId = useCanvasStore.use.handleElementId();
+  const activeElementIdList = useCanvasStore.use.activeElementIdList();
+  const setActiveElementIdList = useCanvasStore.use.setActiveElementIdList();
+
+  const snapshotCursor = useSnapshotStore((s) => s.snapshotCursor);
+  const snapshotLength = useSnapshotStore((s) => s.snapshotLength);
+  const canUndoHistory = snapshotCursor > 0;
+  const canRedoHistory = snapshotCursor < snapshotLength - 1;
 
   const [authReady, setAuthReady] = useState(false);
   const [isAdminUser, setIsAdminUser] = useState(false);
@@ -38,9 +116,30 @@ export default function ClassroomEditCanvasPage() {
   const [isConvertingOcr, setIsConvertingOcr] = useState(false);
   const [imageUrlInput, setImageUrlInput] = useState('');
   const [isReplacingImage, setIsReplacingImage] = useState(false);
+  const [finalizeSaveNotice, setFinalizeSaveNotice] = useState<string | null>(null);
+  const [isSavingAll, setIsSavingAll] = useState(false);
+  const [manualSaveNotice, setManualSaveNotice] = useState<string | null>(null);
   const imageUploadInputRef = useRef<HTMLInputElement | null>(null);
   const scriptSyncGuardRef = useRef(false);
   const persistDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!finalizeSaveNotice) return;
+    const t = window.setTimeout(() => setFinalizeSaveNotice(null), 8000);
+    return () => window.clearTimeout(t);
+  }, [finalizeSaveNotice]);
+
+  useEffect(() => {
+    if (!manualSaveNotice) return;
+    const t = window.setTimeout(() => setManualSaveNotice(null), 5000);
+    return () => window.clearTimeout(t);
+  }, [manualSaveNotice]);
+
+  useEffect(() => {
+    const { setClassroomCanvasEditMode } = useCanvasStore.getState();
+    setClassroomCanvasEditMode(true);
+    return () => setClassroomCanvasEditMode(false);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -153,6 +252,8 @@ export default function ClassroomEditCanvasPage() {
         if (slideScenes.length > 0) {
           setCurrentSceneId(slideScenes[0].id);
         }
+
+        await useSnapshotStore.getState().resetSnapshotHistory();
       } catch (e) {
         if (!active) return;
         setError(e instanceof Error ? e.message : 'Failed to load classroom');
@@ -184,6 +285,16 @@ export default function ClassroomEditCanvasPage() {
       if (slideScenes.length > 0) setCurrentSceneId(slideScenes[0].id);
     }
   }, [selectedScene, slideScenes, setCurrentSceneId]);
+
+  /** Active canvas text target for sidebar rich-text tools (matches ProseMirror `elementId`). */
+  const slideRichTextTarget = useMemo(() => {
+    if (!handleElementId || !selectedScene || selectedScene.content.type !== 'slide') return null;
+    const el = selectedScene.content.canvas.elements.find((e) => e.id === handleElementId);
+    if (!el) return null;
+    if (el.type === 'text') return { id: el.id, defaultColor: el.defaultColor };
+    if (el.type === 'shape' && el.text) return { id: el.id, defaultColor: el.text.defaultColor };
+    return null;
+  }, [handleElementId, selectedScene]);
 
   const editableBlocks = useMemo(() => {
     if (!selectedScene || selectedScene.content.type !== 'slide') return [];
@@ -235,16 +346,19 @@ export default function ClassroomEditCanvasPage() {
       },
       updatedAt: Date.now(),
     };
-    applySceneUpdate(nextScene);
+    applySceneUpdate(nextScene, { recordHistory: true });
   };
 
   const handleUpdateSceneTitle = (value: string) => {
     if (!selectedScene) return;
-    applySceneUpdate({
-      ...selectedScene,
-      title: value,
-      updatedAt: Date.now(),
-    });
+    applySceneUpdate(
+      {
+        ...selectedScene,
+        title: value,
+        updatedAt: Date.now(),
+      },
+      { recordHistory: true },
+    );
   };
 
   const speechActions = useMemo(() => {
@@ -329,7 +443,10 @@ export default function ClassroomEditCanvasPage() {
     };
   };
 
-  const applySceneUpdate = (scene: Scene, options?: { refreshTutorScript?: boolean }) => {
+  const applySceneUpdate = (
+    scene: Scene,
+    options?: { refreshTutorScript?: boolean; recordHistory?: boolean },
+  ) => {
     const next = options?.refreshTutorScript === false ? scene : rebuildTutorScript(scene);
     // Mark as explicitly edited so classroom runtime does not auto-regenerate
     // Gamma/default scripts repeatedly on every load.
@@ -339,6 +456,10 @@ export default function ClassroomEditCanvasPage() {
       __scriptLocked: true,
     } as Scene;
     updateScene(lockedScene.id, lockedScene);
+
+    if (options?.recordHistory) {
+      void useSnapshotStore.getState().addSnapshot();
+    }
 
     if (persistDebounceRef.current) {
       clearTimeout(persistDebounceRef.current);
@@ -375,11 +496,222 @@ export default function ClassroomEditCanvasPage() {
     const current = nextActions[actionIndex];
     if (!current || current.type !== 'speech') return;
     nextActions[actionIndex] = { ...current, text: value };
-    applySceneUpdate({
-      ...selectedScene,
-      actions: nextActions,
-      updatedAt: Date.now(),
-    }, { refreshTutorScript: false });
+    applySceneUpdate(
+      {
+        ...selectedScene,
+        actions: nextActions,
+        updatedAt: Date.now(),
+      },
+      { refreshTutorScript: false, recordHistory: true },
+    );
+  };
+
+  const getSlideElements = (): PPTElement[] => {
+    if (!selectedScene || selectedScene.content.type !== 'slide') return [];
+    return selectedScene.content.canvas.elements;
+  };
+
+  const getTargetElementIds = () =>
+    resolveTargetElementIds(getSlideElements(), activeElementIdList, handleElementId, {
+      sidebarOnly: true,
+    });
+
+  const commitSlideElements = (elements: PPTElement[], selectIds?: string[]) => {
+    if (!selectedScene || selectedScene.content.type !== 'slide') return;
+    applySceneUpdate(applySlideElements(selectedScene, elements), { recordHistory: true });
+    if (selectIds?.length) setActiveElementIdList(selectIds);
+  };
+
+  const handleUndoHistory = async () => {
+    if (!canUndoHistory) return;
+    await useSnapshotStore.getState().undo();
+    setActiveElementIdList([]);
+    if (persistDebounceRef.current) {
+      clearTimeout(persistDebounceRef.current);
+    }
+    persistDebounceRef.current = setTimeout(() => {
+      void persistEditChanges();
+      persistDebounceRef.current = null;
+    }, 700);
+  };
+
+  const handleRedoHistory = async () => {
+    if (!canRedoHistory) return;
+    await useSnapshotStore.getState().redo();
+    setActiveElementIdList([]);
+    if (persistDebounceRef.current) {
+      clearTimeout(persistDebounceRef.current);
+    }
+    persistDebounceRef.current = setTimeout(() => {
+      void persistEditChanges();
+      persistDebounceRef.current = null;
+    }, 700);
+  };
+
+  useEffect(() => {
+    if (loading || error) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+
+      const target = e.target;
+      if (target instanceof HTMLElement) {
+        const tag = target.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable) return;
+      }
+
+      if (e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        void handleUndoHistory();
+      } else if (e.key === 'y' || (e.key === 'z' && e.shiftKey)) {
+        e.preventDefault();
+        void handleRedoHistory();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [loading, error, canUndoHistory, canRedoHistory]);
+
+  const handleDuplicateSelection = () => {
+    const elements = getSlideElements();
+    const targetIds = getTargetElementIds();
+    const result = duplicateElements(elements, targetIds);
+    if (!result) return;
+    commitSlideElements(result.elements, result.newIds);
+  };
+
+  const handleCenterSelection = () => {
+    const elements = getSlideElements();
+    const targetIds = getTargetElementIds();
+    const next = alignElementsToCanvas(elements, targetIds, ElementAlignCommands.CENTER);
+    if (!next) return;
+    commitSlideElements(next, targetIds);
+  };
+
+  const handleAlignSelection = (command: ElementAlignCommands) => {
+    const elements = getSlideElements();
+    const targetIds = getTargetElementIds();
+    const next = alignElementsToCanvas(elements, targetIds, command);
+    if (!next) return;
+    commitSlideElements(next, targetIds);
+  };
+
+  const handleDeleteSelection = () => {
+    const targetIds = getTargetElementIds();
+    const next = deleteSidebarElements(getSlideElements(), targetIds);
+    if (!next) return;
+    commitSlideElements(next, []);
+  };
+
+  const handleWidenText = () => {
+    const elements = getSlideElements();
+    const targetIds = getTargetElementIds();
+    const next = widenTextElements(elements, targetIds);
+    if (!next) return;
+    commitSlideElements(next, targetIds.length ? targetIds : undefined);
+  };
+
+  const handleDistributeHorizontally = () => {
+    const elements = getSlideElements();
+    const targetIds = getTargetElementIds();
+    const next = distributeElementsHorizontally(elements, targetIds);
+    if (!next) return;
+    commitSlideElements(next, targetIds);
+  };
+
+  const handleItalicText = () => {
+    const elements = getSlideElements();
+    const targetIds = getTargetElementIds();
+    const next = italicTextElements(elements, targetIds);
+    if (!next) return;
+    commitSlideElements(next, targetIds.length ? targetIds : undefined);
+  };
+
+  const handleAdjustOpacity = (delta: number) => {
+    const elements = getSlideElements();
+    const targetIds = getTargetElementIds();
+    const next = adjustElementOpacity(elements, targetIds, delta);
+    if (!next) return;
+    commitSlideElements(next, targetIds);
+  };
+
+  const handleReorderSelection = (position: 'front' | 'back') => {
+    const targetIds = getTargetElementIds();
+    if (targetIds.length === 0) return;
+    let elements = getSlideElements();
+    for (const id of targetIds) {
+      const next = reorderElement(elements, id, position);
+      if (next) elements = next;
+    }
+    commitSlideElements(elements, targetIds);
+  };
+
+  const handleFlipHorizontal = () => {
+    const elements = getSlideElements();
+    const targetIds = getTargetElementIds();
+    const next = flipElementsHorizontal(elements, targetIds);
+    if (!next) return;
+    commitSlideElements(next, targetIds);
+  };
+
+  const handleFlipVertical = () => {
+    const elements = getSlideElements();
+    const targetIds = getTargetElementIds();
+    const next = flipElementsVertical(elements, targetIds);
+    if (!next) return;
+    commitSlideElements(next, targetIds);
+  };
+
+  const handleBoldText = () => {
+    const elements = getSlideElements();
+    const targetIds = getTargetElementIds();
+    const next = boldTextElements(elements, targetIds);
+    if (!next) return;
+    commitSlideElements(next, targetIds.length ? targetIds : undefined);
+  };
+
+  const handleClearOverlayTexts = () => {
+    const next = removeEditOverlayTexts(getSlideElements());
+    if (!next) return;
+    commitSlideElements(next, []);
+  };
+
+  const handleAddStickyNote = () => {
+    const note = createStickyNoteElement();
+    commitSlideElements([...getSlideElements(), note], [note.id]);
+  };
+
+  const handleAddCallout = () => {
+    const callout = createCalloutShapeElement();
+    commitSlideElements([...getSlideElements(), callout], [callout.id]);
+  };
+
+  const handleAddHighlightBar = () => {
+    const bar = createHighlightBarElement();
+    commitSlideElements([...getSlideElements(), bar], [bar.id]);
+  };
+
+  const handleAddTitleBanner = () => {
+    if (!selectedScene) return;
+    const banner = createTitleBannerElement(selectedScene.title || `Slide ${selectedScene.order || 1}`);
+    commitSlideElements([...getSlideElements(), banner], [banner.id]);
+  };
+
+  const handleAddCaption = () => {
+    const caption = createCaptionElement();
+    commitSlideElements([...getSlideElements(), caption], [caption.id]);
+  };
+
+  const handleAddArrow = () => {
+    const arrow = createArrowLineElement();
+    commitSlideElements([...getSlideElements(), arrow], [arrow.id]);
+  };
+
+  const handleAddImportantBadge = () => {
+    const badge = createImportantBadgeElement();
+    commitSlideElements([...getSlideElements(), badge], [badge.id]);
   };
 
   const handleAddSlideTextBox = () => {
@@ -403,17 +735,20 @@ export default function ClassroomEditCanvasPage() {
       paragraphSpace: 5,
     });
 
-    applySceneUpdate({
-      ...selectedScene,
-      content: {
-        ...selectedScene.content,
-        canvas: {
-          ...selectedScene.content.canvas,
-          elements: nextElements,
+    applySceneUpdate(
+      {
+        ...selectedScene,
+        content: {
+          ...selectedScene.content,
+          canvas: {
+            ...selectedScene.content.canvas,
+            elements: nextElements,
+          },
         },
+        updatedAt: Date.now(),
       },
-      updatedAt: Date.now(),
-    });
+      { recordHistory: true },
+    );
   };
 
   const handleCreateLiveTextFromSpeech = () => {
@@ -446,17 +781,20 @@ export default function ClassroomEditCanvasPage() {
       paragraphSpace: 5,
     });
 
-    applySceneUpdate({
-      ...selectedScene,
-      content: {
-        ...selectedScene.content,
-        canvas: {
-          ...selectedScene.content.canvas,
-          elements: nextElements,
+    applySceneUpdate(
+      {
+        ...selectedScene,
+        content: {
+          ...selectedScene.content,
+          canvas: {
+            ...selectedScene.content.canvas,
+            elements: nextElements,
+          },
         },
+        updatedAt: Date.now(),
       },
-      updatedAt: Date.now(),
-    });
+      { recordHistory: true },
+    );
   };
 
   const toPlainText = (html: string) => {
@@ -483,13 +821,17 @@ export default function ClassroomEditCanvasPage() {
 
     if (textOverlays.length === 0) return;
 
+    setFinalizeSaveNotice(null);
     setIsFinalizing(true);
     try {
       const canvas = document.createElement('canvas');
       canvas.width = 1000;
       canvas.height = 563;
       const ctx = canvas.getContext('2d');
-      if (!ctx) return;
+      if (!ctx) {
+        setError('Could not access canvas to finalize the slide image.');
+        return;
+      }
 
       const background = new Image();
       background.crossOrigin = 'anonymous';
@@ -538,18 +880,26 @@ export default function ClassroomEditCanvasPage() {
           (el) => !(el.type === 'text' && (el.id.startsWith('edit_text_') || el.id.startsWith('edit_live_text_'))),
         );
 
-      applySceneUpdate({
-        ...selectedScene,
-        content: {
-          ...selectedScene.content,
-          canvas: {
-            ...selectedScene.content.canvas,
-            elements: nextElements,
+      applySceneUpdate(
+        {
+          ...selectedScene,
+          content: {
+            ...selectedScene.content,
+            canvas: {
+              ...selectedScene.content.canvas,
+              elements: nextElements,
+            },
           },
+          updatedAt: Date.now(),
         },
-        updatedAt: Date.now(),
-      });
+        { recordHistory: true },
+      );
+      await persistStageNow();
+      setFinalizeSaveNotice(
+        'Your changes have been saved. Overlay text was merged into the slide image and temporary text boxes were removed.',
+      );
     } catch (e) {
+      setFinalizeSaveNotice(null);
       setError(e instanceof Error ? e.message : 'Failed to finalize slide edits');
     } finally {
       setIsFinalizing(false);
@@ -569,11 +919,12 @@ export default function ClassroomEditCanvasPage() {
       const result = await worker.recognize(imageElement.src);
       await worker.terminate();
 
-      const lines = (result.data?.lines || []).filter((line) => (line.text || '').trim().length > 0);
+      const lines = flattenTesseractLines(result.data).filter(
+        (line) => (line.text || '').trim().length > 0,
+      );
       if (lines.length === 0) return;
 
-      const ocrW = result.data?.width || 1;
-      const ocrH = result.data?.height || 1;
+      const { width: ocrW, height: ocrH } = await getImageNaturalSize(imageElement.src);
 
       const overlayElements: PPTElement[] = lines.map((line, idx) => {
         const bbox = line.bbox || { x0: 0, y0: 0, x1: 300, y1: 40 };
@@ -604,17 +955,20 @@ export default function ClassroomEditCanvasPage() {
         };
       });
 
-      applySceneUpdate({
-        ...selectedScene,
-        content: {
-          ...selectedScene.content,
-          canvas: {
-            ...selectedScene.content.canvas,
-            elements: [...elements, ...overlayElements],
+      applySceneUpdate(
+        {
+          ...selectedScene,
+          content: {
+            ...selectedScene.content,
+            canvas: {
+              ...selectedScene.content.canvas,
+              elements: [...elements, ...overlayElements],
+            },
           },
+          updatedAt: Date.now(),
         },
-        updatedAt: Date.now(),
-      });
+        { recordHistory: true },
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : 'OCR conversion failed');
     } finally {
@@ -635,6 +989,22 @@ export default function ClassroomEditCanvasPage() {
 
   const persistStageNow = persistEditChanges;
 
+  const handleSaveAll = async () => {
+    if (persistDebounceRef.current) {
+      clearTimeout(persistDebounceRef.current);
+      persistDebounceRef.current = null;
+    }
+    setIsSavingAll(true);
+    setManualSaveNotice(null);
+    setError(null);
+    try {
+      await persistEditChanges();
+      setManualSaveNotice('All changes saved to this classroom.');
+    } finally {
+      setIsSavingAll(false);
+    }
+  };
+
   const fileToDataUrl = (file: File | Blob) =>
     new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
@@ -650,17 +1020,20 @@ export default function ClassroomEditCanvasPage() {
     const nextElements = selectedScene.content.canvas.elements.map((el) =>
       el.id === targetImageId && el.type === 'image' ? { ...el, src: nextSrc } : el,
     );
-    applySceneUpdate({
-      ...selectedScene,
-      content: {
-        ...selectedScene.content,
-        canvas: {
-          ...selectedScene.content.canvas,
-          elements: nextElements,
+    applySceneUpdate(
+      {
+        ...selectedScene,
+        content: {
+          ...selectedScene.content,
+          canvas: {
+            ...selectedScene.content.canvas,
+            elements: nextElements,
+          },
         },
+        updatedAt: Date.now(),
       },
-      updatedAt: Date.now(),
-    });
+      { recordHistory: true },
+    );
     await persistStageNow();
     return true;
   };
@@ -718,181 +1091,204 @@ export default function ClassroomEditCanvasPage() {
   };
 
   return (
-    <div className="h-screen flex flex-col overflow-hidden bg-slate-50 dark:bg-slate-950">
-      <div className="shrink-0 border-b border-slate-200 bg-white px-3 py-2 sm:h-16 sm:px-6 sm:py-0">
-        <div className="flex flex-col gap-2 sm:h-full sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-          <button
-            onClick={() => router.push(`/classroom/${encodeURIComponent(classroomId || '')}`)}
-            className="rounded-lg bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-200"
-          >
-            Back
-          </button>
-          <div className="min-w-0">
-            <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500 sm:text-xs">
-              Edit in Canvas
-            </div>
-            <div className="truncate text-sm font-bold text-slate-900">{stage?.name || ''}</div>
-          </div>
-        </div>
-          <div className="text-xs font-semibold text-slate-500">
-            {authReady && !isAdminUser ? 'Admin only' : ''}
-          </div>
-        </div>
-      </div>
+    <div className="edit-studio relative flex h-screen flex-col overflow-hidden">
+      <EditCanvasAmbient />
+      <EditCanvasHeader
+        classroomName={stage?.name || ''}
+        slideCount={slideScenes.length}
+        currentSlideOrder={selectedScene?.order ?? null}
+        adminRequired={authReady && !isAdminUser}
+        onBack={() => router.push(`/classroom/${encodeURIComponent(classroomId || '')}`)}
+      />
 
       {loading ? (
-        <div className="flex-1 flex items-center justify-center p-6">
-          <div className="text-slate-700 text-sm font-semibold">Loading editor...</div>
+        <div className="relative z-10 flex flex-1 items-center justify-center p-6">
+          <div className={cn('flex flex-col items-center gap-4 rounded-2xl px-10 py-8', editGlassPanel)}>
+            <Loader2 className="size-8 animate-spin text-primary" aria-hidden />
+            <p className="text-sm font-semibold text-foreground">Loading editor…</p>
+          </div>
         </div>
       ) : error ? (
-        <div className="flex-1 flex items-center justify-center p-6">
-          <div className="text-center rounded-2xl border border-slate-200 bg-white px-8 py-6 shadow-sm">
-            <p className="text-destructive mb-4">Error: {error}</p>
+        <div className="relative z-10 flex flex-1 items-center justify-center p-6">
+          <div className={cn('max-w-md text-center rounded-2xl px-8 py-7', editGlassPanel)}>
+            <p className="mb-4 text-sm font-medium text-destructive">Error: {error}</p>
             <button
+              type="button"
               onClick={() => router.push(`/classroom/${encodeURIComponent(classroomId || '')}`)}
-              className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90"
+              className={cn(
+                'rounded-xl px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/25 transition-opacity hover:opacity-95',
+                editAccentGradient,
+              )}
             >
-              Return
+              Return to classroom
             </button>
           </div>
         </div>
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
-          {/* Slide list */}
-          <aside className="max-h-[38vh] border-b border-slate-200 bg-white overflow-auto lg:max-h-none lg:w-[260px] lg:border-b-0 lg:border-r">
-            <div className="border-b border-slate-200 p-3 sm:p-4">
-              <div className="text-xs font-bold uppercase tracking-widest text-slate-500">Slides</div>
-            </div>
-            <div className="flex gap-2 overflow-x-auto p-2 lg:block lg:overflow-visible">
+        <div className={cn('relative z-10 min-h-0 flex-1 overflow-hidden', editStudioBackdrop)}>
+          <EditCanvasPanel
+            title="Slides"
+            description="Pick a slide to edit"
+            icon={LayoutGrid}
+            className="z-30 w-full shrink-0 lg:z-10 lg:h-full lg:min-h-0 lg:w-[min(272px,30vw)]"
+            headerAction={
+              <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-[10px] font-bold tabular-nums text-primary">
+                {slideScenes.length}
+              </span>
+            }
+          >
+            <div className={cn(editPanelBody, 'min-h-0')}>
+            {/* Mobile: horizontal slide strip */}
+            <div className="sticky top-0 flex shrink-0 snap-x snap-mandatory gap-2.5 overflow-x-auto px-3 py-3 scrollbar-studio [-webkit-overflow-scrolling:touch] lg:hidden">
               {slideScenes.length === 0 ? (
-                <div className="text-sm text-slate-600 p-3">No slide scenes available for editing.</div>
+                <p className="py-2 text-xs text-muted-foreground">No slides</p>
               ) : (
-                slideScenes.map((scene) => {
-                  const isActive = scene.id === currentSceneId;
-                  return (
-                    <button
-                      key={scene.id}
-                      onClick={() => setCurrentSceneId(scene.id)}
-                      className={[
-                        'min-w-[180px] rounded-xl border px-3 py-2 text-left transition-colors lg:mb-2 lg:w-full lg:min-w-0',
-                        isActive
-                          ? 'border-emerald-300 bg-emerald-50 text-emerald-900'
-                          : 'border-transparent hover:border-slate-200 bg-transparent text-slate-800',
-                      ].join(' ')}
-                    >
-                      <div className="text-[11px] font-bold text-slate-500">
-                        Slide {scene.order}
-                      </div>
-                      <div className="text-sm font-semibold truncate">{scene.title}</div>
-                    </button>
-                  );
-                })
+                slideScenes.map((scene) => (
+                  <EditCanvasSlideButton
+                    key={scene.id}
+                    order={scene.order}
+                    title={scene.title}
+                    isActive={scene.id === currentSceneId}
+                    layout="horizontal"
+                    onSelect={() => setCurrentSceneId(scene.id)}
+                  />
+                ))
               )}
             </div>
-          </aside>
 
-          {/* Canvas editor */}
-          <main className="min-h-0 min-w-0 flex-1 overflow-auto bg-slate-50 p-3 dark:bg-slate-950 sm:p-4">
-            <div className="mb-3 flex flex-wrap gap-2 rounded-xl border border-slate-200 bg-white p-2 sm:p-3">
-              <button
-                type="button"
-                onClick={handleAddSlideTextBox}
-                className="min-h-[40px] w-full rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-emerald-700 sm:w-auto"
-              >
-                Add live text box
-              </button>
-              <button
-                type="button"
-                onClick={handleCreateLiveTextFromSpeech}
-                className="min-h-[40px] w-full rounded-lg bg-violet-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-violet-700 sm:w-auto"
-              >
-                Generate text from narration
-              </button>
-              <button
-                type="button"
-                onClick={() => {
+            {/* Desktop: vertical slide list — scrolls when text formatting is open */}
+            <div className="hidden min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto overscroll-contain p-2 scrollbar-studio lg:flex">
+              {slideScenes.length === 0 ? (
+                <p className="p-3 text-sm text-muted-foreground">No slide scenes available for editing.</p>
+              ) : (
+                slideScenes.map((scene) => (
+                  <EditCanvasSlideButton
+                    key={scene.id}
+                    order={scene.order}
+                    title={scene.title}
+                    isActive={scene.id === currentSceneId}
+                    layout="vertical"
+                    onSelect={() => setCurrentSceneId(scene.id)}
+                  />
+                ))
+              )}
+            </div>
+
+            {slideRichTextTarget && (
+              <div className="shrink-0 border-t border-border/60 bg-muted/15 p-3 sm:p-4 scrollbar-studio lg:max-h-[min(42vh,320px)] lg:overflow-y-auto">
+                <p className="mb-2 text-[10px] font-bold uppercase tracking-widest text-primary">Text formatting</p>
+                <p className="mb-2 hidden text-[11px] text-muted-foreground sm:block">Selected text box on the canvas.</p>
+                <SlideTextRichToolbar
+                  elementId={slideRichTextTarget.id}
+                  defaultColor={slideRichTextTarget.defaultColor}
+                  embedded
+                />
+              </div>
+            )}
+            </div>
+          </EditCanvasPanel>
+
+          <EditCanvasPanel
+            title="Canvas"
+            description={selectedScene ? `Editing slide ${selectedScene.order}` : 'Select a slide to start'}
+            icon={Layers}
+            className="min-h-0 min-w-0 flex-1"
+          >
+            <div className={cn(editPanelBody, 'p-3 sm:p-4')}>
+              <div className="relative flex min-h-[min(48dvh,560px)] flex-1 flex-col lg:min-h-0">
+                <div className="pointer-events-none absolute -inset-1 rounded-2xl bg-primary/15 opacity-60 blur-lg" aria-hidden />
+                <div className={cn('relative min-h-0 flex-1', editCanvasFrame)}>
+                  <div className={editCanvasChromeBar}>
+                    <span className="text-xs font-medium text-muted-foreground">Workspace</span>
+                    {selectedScene && (
+                      <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-[11px] font-semibold text-primary">
+                        Slide {selectedScene.order}
+                      </span>
+                    )}
+                  </div>
+                  <div className={editCanvasWorkspace}>
+                    <SceneProvider>
+                      {selectedScene ? (
+                        <SceneRenderer scene={selectedScene} mode="autonomous" />
+                      ) : (
+                        <div className="flex h-[min(44dvh,400px)] w-full flex-col items-center justify-center gap-3 px-6 text-center">
+                          <div className="flex size-12 items-center justify-center rounded-2xl bg-primary/10 ring-1 ring-primary/20">
+                            <Layers className="size-6 text-primary" aria-hidden />
+                          </div>
+                          <p className="text-sm font-semibold text-foreground">Select a slide to begin</p>
+                          <p className="max-w-xs text-xs text-muted-foreground">
+                            Choose a slide from the list, then add overlays from Slide tools.
+                          </p>
+                        </div>
+                      )}
+                    </SceneProvider>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </EditCanvasPanel>
+
+          <div className={cn('w-full shrink-0 lg:w-[min(320px,30vw)] lg:min-h-0', editGlassPanel)}>
+              <EditCanvasActionPanel
+                onSaveAll={() => void handleSaveAll()}
+                isSavingAll={isSavingAll}
+                manualSaveNotice={manualSaveNotice}
+                onDismissManualSaveNotice={() => setManualSaveNotice(null)}
+                onAddTextBox={handleAddSlideTextBox}
+                onGenerateFromNarration={handleCreateLiveTextFromSpeech}
+                onRebuildScript={() => {
                   if (!selectedScene) return;
-                  applySceneUpdate(selectedScene);
+                  applySceneUpdate(selectedScene, { recordHistory: true });
                 }}
-                className="min-h-[40px] w-full rounded-lg bg-fuchsia-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-fuchsia-700 sm:w-auto"
-              >
-                Rebuild AI tutor script
-              </button>
-              <button
-                type="button"
-                disabled={isConvertingOcr}
-                onClick={() => {
-                  void handleConvertImageTextToEditable();
+                onUndo={() => void handleUndoHistory()}
+                onRedo={() => void handleRedoHistory()}
+                canUndoHistory={canUndoHistory}
+                canRedoHistory={canRedoHistory}
+                rebuildDisabled={!selectedScene}
+                onConvertOcr={() => void handleConvertImageTextToEditable()}
+                isConvertingOcr={isConvertingOcr}
+                onFinalizeReplace={handleFinalizeReplaceOnImage}
+                isFinalizing={isFinalizing}
+                finalizeSaveNotice={finalizeSaveNotice}
+                onDismissFinalizeNotice={() => setFinalizeSaveNotice(null)}
+                imageUrlInput={imageUrlInput}
+                onImageUrlChange={setImageUrlInput}
+                onReplaceFromUrl={() => void handleReplaceImageFromUrl()}
+                isReplacingImage={isReplacingImage}
+                imageUploadInputRef={imageUploadInputRef}
+                onImageFileChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  void handleReplaceImageFromUpload(file);
+                  e.currentTarget.value = '';
                 }}
-                className="min-h-[40px] w-full rounded-lg bg-amber-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-amber-700 disabled:opacity-50 sm:w-auto"
-              >
-                {isConvertingOcr ? 'Converting OCR...' : 'Convert image text to editable'}
-              </button>
-              <button
-                type="button"
-                disabled={isFinalizing}
-                onClick={() => {
-                  void handleFinalizeReplaceOnImage();
-                }}
-                className="min-h-[40px] w-full rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-blue-700 disabled:opacity-50 sm:w-auto"
-              >
-                {isFinalizing ? 'Finalizing...' : 'Finalize replace'}
-              </button>
-              <div className="flex w-full flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1">
-                <input
-                  type="url"
-                  value={imageUrlInput}
-                  onChange={(e) => setImageUrlInput(e.target.value)}
-                  placeholder="Paste image URL to replace selected image"
-                  className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700 sm:w-[320px] sm:max-w-[60vw]"
-                />
-                <button
-                  type="button"
-                  disabled={isReplacingImage || !imageUrlInput.trim()}
-                  onClick={() => {
-                    void handleReplaceImageFromUrl();
-                  }}
-                  className="min-h-[40px] w-full rounded-lg bg-cyan-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-cyan-700 disabled:opacity-50 sm:w-auto"
-                >
-                  {isReplacingImage ? 'Replacing...' : 'Replace via URL'}
-                </button>
-                <input
-                  ref={imageUploadInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    void handleReplaceImageFromUpload(file);
-                    e.currentTarget.value = '';
-                  }}
-                />
-                <button
-                  type="button"
-                  disabled={isReplacingImage}
-                  onClick={() => imageUploadInputRef.current?.click()}
-                  className="min-h-[40px] w-full rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-indigo-700 disabled:opacity-50 sm:w-auto"
-                >
-                  Upload image
-                </button>
-              </div>
-            </div>
-            <div className="flex h-full min-h-[320px] w-full items-center justify-center sm:min-h-[420px]">
-              <div className="relative w-full max-w-full aspect-[16/9] min-h-[220px] overflow-visible rounded-lg bg-white shadow-2xl dark:bg-gray-800 sm:h-full sm:max-h-full">
-                <SceneProvider>
-                  {selectedScene ? (
-                    <SceneRenderer scene={selectedScene} mode="autonomous" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-sm font-semibold text-slate-600">
-                      Select a slide to edit
-                    </div>
-                  )}
-                </SceneProvider>
-              </div>
-            </div>
-          </main>
+                onUploadImageClick={() => imageUploadInputRef.current?.click()}
+                onDuplicateSelection={handleDuplicateSelection}
+                onDeleteSelection={handleDeleteSelection}
+                onCenterSelection={handleCenterSelection}
+                onAlignLeft={() => handleAlignSelection(ElementAlignCommands.LEFT)}
+                onAlignTop={() => handleAlignSelection(ElementAlignCommands.TOP)}
+                onBringToFront={() => handleReorderSelection('front')}
+                onSendToBack={() => handleReorderSelection('back')}
+                onDistributeHorizontally={handleDistributeHorizontally}
+                onAddStickyNote={handleAddStickyNote}
+                onAddCallout={handleAddCallout}
+                onAddHighlightBar={handleAddHighlightBar}
+                onAddTitleBanner={handleAddTitleBanner}
+                onAddCaption={handleAddCaption}
+                onAddArrow={handleAddArrow}
+                onAddImportantBadge={handleAddImportantBadge}
+                onBoldText={handleBoldText}
+                onItalicText={handleItalicText}
+                onWidenText={handleWidenText}
+                onFlipHorizontal={handleFlipHorizontal}
+                onFlipVertical={handleFlipVertical}
+                onIncreaseOpacity={() => handleAdjustOpacity(0.12)}
+                onDecreaseOpacity={() => handleAdjustOpacity(-0.12)}
+                onClearOverlayTexts={handleClearOverlayTexts}
+                selectionToolsDisabled={!selectedScene}
+              />
+          </div>
         </div>
       )}
     </div>

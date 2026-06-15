@@ -17,6 +17,8 @@ export interface SnapshotState {
   setSnapshotCursor: (cursor: number) => void;
   setSnapshotLength: (length: number) => void;
   initSnapshotDatabase: () => Promise<void>;
+  /** Clears IndexedDB snapshots and seeds history from the current stage (classroom editor). */
+  resetSnapshotHistory: () => Promise<void>;
   addSnapshot: () => Promise<void>;
   undo: () => Promise<void>;
   redo: () => Promise<void>;
@@ -53,6 +55,19 @@ export const useSnapshotStore = create<SnapshotState>((set, get) => ({
     };
     await db.snapshots.add(newFirstSnapshot);
 
+    set({
+      snapshotCursor: 0,
+      snapshotLength: 1,
+    });
+  },
+
+  resetSnapshotHistory: async () => {
+    await db.snapshots.clear();
+    const stageStore = useStageStore.getState();
+    await db.snapshots.add({
+      index: stageStore.getSceneIndex(stageStore.currentSceneId || ''),
+      slides: JSON.parse(JSON.stringify(stageStore.scenes)),
+    });
     set({
       snapshotCursor: 0,
       snapshotLength: 1,

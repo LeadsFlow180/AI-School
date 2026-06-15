@@ -798,7 +798,7 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
 
           {activeSection === 'pdf' && (
             <>
-              <ProviderListColumn
+              <ProviderListColumn<PDFProviderId>
                 providers={Object.values(PDF_PROVIDERS)}
                 configs={pdfProvidersConfig}
                 selectedId={selectedPdfProviderId}
@@ -817,7 +817,7 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
 
           {activeSection === 'web-search' && (
             <>
-              <ProviderListColumn
+              <ProviderListColumn<WebSearchProviderId>
                 providers={Object.values(WEB_SEARCH_PROVIDERS)}
                 configs={webSearchProvidersConfig}
                 selectedId={selectedWebSearchProviderId}
@@ -836,7 +836,7 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
 
           {activeSection === 'image' && (
             <>
-              <ProviderListColumn
+              <ProviderListColumn<ImageProviderId>
                 providers={Object.values(IMAGE_PROVIDERS).map((p) => ({
                   id: p.id,
                   name: t(`settings.${IMAGE_PROVIDER_NAMES[p.id]}`) || p.name,
@@ -859,7 +859,7 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
 
           {activeSection === 'video' && (
             <>
-              <ProviderListColumn
+              <ProviderListColumn<VideoProviderId>
                 providers={Object.values(VIDEO_PROVIDERS).map((p) => ({
                   id: p.id,
                   name: t(`settings.${VIDEO_PROVIDER_NAMES[p.id]}`) || p.name,
@@ -882,7 +882,7 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
 
           {activeSection === 'tts' && (
             <>
-              <ProviderListColumn
+              <ProviderListColumn<TTSProviderId>
                 providers={Object.values(TTS_PROVIDERS).map((p) => ({
                   id: p.id,
                   name: getTTSProviderName(p.id, t),
@@ -905,7 +905,7 @@ export function SettingsDialog({ open, onOpenChange, initialSection }: SettingsD
 
           {activeSection === 'asr' && (
             <>
-              <ProviderListColumn
+              <ProviderListColumn<ASRProviderId>
                 providers={Object.values(ASR_PROVIDERS).map((p) => ({
                   id: p.id,
                   name: getASRProviderName(p.id, t),

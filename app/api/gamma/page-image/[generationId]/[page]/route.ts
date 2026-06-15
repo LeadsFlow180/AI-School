@@ -46,7 +46,7 @@ export async function GET(
     const cacheKey = `${generationIdValue}:${pageNumber}`;
     const cachedImage = gammaPageImageCache.get(cacheKey);
     if (cachedImage) {
-      return new Response(cachedImage, {
+      return new Response(new Uint8Array(cachedImage), {
         status: 200,
         headers: {
           'Content-Type': 'image/png',
@@ -80,7 +80,7 @@ export async function GET(
     }
     gammaPageImageCache.set(cacheKey, pngBuffer);
 
-    return new Response(pngBuffer, {
+    return new Response(new Uint8Array(pngBuffer), {
       status: 200,
       headers: {
         'Content-Type': 'image/png',

@@ -96,6 +96,7 @@ export async function POST(req: NextRequest) {
             maxOutputTokens: Math.max(modelInfo?.outputWindow || 0, 8192), // Ensure at least 8192 tokens
           },
           'scene-content',
+          { retries: 2 },
         );
         return result.text;
       }
@@ -107,6 +108,7 @@ export async function POST(req: NextRequest) {
           maxOutputTokens: Math.max(modelInfo?.outputWindow || 0, 8192), // Ensure at least 8192 tokens
         },
         'scene-content',
+        { retries: 2 },
       );
       return result.text;
     };

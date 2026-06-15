@@ -18,13 +18,17 @@ import { useDiscussionTTS } from '@/lib/hooks/use-discussion-tts';
 import type { AudioIndicatorState } from '@/components/roundtable/audio-indicator';
 import type { Action, DiscussionAction, SpeechAction } from '@/lib/types/action';
 import { cn } from '@/lib/utils';
-// Playback state persistence removed — refresh always starts from the beginning
+import {
+  consumeHydratedPlaybackCompleted,
+  consumePendingPlaybackRestore,
+  persistClassroomProgressOnSceneSelect,
+  scheduleClassroomProgressSave,
+} from '@/lib/classroom/classroom-progress';
+import { loadPlaybackState } from '@/lib/utils/playback-storage';
 import { ChatArea, type ChatAreaRef } from '@/components/chat/chat-area';
 import { agentsToParticipants, useAgentRegistry } from '@/lib/orchestration/registry/store';
 import type { AgentConfig } from '@/lib/orchestration/registry/types';
 import { KidsParallaxBackground } from '@/components/stage/kids-parallax-background';
-import { KidsGuideOverlay } from '@/components/stage/kids-guide-overlay';
-import { KidsSparkleOverlay } from '@/components/stage/kids-sparkle-overlay';
 import {
   AlertDialog,
   AlertDialogContent,
@@ -53,8 +57,9 @@ export function Stage({
   onOpenCanvasEdit?: () => void;
 }) {
   const { t } = useI18n();
-  const { mode, getCurrentScene, scenes, currentSceneId, setCurrentSceneId, generatingOutlines } =
+  const { mode, getCurrentScene, scenes, currentSceneId, setCurrentSceneId, generatingOutlines, stage } =
     useStageStore();
+  const classroomId = stage?.id ?? null;
   const failedOutlines = useStageStore.use.failedOutlines();
 
   const currentScene = getCurrentScene();
@@ -452,8 +457,22 @@ export function Stage({
       onModeChange: (mode) => {
         setEngineMode(mode);
       },
-      onSceneChange: (_sceneId) => {
-        // Scene change handled by engine
+      onSceneChange: (sceneId) => {
+        if (classroomId) {
+          scheduleClassroomProgressSave({
+            classroomId,
+            currentSceneId: sceneId,
+            snapshot: engine.getSnapshot(),
+          });
+        }
+      },
+      onProgress: (snapshot) => {
+        if (!classroomId) return;
+        scheduleClassroomProgressSave({
+          classroomId,
+          currentSceneId: currentScene?.id ?? null,
+          snapshot,
+        });
       },
       onSpeechStart: (text) => {
         setLectureSpeech(text);
@@ -548,6 +567,14 @@ export function Stage({
         // until scene transition (auto-play) or user restarts. Scene change
         // effect handles the reset.
         setPlaybackCompleted(true);
+        if (classroomId && engineRef.current) {
+          scheduleClassroomProgressSave({
+            classroomId,
+            currentSceneId: currentScene?.id ?? null,
+            snapshot: engineRef.current.getSnapshot(),
+            playbackCompleted: true,
+          });
+        }
 
         // End lecture session on playback complete
         if (lectureSessionIdRef.current) {
@@ -606,10 +633,22 @@ export function Stage({
         engine.start();
       })();
     } else {
-      // Load saved playback state and restore position (but never auto-play).
+      // Restore saved position (IndexedDB + Supabase hydrate); never auto-play.
+      void (async () => {
+        const pending = consumePendingPlaybackRestore();
+        const snapshot =
+          pending ??
+          (classroomId ? await loadPlaybackState(classroomId).catch(() => null) : null);
+        if (!snapshot || !currentScene) return;
+        if (snapshot.sceneId && snapshot.sceneId !== currentScene.id) return;
+        engine.restoreFromSnapshot(snapshot);
+        if (consumeHydratedPlaybackCompleted()) {
+          setPlaybackCompleted(true);
+        }
+      })();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- Only re-run when scene changes, functions are stable refs
-  }, [currentScene]);
+  }, [currentScene, classroomId]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -733,9 +772,12 @@ export function Stage({
         return false;
       }
       setCurrentSceneId(targetSceneId);
+      if (classroomId) {
+        void persistClassroomProgressOnSceneSelect(classroomId, targetSceneId);
+      }
       return true;
     },
-    [currentSceneId, isTopicActive, setCurrentSceneId],
+    [classroomId, currentSceneId, isTopicActive, setCurrentSceneId],
   );
 
   /** User confirmed scene switch via AlertDialog */
@@ -744,8 +786,11 @@ export function Stage({
     chatAreaRef.current?.endActiveSession();
     doSessionCleanup();
     setCurrentSceneId(pendingSceneId);
+    if (classroomId) {
+      void persistClassroomProgressOnSceneSelect(classroomId, pendingSceneId);
+    }
     setPendingSceneId(null);
-  }, [pendingSceneId, setCurrentSceneId, doSessionCleanup]);
+  }, [classroomId, pendingSceneId, setCurrentSceneId, doSessionCleanup]);
 
   /** User cancelled scene switch via AlertDialog */
   const cancelSceneSwitch = useCallback(() => {
@@ -991,14 +1036,6 @@ export function Stage({
       )}
     >
       <KidsParallaxBackground />
-      <KidsSparkleOverlay />
-      {!isPresenting && !isSmallScreen && (
-        <KidsGuideOverlay
-          isNotesChatOpen={!chatAreaCollapsed}
-          isSidebarOpen={!sidebarCollapsed}
-        />
-      )}
-
 
       {/* Scene Sidebar */}
       <div
@@ -1013,6 +1050,7 @@ export function Stage({
           onCollapseChange={setSidebarCollapsed}
           onSceneSelect={gatedSceneSwitch}
           onRetryOutline={onRetryOutline}
+          playbackCompleted={playbackCompleted}
         />
       </div>
 
@@ -1025,6 +1063,7 @@ export function Stage({
               currentSceneTitle={currentScene?.title || ''}
               onOpenGuidance={onOpenGuidance}
               onOpenCanvasEdit={onOpenCanvasEdit}
+              playbackCompleted={playbackCompleted}
             />
           </div>
         )}
@@ -1078,6 +1117,7 @@ export function Stage({
                 ? () => onRetryOutline(generatingOutlines[0].id)
                 : undefined
             }
+            playbackCompleted={playbackCompleted}
           />
         </div>
 

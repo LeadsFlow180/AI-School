@@ -2,7 +2,36 @@ import { type NextRequest } from 'next/server';
 import { apiError, apiSuccess, API_ERROR_CODES } from '@/lib/server/api-response';
 import { getSupabaseAdminClient } from '@/lib/server/supabase-admin';
 
-export async function GET(request: NextRequest) {
+let adminStatusSupabaseUnavailableUntil = 0;
+const ADMIN_STATUS_OUTAGE_COOLDOWN_MS = 30_000;
+
+function extractBearerToken(request: NextRequest) {
+  const authHeader = request.headers.get('authorization') || '';
+  return authHeader.startsWith('Bearer ') ? authHeader.slice('Bearer '.length).trim() : '';
+}
+
+function withTimeout<T>(promiseLike: PromiseLike<T>, timeoutMs: number, label: string): Promise<T> {
+  return Promise.race([
+    Promise.resolve(promiseLike),
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    }),
+  ]);
+}
+
+async function extractTokenFromRequest(request: NextRequest) {
+  const bearer = extractBearerToken(request);
+  if (bearer) return bearer;
+  if (request.method !== 'POST') return '';
+  try {
+    const body = (await request.json()) as { token?: unknown };
+    return typeof body?.token === 'string' ? body.token.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+async function handleAdminStatus(request: NextRequest) {
   try {
     const adminClient = getSupabaseAdminClient();
     if (!adminClient) {
@@ -13,43 +42,56 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const authHeader = request.headers.get('authorization') || '';
-    const token = authHeader.startsWith('Bearer ') ? authHeader.slice('Bearer '.length).trim() : '';
+    const token = await extractTokenFromRequest(request);
     if (!token) {
-      return apiError(API_ERROR_CODES.INVALID_REQUEST, 401, 'Missing bearer token.');
+      return apiSuccess({ isAdmin: false });
     }
 
-    const { data: userData, error: userErr } = await adminClient.auth.getUser(token);
-    if (userErr || !userData.user) {
-      return apiError(API_ERROR_CODES.INVALID_REQUEST, 401, 'Invalid auth token.');
+    if (Date.now() < adminStatusSupabaseUnavailableUntil) {
+      return apiSuccess({ isAdmin: false, temporarilyUnavailable: true });
     }
 
-    const { data: adminRow, error: adminErr } = await adminClient
-      .from('admin_users')
-      .select('user_id')
-      .eq('user_id', userData.user.id)
-      .maybeSingle();
+    const userResult = await withTimeout(adminClient.auth.getUser(token), 2500, 'admin auth user lookup').catch(
+      () => {
+        adminStatusSupabaseUnavailableUntil = Date.now() + ADMIN_STATUS_OUTAGE_COOLDOWN_MS;
+        return null;
+      },
+    );
+    if (!userResult || userResult.error || !userResult.data.user) {
+      return apiSuccess({ isAdmin: false });
+    }
+    const user = userResult.data.user;
 
-    if (adminErr) {
-      return apiError(
-        API_ERROR_CODES.INTERNAL_ERROR,
-        500,
-        'Failed to verify admin status.',
-        adminErr.message,
-      );
+    const adminResult = await withTimeout(
+      adminClient.from('admin_users').select('user_id').eq('user_id', user.id).maybeSingle(),
+      2500,
+      'admin row lookup',
+    ).catch(() => {
+      adminStatusSupabaseUnavailableUntil = Date.now() + ADMIN_STATUS_OUTAGE_COOLDOWN_MS;
+      return null;
+    });
+
+    if (!adminResult || adminResult.error) {
+      return apiSuccess({ isAdmin: false, userId: user.id, email: user.email });
     }
 
     return apiSuccess({
-      isAdmin: !!adminRow,
-      userId: userData.user.id,
-      email: userData.user.email,
+      isAdmin: !!adminResult.data,
+      userId: user.id,
+      email: user.email,
     });
   } catch (error) {
-    return apiError(
-      API_ERROR_CODES.INTERNAL_ERROR,
-      500,
-      'Failed to verify admin status.',
-      error instanceof Error ? error.message : String(error),
-    );
+    return apiSuccess({
+      isAdmin: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
+}
+
+export async function GET(request: NextRequest) {
+  return handleAdminStatus(request);
+}
+
+export async function POST(request: NextRequest) {
+  return handleAdminStatus(request);
 }

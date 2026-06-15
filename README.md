@@ -106,7 +106,10 @@ If you want admin-only login via Supabase, also set:
 NEXT_PUBLIC_SUPABASE_URL=https://<project-ref>.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=<your-anon-key>
 SUPABASE_SERVICE_ROLE_KEY=<your-service-role-key>
+SUPABASE_CUSTOM_VOICE_AUDIO_BUCKET=custom-voice-audio
 ```
+
+`SUPABASE_CUSTOM_VOICE_AUDIO_BUCKET` is used for tutor voice-cloning reference audio uploads from the Home page.
 
 You can also configure providers via `server-providers.yml`:
 

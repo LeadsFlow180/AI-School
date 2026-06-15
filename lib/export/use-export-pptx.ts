@@ -1224,14 +1224,16 @@ export function useExportPPTX() {
           ? settings.ttsProviderId
           : null;
 
-      const providerCandidates: TTSProviderId[] = [
-        ...(preferredProvider ? [preferredProvider] : []),
-        'openai-tts',
-        'azure-tts',
-        'glm-tts',
-        'qwen-tts',
-        'elevenlabs-tts',
-      ]
+      const providerCandidates = (
+        [
+          ...(preferredProvider ? [preferredProvider] : []),
+          'openai-tts',
+          'azure-tts',
+          'glm-tts',
+          'qwen-tts',
+          'elevenlabs-tts',
+        ] as TTSProviderId[]
+      )
         .filter((provider, index, arr) => arr.indexOf(provider) === index)
         .filter((providerId) => {
           const cfg = settings.ttsProvidersConfig?.[providerId];

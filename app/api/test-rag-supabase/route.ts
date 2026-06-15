@@ -5,7 +5,7 @@
 
 import { NextRequest } from 'next/server';
 import { getRAGService } from '@/lib/rag/rag-service';
-import { apiError, apiSuccess } from '@/lib/server/api-response';
+import { apiError, apiSuccess, API_ERROR_CODES } from '@/lib/server/api-response';
 
 export async function GET(req: NextRequest) {
   try {
@@ -64,6 +64,6 @@ export async function GET(req: NextRequest) {
 
     return apiSuccess(results);
   } catch (error: any) {
-    return apiError('TEST_FAILED', 500, error.message);
+    return apiError(API_ERROR_CODES.INTERNAL_ERROR, 500, error.message);
   }
 }

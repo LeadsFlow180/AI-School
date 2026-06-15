@@ -59,6 +59,7 @@
 - [x] 2026-04-30 - Fix `/api/generate/scene-content` empty-LLM-response 500 by enabling retry-on-empty-text in `callLLM` (`retries: 2`) for both vision and non-vision content generation calls.
 - [x] 2026-04-30 - Fix admin login false-denial by switching auth-card admin verification to `/api/auth/admin-status` (POST token body + retry), normalizing login email lowercase, and using local-only signout on deny.
 - [x] 2026-04-30 - Fix refresh-time admin auth regression by making Home admin verification use `/api/auth/admin-status` (POST token body + retries) with direct Supabase fallback, and making API return non-disruptive `isAdmin: false` for missing/invalid token.
+- [x] 2026-06-15 - Pass RAG reference context with title when generating Gamma slides so slide content aligns with indexed reference topics.
 - [x] 2026-04-17 - Fix classroom small-mobile responsiveness by keeping laptop layout unchanged while switching sidebar/chat to mobile overlays, constraining panel widths, and compacting header controls/text on narrow screens.
 - [x] 2026-04-15 - Fix classroom Guidance Book label key and add Export Audio Pack action in Export menu for downloading slide narration clips.
 - [x] 2026-04-15 - Reposition Home Guidance Book button into the top profile-controls header row (above prompt area).

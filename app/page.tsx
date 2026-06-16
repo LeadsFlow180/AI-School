@@ -1305,6 +1305,7 @@ function HomePage() {
         requirements: {
           requirement: form.requirement,
           language: form.language,
+          enableRAG: form.enableRAG || undefined,
         },
         tutorConfig: {
           name:

@@ -13,7 +13,21 @@ const RAG_SLIDE_INSTRUCTIONS =
 function buildGammaInputText(topic: string, ragContext: string): string {
   if (!ragContext.trim()) return topic;
   const trimmedContext = ragContext.slice(0, MAX_PDF_CONTENT_CHARS);
-  return `Topic: ${topic}\n\nReference material (base all slide content on this source):\n${trimmedContext}`;
+  return `Title/Topic: ${topic}\n\nReference material (base all slide content on these sources):\n${trimmedContext}`;
+}
+
+function summarizeGammaPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const summarized = { ...payload };
+  if (typeof summarized.inputText === 'string' && summarized.inputText.length > 800) {
+    summarized.inputText = `${summarized.inputText.slice(0, 800)}... [${summarized.inputText.length} chars total]`;
+  }
+  if (
+    typeof summarized.additionalInstructions === 'string' &&
+    summarized.additionalInstructions.length > 500
+  ) {
+    summarized.additionalInstructions = `${summarized.additionalInstructions.slice(0, 500)}... [${summarized.additionalInstructions.length} chars total]`;
+  }
+  return summarized;
 }
 
 export async function POST(req: NextRequest) {
@@ -42,7 +56,9 @@ export async function POST(req: NextRequest) {
     }
 
     let ragContext = '';
+    let ragSourceCount = 0;
     if (body.enableRAG) {
+      log.info('RAG enabled for Gamma generation; querying indexed documents');
       try {
         const ragApiKey = resolveApiKey('openai');
         if (ragApiKey) {
@@ -50,8 +66,9 @@ export async function POST(req: NextRequest) {
           const ragResult = await ragService.query(prompt, ragApiKey);
           if (ragResult.isPDFRelated && ragResult.context) {
             ragContext = ragResult.context;
+            ragSourceCount = ragResult.retrievedChunks.length;
             log.info(
-              `Added RAG context to Gamma prompt: ${ragResult.retrievedChunks.length} chunks`,
+              `Added RAG context to Gamma prompt: ${ragSourceCount} chunks from ${ragResult.sources.length} sources`,
             );
           } else {
             log.info('RAG enabled for Gamma but no relevant chunks were found');
@@ -91,12 +108,23 @@ export async function POST(req: NextRequest) {
       payload.exportAs = body.exportAs;
     }
 
+    log.info('Gamma generation request body', {
+      enableRAG: body.enableRAG ?? false,
+      ragUsed: hasRagContext,
+      ragSourceCount,
+      title: payload.title,
+      textMode: payload.textMode,
+      numCards: payload.numCards,
+      format: payload.format,
+      exportAs: payload.exportAs ?? null,
+      payload: summarizeGammaPayload(payload),
+    });
+
     const created = await gammaCreateGeneration(gammaKey, payload);
-    console.log('[api/gamma/generate] gamma_create_response', {
+    log.info('Gamma generation started', {
       generationId: created.generationId,
       warnings: created.warnings ?? null,
       ragUsed: hasRagContext,
-      request: payload,
     });
     return Response.json({
       success: true,

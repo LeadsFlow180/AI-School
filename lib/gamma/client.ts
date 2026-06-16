@@ -1,7 +1,24 @@
 /**
  * Gamma public API client (server-only).
  */
+import { createLogger } from '@/lib/logger';
+
+const log = createLogger('GammaClient');
 const GAMMA_API_BASE = 'https://public-api.gamma.app/v1.0';
+
+function summarizeGammaRequestBody(body: Record<string, unknown>): Record<string, unknown> {
+  const summarized = { ...body };
+  if (typeof summarized.inputText === 'string' && summarized.inputText.length > 800) {
+    summarized.inputText = `${summarized.inputText.slice(0, 800)}... [${summarized.inputText.length} chars total]`;
+  }
+  if (
+    typeof summarized.additionalInstructions === 'string' &&
+    summarized.additionalInstructions.length > 500
+  ) {
+    summarized.additionalInstructions = `${summarized.additionalInstructions.slice(0, 500)}... [${summarized.additionalInstructions.length} chars total]`;
+  }
+  return summarized;
+}
 
 export function getGammaApiKey(): string | undefined {
   const key = process.env.GAMMA_API_KEY?.trim();
@@ -34,6 +51,7 @@ export async function gammaCreateGeneration(
   apiKey: string,
   body: Record<string, unknown>,
 ): Promise<GammaCreateResponse> {
+  log.info('Sending request to Gamma API POST /generations', summarizeGammaRequestBody(body));
   const response = await fetch(`${GAMMA_API_BASE}/generations`, {
     method: 'POST',
     headers: {

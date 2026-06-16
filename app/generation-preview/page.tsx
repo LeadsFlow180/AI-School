@@ -218,6 +218,7 @@ function GenerationPreviewContent() {
           prompt: currentSession.requirements.requirement,
           language:
             currentSession.requirements.language === 'zh-CN' ? 'zh-CN' : 'en-US',
+          enableRAG: currentSession.requirements.enableRAG,
           tutorConfig: currentSession.tutorConfig,
           signal,
           onProgress: ({ stepId, statusMessage }) => {

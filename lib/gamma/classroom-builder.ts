@@ -46,6 +46,7 @@ export interface GammaClassroomProgress {
 export interface BuildGammaClassroomInput {
   prompt: string;
   language: 'zh-CN' | 'en-US';
+  enableRAG?: boolean;
   tutorConfig?: TutorGenerationConfig;
   onProgress?: (progress: GammaClassroomProgress) => void;
   signal?: AbortSignal;
@@ -389,7 +390,7 @@ async function fillMissingGammaPageImages(
 export async function buildClassroomFromGamma(
   input: BuildGammaClassroomInput,
 ): Promise<{ stageId: string }> {
-  const { prompt, language, tutorConfig, onProgress, signal } = input;
+  const { prompt, language, enableRAG, tutorConfig, onProgress, signal } = input;
   const report = (stepId: GammaGenerationStepId, statusMessage: string) => {
     onProgress?.({ stepId, statusMessage });
   };
@@ -406,6 +407,7 @@ export async function buildClassroomFromGamma(
       exportAs: 'pdf',
       textMode: 'generate',
       format: 'presentation',
+      enableRAG: enableRAG || undefined,
     }),
     signal,
   });

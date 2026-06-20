@@ -200,7 +200,7 @@
 
 ## Discovered During Work
 
-- [x] 2026-06-08 - Fix cloned TTS treating valid upstream WAV as errors: scan embedded RIFF offsets, decode synth bodies as latin1 for recovery, and never log raw binary in TTS error messages.
+- [x] 2026-06-20 - Fix Gamma classroom tutor name/avatar wrong in new tab: merge tutorConfig on server refresh, enrich Gamma save snapshot, re-render roundtable when agent registry updates. scan embedded RIFF offsets, decode synth bodies as latin1 for recovery, and never log raw binary in TTS error messages.
 - [x] 2026-05-15 - Align cloned tutor `/synthesize` with voice-clone API: POST JSON `{ text, referenceUrl, voice_instruction, cfg_value, inference_timesteps }`, `Accept: audio/wav`, parse `{ status, mime_type, sample_rate, audio_base64 }` (legacy `data.audioUrl` fallback); pass tutor description as `voice_instruction`.
 - [x] 2026-05-29 - AGA embed user id: require `learnerId` or `guestSessionId` on launch; prefer learner; add `details.userId` on every `/api/learn/content` sync; reject missing identity.
 - [x] 2026-05-29 - AGA classroom resume: open next slide after completed slides (`resumePlaybackCompleted` + `resumeSceneIndex`), slide 1 when no progress; clear stale IndexedDB on signed URL launch; sync per-slide `playbackCompleted` to AGA without marking mission complete until last slide.

@@ -10,6 +10,8 @@ import type { Action } from '@/lib/types/action';
 import type { Slide } from '@/lib/types/slides';
 import type { TutorGenerationConfig } from '@/lib/types/tutor-voice';
 import { resolveEffectiveTTSRequest } from '@/lib/audio/resolve-effective-tts';
+import { mergeTutorConfig, applyTutorConfigFromStage } from '@/lib/classroom/tutor-config';
+import { useAgentRegistry } from '@/lib/orchestration/registry/store';
 import { requestTTSWithJobPolling } from '@/lib/audio/tts-job-client';
 import { splitLongSpeechActions } from '@/lib/audio/tts-utils';
 import type { GammaGenerationStepId } from '@/lib/gamma/types';
@@ -444,8 +446,33 @@ export async function buildClassroomFromGamma(
   }
 
   const settings = useSettingsStore.getState();
+  const teacherAgent =
+    useAgentRegistry
+      .getState()
+      .listAgents()
+      .find((agent) => agent.role === 'teacher') ||
+    useAgentRegistry.getState().getAgent('default-1');
   const now = Date.now();
   const stageId = nanoid(10);
+  const resolvedTutorConfig = tutorConfig
+    ? mergeTutorConfig(tutorConfig, {
+        name: teacherAgent?.name,
+        avatar: teacherAgent?.avatar,
+        voicePreset: teacherAgent?.voiceConfig
+          ? {
+              id: `${teacherAgent.voiceConfig.providerId}::${teacherAgent.voiceConfig.voiceId}`,
+              name: teacherAgent.name || tutorConfig.name || 'AI Tutor',
+              providerId: teacherAgent.voiceConfig.providerId,
+              voiceId: teacherAgent.voiceConfig.voiceId,
+            }
+          : {
+              id: `${settings.ttsProviderId}::${settings.ttsVoice}`,
+              name: tutorConfig.name || teacherAgent?.name || 'AI Tutor',
+              providerId: settings.ttsProviderId,
+              voiceId: settings.ttsVoice,
+            },
+      })
+    : undefined;
   const stage: Stage & { tutorConfig?: TutorGenerationConfig } = {
     id: stageId,
     name: prompt.trim().slice(0, 120) || 'Gamma Presentation',
@@ -454,7 +481,7 @@ export async function buildClassroomFromGamma(
     updatedAt: now,
     language,
     style: 'professional',
-    ...(tutorConfig ? { tutorConfig } : {}),
+    ...(resolvedTutorConfig ? { tutorConfig: resolvedTutorConfig } : {}),
   };
 
   report('gamma-slides', 'Converting Gamma slides into classroom pages...');
@@ -684,6 +711,7 @@ export async function buildClassroomFromGamma(
   stageStore.setStage(stage);
   scenes.forEach((scene) => stageStore.addScene(scene));
   stageStore.setCurrentSceneId(scenes[0].id);
+  applyTutorConfigFromStage(stage);
   await stageStore.saveToStorage();
 
   try {

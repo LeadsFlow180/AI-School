@@ -1,6 +1,7 @@
 import { type NextRequest } from 'next/server';
 import { apiError, apiSuccess, API_ERROR_CODES } from '@/lib/server/api-response';
 import { getSupabaseAdminClient } from '@/lib/server/supabase-admin';
+import { isMissingSupabaseTableError } from '@/lib/server/supabase-table-error';
 import { createLogger } from '@/lib/logger';
 import type { ClassroomProgressPayload } from '@/lib/types/classroom-progress';
 
@@ -86,6 +87,11 @@ export async function GET(request: NextRequest) {
       .maybeSingle();
 
     if (error) {
+      if (isMissingSupabaseTableError(error)) {
+        // Reason: deployments without migrations/20260521_classroom_progress.sql
+        // still work — client persists progress in IndexedDB.
+        return apiSuccess({ progress: null, storageAvailable: false });
+      }
       log.warn('classroom_progress select failed', { message: error.message });
       return apiError(API_ERROR_CODES.INTERNAL_ERROR, 500, 'Failed to load progress.', error.message);
     }
@@ -145,6 +151,16 @@ export async function POST(request: NextRequest) {
       .upsert(payload, { onConflict: 'user_id,classroom_id' });
 
     if (upsertErr) {
+      if (isMissingSupabaseTableError(upsertErr)) {
+        return apiSuccess({
+          progress: {
+            ...normalized,
+            lastPlayedAt: now,
+            updatedAt: now,
+          },
+          storageAvailable: false,
+        });
+      }
       log.warn('classroom_progress upsert failed', { message: upsertErr.message });
       return apiError(API_ERROR_CODES.INTERNAL_ERROR, 500, 'Failed to save progress.', upsertErr.message);
     }

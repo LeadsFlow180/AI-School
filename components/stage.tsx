@@ -123,16 +123,16 @@ export function Stage({
   const selectedAgentIds = useSettingsStore((s) => s.selectedAgentIds);
   const ttsMuted = useSettingsStore((s) => s.ttsMuted);
   const ttsEnabled = useSettingsStore((s) => s.ttsEnabled);
+  const agentsRecord = useAgentRegistry((s) => s.agents);
 
   // Generate participants from selected agents
   const participants = useMemo(
     () => agentsToParticipants(selectedAgentIds, t),
-    [selectedAgentIds, t],
+    [selectedAgentIds, t, agentsRecord],
   );
 
   // Resolved AgentConfig array for hooks that need full agent objects
   // Subscribe to the agents record so voiceConfig changes trigger re-resolution
-  const agentsRecord = useAgentRegistry((s) => s.agents);
   const selectedAgents = useMemo(
     () => selectedAgentIds.map((id) => agentsRecord[id]).filter((a): a is AgentConfig => a != null),
     [agentsRecord, selectedAgentIds],

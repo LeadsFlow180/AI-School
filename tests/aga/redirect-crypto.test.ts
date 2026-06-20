@@ -80,6 +80,7 @@ describe('aga redirect-crypto', () => {
     expect(progress.details.ladderStepIndex).toBe(3);
     expect(progress.details.classroomId).toBe('l4gHC6hvRo');
     expect(progress.details.playbackCompleted).toBe(false);
+    expect(progress.details.missionComplete).toBe(false);
     expect(progress.details.userId).toBe('11111111-1111-4111-8111-111111111111');
 
     const complete = buildAgaContentBody(
@@ -101,5 +102,6 @@ describe('aga redirect-crypto', () => {
     );
     expect(complete.status).toBe('complete');
     expect(complete.details.playbackCompleted).toBe(true);
+    expect(complete.details.missionComplete).toBe(true);
   });
 });

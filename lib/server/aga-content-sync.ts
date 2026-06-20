@@ -24,7 +24,10 @@ export const agaProgressDetailsSchema = z.object({
   currentSceneId: z.string().nullable().optional(),
   actionIndex: z.number().int().nonnegative().optional(),
   consumedDiscussions: z.array(z.string()).optional(),
+  /** Current slide lecture finished (resume hint — not whole mission). */
   playbackCompleted: z.boolean().optional(),
+  /** Whole classroom / ladder mission finished — use for mission-complete UI. */
+  missionComplete: z.boolean().optional(),
   /** learnerId ?? guestSessionId — required on every AGA progress row */
   userId: z.string().uuid(),
 });
@@ -105,18 +108,18 @@ export function buildAgaContentBody(
     actionIndex: number;
     consumedDiscussions: string[];
     playbackCompleted: boolean;
+    missionComplete?: boolean;
     classroomId: string;
+    totalSlides?: number;
   },
 ): AgaContentSyncInput {
   const { learnerId, guestSessionId, userId } = userFieldsFromLaunch(launch);
   const ladderStep = launch.step || 'start';
   const classroomId = launch.classroomId?.trim() || input.classroomId || AGA_DEFAULT_CLASSROOM_ID;
-  const totalSlides =
-    typeof launch.totalSlides === 'number' && launch.totalSlides > 0
-      ? launch.totalSlides
-      : input.playbackCompleted
-        ? input.sceneIndex + 1
-        : 5;
+  const launchTotalSlides =
+    typeof launch.totalSlides === 'number' && launch.totalSlides > 0 ? launch.totalSlides : 5;
+  const totalSlides = input.totalSlides ?? launchTotalSlides;
+  const missionComplete = input.missionComplete ?? input.status === 'complete';
 
   return {
     learnerId,
@@ -136,6 +139,7 @@ export function buildAgaContentBody(
       actionIndex: input.actionIndex,
       consumedDiscussions: input.consumedDiscussions,
       playbackCompleted: input.playbackCompleted,
+      missionComplete,
       userId,
     },
   };

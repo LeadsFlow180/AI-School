@@ -132,15 +132,13 @@ function isLastSlideComplete(
 
   playbackCompleted: boolean,
 
-  totalSlides: number,
-
 ): boolean {
 
   if (!playbackCompleted || scenes.length === 0) return false;
 
   const idx = sceneIndexForId(scenes, sceneId);
 
-  const lastIndex = Math.min(scenes.length, totalSlides) - 1;
+  const lastIndex = scenes.length - 1;
 
   return idx >= lastIndex && lastIndex >= 0;
 
@@ -226,17 +224,19 @@ async function pushAgaProgress(input: ProgressSaveInput): Promise<void> {
 
   const snapshot = buildSnapshot(input);
 
-  const totalSlides = ctx?.totalSlides ?? (scenes.length || 5);
+  const sceneCount = scenes.length;
 
   const wantsComplete = !!input.playbackCompleted;
 
-  const sendComplete =
+  const missionComplete =
 
     wantsComplete &&
 
-    isLastSlideComplete(scenes, input.currentSceneId, true, totalSlides) &&
+    isLastSlideComplete(scenes, input.currentSceneId, true);
 
-    !hasAgaCompleteBeenSent(input.classroomId, ctx?.step);
+
+
+  const sendComplete = missionComplete && !hasAgaCompleteBeenSent(input.classroomId, ctx?.step);
 
 
 
@@ -271,6 +271,10 @@ async function pushAgaProgress(input: ProgressSaveInput): Promise<void> {
       consumedDiscussions: snapshot.consumedDiscussions,
 
       playbackCompleted: wantsComplete,
+
+      sceneCount: sceneCount > 0 ? sceneCount : undefined,
+
+      missionComplete,
 
     }),
 

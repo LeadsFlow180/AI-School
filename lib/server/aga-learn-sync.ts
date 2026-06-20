@@ -7,6 +7,10 @@ import {
 } from '@/lib/aga/redirect-crypto';
 import { hasAgaUserIdentity, normalizeAgaLaunchUserIds } from '@/lib/aga/aga-user-identity';
 import {
+  effectiveAgaTotalSlides,
+  isAgaMissionComplete,
+} from '@/lib/classroom/aga-mission-complete';
+import {
   buildAgaContentBody,
   postAgaContent,
   type AgaLaunchFields,
@@ -49,7 +53,12 @@ export const agaProgressBodySchema = z.object({
   sceneIndex: z.number().int().nonnegative().optional(),
   actionIndex: z.number().int().nonnegative().optional(),
   consumedDiscussions: z.array(z.string()).optional(),
+  /** True when the current slide's lecture finished (not the whole classroom). */
   playbackCompleted: z.boolean().optional(),
+  /** Actual slide count in the loaded classroom (authoritative for mission end). */
+  sceneCount: z.number().int().positive().optional(),
+  /** True only when the last slide of the mission was completed. */
+  missionComplete: z.boolean().optional(),
 });
 
 export type AgaProgressBody = z.infer<typeof agaProgressBodySchema>;
@@ -118,9 +127,17 @@ export async function forwardPlaybackProgressToAga(body: AgaProgressBody): Promi
 
   const launch = verified.launch as AgaLaunchFields;
   const slideCompleted = !!body.playbackCompleted;
-  const totalSlides =
+  const launchTotalSlides =
     typeof launch.totalSlides === 'number' && launch.totalSlides > 0 ? launch.totalSlides : 5;
-  const missionComplete = slideCompleted && (body.sceneIndex ?? 0) >= totalSlides - 1;
+  const sceneCount = body.sceneCount ?? launchTotalSlides;
+  const totalSlides = effectiveAgaTotalSlides(sceneCount, launchTotalSlides);
+  const missionComplete =
+    body.missionComplete ??
+    isAgaMissionComplete({
+      sceneIndex: body.sceneIndex ?? 0,
+      slideCompleted,
+      sceneCount,
+    });
   const status = missionComplete ? 'complete' : 'progress';
 
   const contentBody = buildAgaContentBody(launch, {
@@ -130,7 +147,9 @@ export async function forwardPlaybackProgressToAga(body: AgaProgressBody): Promi
     actionIndex: body.actionIndex ?? 0,
     consumedDiscussions: body.consumedDiscussions ?? [],
     playbackCompleted: slideCompleted,
+    missionComplete,
     classroomId: body.classroomId,
+    totalSlides,
   });
 
   return postAgaContent(contentBody);

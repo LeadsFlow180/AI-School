@@ -41,7 +41,7 @@ import { useStageStore } from '@/lib/store/stage';
 import { createLogger } from '@/lib/logger';
 import { db } from '@/lib/utils/database';
 import { getSessionSafe, getSupabaseClient } from '@/lib/supabase/client';
-import type { TTSProviderId } from '@/lib/audio/types';
+import { resolveEffectiveTTSRequest } from '@/lib/audio/resolve-effective-tts';
 import { requestTTSWithJobPolling } from '@/lib/audio/tts-job-client';
 
 const log = createLogger('PlaybackEngine');
@@ -401,16 +401,9 @@ export class PlaybackEngine {
     this.callbacks.onModeChange?.(mode);
   }
 
-  private resolveEffectiveTTSRequest(): {
-    providerId: TTSProviderId;
-    voiceId: string;
-    speed: number;
-    apiKey?: string;
-    baseUrl?: string;
-  } | null {
-    const settings = useSettingsStore.getState();
-    if (!settings.ttsEnabled) return null;
-
+  private getStageTutorVoicePreset():
+    | { providerId?: string; voiceId?: string }
+    | undefined {
     const stage = useStageStore.getState().stage as
       | (Stage & {
           tutorConfig?: {
@@ -418,28 +411,7 @@ export class PlaybackEngine {
           };
         })
       | null;
-    const preset = stage?.tutorConfig?.voicePreset;
-    const fallbackProviderConfig = settings.ttsProvidersConfig?.[settings.ttsProviderId];
-    // Reason: tutorConfig.voicePreset takes priority over global settings provider.
-    // Check the *effective* provider against browser-native so a saved custom-cloned-tts
-    // tutor isn't silenced just because global settings still has browser-native-tts.
-    const providerId = (preset?.providerId || settings.ttsProviderId) as TTSProviderId;
-    const voiceId = preset?.voiceId || settings.ttsVoice;
-    if (!providerId || !voiceId || providerId === 'browser-native-tts') return null;
-
-    const providerConfig = settings.ttsProvidersConfig?.[providerId];
-    return {
-      providerId,
-      voiceId,
-      speed: settings.ttsSpeed,
-      apiKey: providerConfig?.apiKey || fallbackProviderConfig?.apiKey || undefined,
-      baseUrl:
-        providerConfig?.serverBaseUrl ||
-        providerConfig?.baseUrl ||
-        fallbackProviderConfig?.serverBaseUrl ||
-        fallbackProviderConfig?.baseUrl ||
-        undefined,
-    };
+    return stage?.tutorConfig?.voicePreset;
   }
 
   private buildSpeechReuseKey(text: string, providerId: string, voiceId: string, speed: number): string {
@@ -672,7 +644,7 @@ export class PlaybackEngine {
         };
 
         const tryRegenerateSpeechAudio = async (): Promise<boolean> => {
-          const ttsRequest = this.resolveEffectiveTTSRequest();
+          const ttsRequest = resolveEffectiveTTSRequest(this.getStageTutorVoicePreset());
           if (!ttsRequest) return false;
           if (!speechAction.text?.trim()) return false;
           const audioId = speechAction.audioId || `tts_${speechAction.id}`;
@@ -770,9 +742,17 @@ export class PlaybackEngine {
                 );
                 if (replayed) return;
               }
-              // No pre-generated audio and server regeneration failed.
-              // Keep playback progression without switching to a different voice
-              // so classroom voice identity remains consistent with cloned tutor.
+              const settings = useSettingsStore.getState();
+              if (
+                settings.ttsEnabled &&
+                !resolveEffectiveTTSRequest(this.getStageTutorVoicePreset())
+              ) {
+                // Browser-native tutor: speak client-side when no stored/server audio exists.
+                this.playBrowserTTS(speechAction);
+                return;
+              }
+              // Server-capable tutor failed regeneration — advance on a reading timer
+              // without switching to a different voice.
               scheduleReadingTimer();
             }
           })

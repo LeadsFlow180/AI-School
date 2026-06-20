@@ -243,5 +243,5 @@
 - [x] 2026-04-10 - Expand Gamma narration coverage to better explain full slide content (longer extracted text + 4-6 script lines + dynamic speech actions).
 - [x] 2026-04-10 - Persist Gamma-generated classrooms to Supabase explicitly at creation time (in addition to store save sync).
 - [x] 2026-04-28 - Improve dynamic tutor loading UX by preloading tutors once on page load and avoiding repeated fetches on each presenter modal open; only retry fetch on open if initial preload failed.
-- [ ] Replace in-memory vector store with persistent vector DB for production.
+- [x] 2026-06-20 - Fix Gamma AI Slides mute: use async TTS job polling during Gamma build, always persist tutor voicePreset, resolve effective server TTS from stage tutorConfig, and restore browser-native speech fallback in playback when no server audio exists.
 - [ ] Add RAG source citation rendering in chat and generated lesson scenes.

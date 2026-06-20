@@ -9,7 +9,9 @@ import type { QuizQuestion, Scene, Stage } from '@/lib/types/stage';
 import type { Action } from '@/lib/types/action';
 import type { Slide } from '@/lib/types/slides';
 import type { TutorGenerationConfig } from '@/lib/types/tutor-voice';
-import type { TTSProviderId } from '@/lib/audio/types';
+import { resolveEffectiveTTSRequest } from '@/lib/audio/resolve-effective-tts';
+import { requestTTSWithJobPolling } from '@/lib/audio/tts-job-client';
+import { splitLongSpeechActions } from '@/lib/audio/tts-utils';
 import type { GammaGenerationStepId } from '@/lib/gamma/types';
 
 const log = createLogger('GammaClassroom');
@@ -621,15 +623,14 @@ export async function buildClassroomFromGamma(
     report('gamma-tts', 'Generating tutor voice audio for narration...');
     assertNotAborted(signal);
 
-    const tutorVoicePreset = stage.tutorConfig?.voicePreset;
-    const effectiveProviderId = (tutorVoicePreset?.providerId ||
-      settings.ttsProviderId) as TTSProviderId;
-    const effectiveVoiceId = tutorVoicePreset?.voiceId || settings.ttsVoice;
-    const effectiveProviderConfig = settings.ttsProvidersConfig?.[effectiveProviderId];
-
-    if (effectiveProviderId !== 'browser-native-tts' && effectiveVoiceId) {
+    const ttsRequest = resolveEffectiveTTSRequest(stage.tutorConfig?.voicePreset);
+    if (ttsRequest) {
       for (const scene of scenes) {
         assertNotAborted(signal);
+        const splitActions = splitLongSpeechActions(scene.actions || [], ttsRequest.providerId);
+        if (splitActions.length !== (scene.actions || []).length) {
+          scene.actions = splitActions;
+        }
         const speechActions = (scene.actions || []).filter(
           (a): a is Action & { type: 'speech'; text: string } => a.type === 'speech' && !!a.text,
         );
@@ -637,25 +638,18 @@ export async function buildClassroomFromGamma(
           const audioId = `tts_${action.id}`;
           action.audioId = audioId;
           try {
-            const ttsResp = await fetch('/api/generate/tts', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
+            const ttsData = await requestTTSWithJobPolling(
+              {
                 text: action.text,
                 audioId,
-                ttsProviderId: effectiveProviderId,
-                ttsVoice: effectiveVoiceId,
-                ttsSpeed: settings.ttsSpeed,
-                ttsApiKey: effectiveProviderConfig?.apiKey || undefined,
-                ttsBaseUrl:
-                  effectiveProviderConfig?.serverBaseUrl ||
-                  effectiveProviderConfig?.baseUrl ||
-                  undefined,
-              }),
-              signal,
-            });
-            if (!ttsResp.ok) continue;
-            const ttsData = await ttsResp.json();
+                ttsProviderId: ttsRequest.providerId,
+                ttsVoice: ttsRequest.voiceId,
+                ttsSpeed: ttsRequest.speed,
+                ttsApiKey: ttsRequest.apiKey,
+                ttsBaseUrl: ttsRequest.baseUrl,
+              },
+              { maxWaitMs: 120_000, intervalMs: 1_500 },
+            );
             if (!ttsData?.success || !ttsData?.base64 || !ttsData?.format) continue;
             const binary = atob(ttsData.base64);
             const bytes = new Uint8Array(binary.length);

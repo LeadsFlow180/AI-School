@@ -22,6 +22,7 @@ import type { Slide } from '@/lib/types/slides';
 import { db } from '@/lib/utils/database';
 import { requestTTSWithJobPolling } from '@/lib/audio/tts-job-client';
 import { splitLongSpeechActions } from '@/lib/audio/tts-utils';
+import { resolveEffectiveTTSRequest } from '@/lib/audio/resolve-effective-tts';
 
 const log = createLogger('Classroom');
 const MIN_LOADING_SCENE_MS = 900;
@@ -126,44 +127,17 @@ function buildSpeechReuseKey(
   return `${providerId}::${voiceId}::${speed}::${text.trim().toLowerCase()}`;
 }
 
-function resolveEffectiveClassroomTTSPayload(stage: Stage | null): {
-  providerId: string;
-  voiceId: string;
-  speed: number;
-  apiKey?: string;
-  baseUrl?: string;
-} | null {
-  const settings = useSettingsStore.getState();
-  if (!settings.ttsEnabled) return null;
-
-  const stageWithTutor = stage as
-    | (Stage & {
-        tutorConfig?: {
-          voicePreset?: { providerId?: string; voiceId?: string };
-        };
-      })
-    | null;
-  const preset = stageWithTutor?.tutorConfig?.voicePreset;
-  const fallbackProviderConfig = settings.ttsProvidersConfig?.[settings.ttsProviderId];
-  // Reason: tutorConfig voicePreset takes priority over global settings provider.
-  // Check the *effective* provider against browser-native (which cannot be server-generated).
-  const providerId = preset?.providerId || settings.ttsProviderId;
-  const voiceId = preset?.voiceId || settings.ttsVoice;
-
-  if (!providerId || !voiceId || providerId === 'browser-native-tts') return null;
-  const providerConfig = settings.ttsProvidersConfig?.[providerId];
-  return {
-    providerId,
-    voiceId,
-    speed: settings.ttsSpeed,
-    apiKey: providerConfig?.apiKey || fallbackProviderConfig?.apiKey || undefined,
-    baseUrl:
-      providerConfig?.serverBaseUrl ||
-      providerConfig?.baseUrl ||
-      fallbackProviderConfig?.serverBaseUrl ||
-      fallbackProviderConfig?.baseUrl ||
-      undefined,
-  };
+function resolveEffectiveClassroomTTSPayload(stage: Stage | null) {
+  const preset = (
+    stage as
+      | (Stage & {
+          tutorConfig?: {
+            voicePreset?: { providerId?: string; voiceId?: string };
+          };
+        })
+      | null
+  )?.tutorConfig?.voicePreset;
+  return resolveEffectiveTTSRequest(preset);
 }
 
 async function uploadHydratedSpeechAudio(

@@ -1214,6 +1214,7 @@ function HomePage() {
         }
       }
 
+      const audioSettings = useSettingsStore.getState();
       const sessionState = {
         sessionId: nanoid(),
         requirements,
@@ -1230,22 +1231,24 @@ function HomePage() {
             AVATAR_OPTIONS[1],
           description:
             selectedVoicePreset?.description || selectedVoicePreset?.title || form.tutorDescription || '',
-          ...((selectedVoicePreset || teacherVoiceConfig)
-            ? {
-                voicePreset: {
-                  id: selectedVoicePreset?.id || `${teacherVoiceConfig?.providerId || 'tts'}::${teacherVoiceConfig?.voiceId || 'default'}`,
-                  name:
-                    selectedVoicePreset?.name ||
-                    selectedTeacherAgent?.name ||
-                    form.tutorName ||
-                    'AI Tutor',
-                  providerId:
-                    selectedVoicePreset?.providerId || teacherVoiceConfig?.providerId || 'browser-native-tts',
-                  voiceId:
-                    selectedVoicePreset?.providerVoiceId || teacherVoiceConfig?.voiceId || 'default',
-                },
-              }
-            : {}),
+          voicePreset: {
+            id:
+              selectedVoicePreset?.id ||
+              `${selectedVoicePreset?.providerId || teacherVoiceConfig?.providerId || audioSettings.ttsProviderId}::${selectedVoicePreset?.providerVoiceId || teacherVoiceConfig?.voiceId || audioSettings.ttsVoice}`,
+            name:
+              selectedVoicePreset?.name ||
+              selectedTeacherAgent?.name ||
+              form.tutorName ||
+              'AI Tutor',
+            providerId:
+              selectedVoicePreset?.providerId ||
+              teacherVoiceConfig?.providerId ||
+              audioSettings.ttsProviderId,
+            voiceId:
+              selectedVoicePreset?.providerVoiceId ||
+              teacherVoiceConfig?.voiceId ||
+              audioSettings.ttsVoice,
+          },
         },
         pdfText: '',
         pdfImages: [],
@@ -1299,6 +1302,7 @@ function HomePage() {
         applyTutorToPresenters();
       }
 
+      const audioSettings = useSettingsStore.getState();
       const sessionState: GenerationSessionState = {
         sessionId: nanoid(),
         generationMode: 'gamma',
@@ -1320,24 +1324,24 @@ function HomePage() {
             AVATAR_OPTIONS[1],
           description:
             selectedVoicePreset?.description || selectedVoicePreset?.title || form.tutorDescription || '',
-          ...((selectedVoicePreset || teacherVoiceConfig)
-            ? {
-                voicePreset: {
-                  id:
-                    selectedVoicePreset?.id ||
-                    `${teacherVoiceConfig?.providerId || 'tts'}::${teacherVoiceConfig?.voiceId || 'default'}`,
-                  name:
-                    selectedVoicePreset?.name ||
-                    selectedTeacherAgent?.name ||
-                    form.tutorName ||
-                    'AI Tutor',
-                  providerId:
-                    selectedVoicePreset?.providerId || teacherVoiceConfig?.providerId || 'browser-native-tts',
-                  voiceId:
-                    selectedVoicePreset?.providerVoiceId || teacherVoiceConfig?.voiceId || 'default',
-                },
-              }
-            : {}),
+          voicePreset: {
+            id:
+              selectedVoicePreset?.id ||
+              `${selectedVoicePreset?.providerId || teacherVoiceConfig?.providerId || audioSettings.ttsProviderId}::${selectedVoicePreset?.providerVoiceId || teacherVoiceConfig?.voiceId || audioSettings.ttsVoice}`,
+            name:
+              selectedVoicePreset?.name ||
+              selectedTeacherAgent?.name ||
+              form.tutorName ||
+              'AI Tutor',
+            providerId:
+              selectedVoicePreset?.providerId ||
+              teacherVoiceConfig?.providerId ||
+              audioSettings.ttsProviderId,
+            voiceId:
+              selectedVoicePreset?.providerVoiceId ||
+              teacherVoiceConfig?.voiceId ||
+              audioSettings.ttsVoice,
+          },
         },
         pdfText: '',
         pdfImages: [],

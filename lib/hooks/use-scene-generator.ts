@@ -11,10 +11,11 @@ import type { Scene, Stage } from '@/lib/types/stage';
 import type { Action, SpeechAction } from '@/lib/types/action';
 import type { TTSProviderId } from '@/lib/audio/types';
 import { splitLongSpeechActions } from '@/lib/audio/tts-utils';
+import { resolveEffectiveTTSRequest, isServerCapableTTSProvider } from '@/lib/audio/resolve-effective-tts';
+import { requestTTSWithJobPolling } from '@/lib/audio/tts-job-client';
 import { generateMediaForOutlines, reconcileGeneratedImageSources } from '@/lib/media/media-orchestrator';
 import { createLogger } from '@/lib/logger';
 import { getSessionSafe, getSupabaseClient } from '@/lib/supabase/client';
-import { requestTTSWithJobPolling } from '@/lib/audio/tts-job-client';
 
 const log = createLogger('SceneGenerator');
 const MAX_STEP_RETRIES = 2;
@@ -143,13 +144,7 @@ async function fetchSceneActions(
   return response.json();
 }
 
-function getEffectiveTTSRequestConfig(): {
-  providerId: TTSProviderId;
-  voiceId: string;
-  speed: number;
-  apiKey?: string;
-  baseUrl?: string;
-} {
+function getEffectiveTTSRequestConfig() {
   const settings = useSettingsStore.getState();
   const stage = useStageStore.getState().stage as
     | (Stage & {
@@ -158,24 +153,15 @@ function getEffectiveTTSRequestConfig(): {
         };
       })
     | null;
-  const tutorPreset = stage?.tutorConfig?.voicePreset;
-  const fallbackProviderConfig = settings.ttsProvidersConfig?.[settings.ttsProviderId];
-  const effectiveProviderId = (tutorPreset?.providerId || settings.ttsProviderId) as TTSProviderId;
-  const effectiveVoiceId = tutorPreset?.voiceId || settings.ttsVoice;
-  const effectiveProviderConfig = settings.ttsProvidersConfig?.[effectiveProviderId];
-
-  return {
-    providerId: effectiveProviderId,
-    voiceId: effectiveVoiceId,
-    speed: settings.ttsSpeed,
-    apiKey: effectiveProviderConfig?.apiKey || fallbackProviderConfig?.apiKey || undefined,
-    baseUrl:
-      effectiveProviderConfig?.serverBaseUrl ||
-      effectiveProviderConfig?.baseUrl ||
-      fallbackProviderConfig?.serverBaseUrl ||
-      fallbackProviderConfig?.baseUrl ||
-      undefined,
-  };
+  const resolved = resolveEffectiveTTSRequest(stage?.tutorConfig?.voicePreset);
+  if (!resolved) {
+    return {
+      providerId: settings.ttsProviderId,
+      voiceId: settings.ttsVoice,
+      speed: settings.ttsSpeed,
+    };
+  }
+  return resolved;
 }
 
 /** Generate TTS for one speech action and store in IndexedDB */
@@ -185,9 +171,8 @@ export async function generateAndStoreTTS(
   signal?: AbortSignal,
 ): Promise<{ blob: Blob; format: string }> {
   const settings = useSettingsStore.getState();
-  if (settings.ttsProviderId === 'browser-native-tts') return;
-
   const ttsRequest = getEffectiveTTSRequestConfig();
+  if (!isServerCapableTTSProvider(ttsRequest.providerId)) return;
   if (signal?.aborted) throw new Error('TTS request aborted');
   const data = await requestTTSWithJobPolling(
     {
@@ -469,7 +454,10 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
             const settings = useSettingsStore.getState();
 
             // TTS generation — failure means the whole scene fails
-            if (settings.ttsEnabled && settings.ttsProviderId !== 'browser-native-tts') {
+            if (
+              settings.ttsEnabled &&
+              isServerCapableTTSProvider(getEffectiveTTSRequestConfig().providerId)
+            ) {
               const ttsResult = await withRetry(`scene-tts:${outline.order}`, () =>
                 generateTTSForScene(scene, signal),
               );
@@ -621,7 +609,10 @@ export function useSceneGenerator(options: UseSceneGeneratorOptions = {}) {
 
         // Step 3: TTS
         const settings = useSettingsStore.getState();
-        if (settings.ttsEnabled && settings.ttsProviderId !== 'browser-native-tts') {
+        if (
+          settings.ttsEnabled &&
+          isServerCapableTTSProvider(getEffectiveTTSRequestConfig().providerId)
+        ) {
           const ttsResult = await withRetry(`retry-scene-tts:${outline.order}`, () =>
             generateTTSForScene(actionsResult.scene, signal),
           );

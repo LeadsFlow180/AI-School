@@ -867,7 +867,8 @@ function HomePage() {
             console.info(
               `[Recents] Loaded ${list.length} classrooms from Supabase for admin ${currentUserId}.`,
             );
-            if (list.length === 0) {
+            const remoteTotal = count ?? totalClassroomsCount;
+            if (list.length === 0 && remoteTotal === 0) {
               await loadLocalFallback('Supabase returned zero classrooms');
             }
             return;
@@ -1043,6 +1044,36 @@ function HomePage() {
 
   const confirmDelete = async (id: string) => {
     setPendingDeleteId(null);
+
+    // Reason: drop stale in-flight recents fetches so they cannot re-insert a deleted card.
+    classroomsLoadSeqRef.current += 1;
+
+    let targetPage = recentPage;
+    if (recentsSource === 'remote') {
+      const newTotal = Math.max(0, totalClassroomsCount - 1);
+      setTotalClassroomsCount(newTotal);
+      const newTotalPages = Math.max(1, Math.ceil(newTotal / RECENTS_PER_PAGE));
+      if (recentPage > newTotalPages) {
+        targetPage = newTotalPages;
+        setRecentPage(targetPage);
+      }
+    } else {
+      const newTotal = Math.max(0, classrooms.length - 1);
+      const newTotalPages = Math.max(1, Math.ceil(newTotal / RECENTS_PER_PAGE));
+      if (recentPage > newTotalPages) {
+        targetPage = newTotalPages;
+        setRecentPage(targetPage);
+      }
+    }
+
+    setClassrooms((prev) => prev.filter((classroom) => classroom.id !== id));
+    setThumbnails((prev) => {
+      if (!prev[id]) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+
     try {
       // Always clear local copy first.
       await deleteStageData(id);
@@ -1067,10 +1098,11 @@ function HomePage() {
         }
       }
 
-      await loadClassrooms(recentPage);
+      await loadClassrooms(targetPage);
     } catch (err) {
       log.error('Failed to delete classroom:', err);
       toast.error('Failed to delete classroom');
+      await loadClassrooms(recentPage);
     }
   };
 

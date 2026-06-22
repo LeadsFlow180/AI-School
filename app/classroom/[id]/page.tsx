@@ -82,12 +82,51 @@ async function fetchClassroomFromRemote(
 }
 
 function applyLoadedClassroom(stage: Stage, scenes: Scene[]) {
-  useStageStore.getState().setStage(stage);
+  const current = useStageStore.getState();
+  const isSameClassroom = current.stage?.id === stage.id;
+  const scenesToApply =
+    scenes.length > 0 || !isSameClassroom ? scenes : current.scenes;
+
   useStageStore.setState({
-    scenes,
-    currentSceneId: scenes[0]?.id ?? null,
+    stage,
+    scenes: scenesToApply,
+    currentSceneId:
+      current.currentSceneId && scenesToApply.some((s) => s.id === current.currentSceneId)
+        ? current.currentSceneId
+        : scenesToApply[0]?.id ?? null,
   });
   applyTutorConfigFromStage(stage);
+  reconcileGenerationState();
+}
+
+/** Keep pending-outline placeholders and current scene aligned with completed slides. */
+function reconcileGenerationState(): void {
+  const state = useStageStore.getState();
+  const { scenes, outlines, generatingOutlines, currentSceneId } = state;
+  if (scenes.length === 0) return;
+
+  const completedOrders = new Set(scenes.map((scene) => scene.order));
+  const pendingFromOutlines =
+    outlines.length > 0
+      ? outlines.filter((outline) => !completedOrders.has(outline.order))
+      : generatingOutlines.filter((outline) => !completedOrders.has(outline.order));
+
+  const nextCurrentSceneId =
+    currentSceneId && scenes.some((scene) => scene.id === currentSceneId)
+      ? currentSceneId
+      : scenes[0]?.id ?? null;
+
+  const pendingChanged =
+    pendingFromOutlines.length !== generatingOutlines.length ||
+    pendingFromOutlines.some((outline, index) => outline.id !== generatingOutlines[index]?.id);
+  const sceneIdChanged = nextCurrentSceneId !== currentSceneId;
+
+  if (pendingChanged || sceneIdChanged) {
+    useStageStore.setState({
+      ...(pendingChanged ? { generatingOutlines: pendingFromOutlines } : {}),
+      ...(sceneIdChanged ? { currentSceneId: nextCurrentSceneId } : {}),
+    });
+  }
 }
 
 /** Resolve classroom from memory, IndexedDB, or server — with brief retries for post-generation races. */
@@ -636,6 +675,7 @@ export default function ClassroomDetailPage() {
       if (!resolved) {
         throw new Error(`Classroom "${classroomId}" was not found.`);
       }
+      reconcileGenerationState();
 
       const cachedStage = useStageStore.getState().stage || null;
       if (cachedStage) {
@@ -662,22 +702,35 @@ export default function ClassroomDetailPage() {
                   tutorConfigCompletenessScore(serverStage) >
                   tutorConfigCompletenessScore(localStage);
                 const preferServerAudioSnapshot = serverAudioCount > localAudioCount;
-                if (
-                  serverFreshness >= localFreshness ||
-                  preferServerTutorSnapshot ||
-                  preferServerAudioSnapshot
+                const serverHasSceneSnapshot = serverScenes.length >= localScenes.length;
+                const shouldMergeTutorOnly =
+                  !serverHasSceneSnapshot &&
+                  localScenes.length > 0 &&
+                  preferServerTutorSnapshot &&
+                  !preferServerAudioSnapshot;
+                if (shouldMergeTutorOnly) {
+                  const mergedStage = mergeStagePreservingTutor(localStage, serverStage);
+                  useStageStore.getState().setStage(mergedStage);
+                  applyTutorConfigFromStage(mergedStage);
+                } else if (
+                  serverHasSceneSnapshot &&
+                  (serverFreshness >= localFreshness ||
+                    preferServerTutorSnapshot ||
+                    preferServerAudioSnapshot)
                 ) {
                   const mergedStage = mergeStagePreservingTutor(localStage, serverStage);
+                  const preservedSceneId = useStageStore.getState().currentSceneId;
                   useStageStore.getState().setStage(mergedStage);
                   useStageStore.setState({
                     scenes: serverScenes,
-                    currentSceneId: serverScenes[0]?.id ?? null,
+                    currentSceneId:
+                      preservedSceneId && serverScenes.some((s) => s.id === preservedSceneId)
+                        ? preservedSceneId
+                        : (serverScenes[0]?.id ?? null),
                   });
                   await useStageStore.getState().saveToStorage();
-                  // Reason: background refresh may bring a tutorConfig that was missing in
-                  // IndexedDB (e.g. classroom opened in a new tab). Re-apply to agent registry
-                  // and TTS settings so icon/name/voice reflect the saved tutor immediately.
                   applyTutorConfigFromStage(mergedStage);
+                  reconcileGenerationState();
                 }
               }
             }
@@ -829,6 +882,7 @@ export default function ClassroomDetailPage() {
       // Reason: extracted to applyTutorConfigFromStage so the same logic also runs
       // after the background server refresh (which may bring a newer tutorConfig).
       applyTutorConfigFromStage(useStageStore.getState().stage);
+      reconcileGenerationState();
       // Keep a local reference to tutorCfg for the split-speech step below.
       const tutorCfg = (
         useStageStore.getState().stage as

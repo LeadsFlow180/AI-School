@@ -113,13 +113,21 @@ const useStageStoreBase = create<StageState>()((set, get) => ({
 
   // Actions
   setStage: (stage) => {
-    set((s) => ({
-      stage,
-      scenes: [],
-      currentSceneId: null,
-      chats: [],
-      generationEpoch: s.generationEpoch + 1,
-    }));
+    set((s) => {
+      const isSameClassroom = s.stage?.id === stage.id;
+      return {
+        stage,
+        // Reason: metadata refresh (server sync, tutor merge) must not wipe in-flight scenes.
+        ...(isSameClassroom
+          ? {}
+          : {
+              scenes: [],
+              currentSceneId: null,
+              chats: [],
+              generationEpoch: s.generationEpoch + 1,
+            }),
+      };
+    });
     debouncedSave();
   },
 

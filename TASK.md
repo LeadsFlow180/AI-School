@@ -2,7 +2,7 @@
 
 ## Active
 
-- [x] 2026-06-22 - Fix standard generation classroom: stop re-showing loading screen and aborting scene generation after first slide (unstable load effect deps).
+- [x] 2026-06-22 - Fix standard generation blank slide after first scene: prevent setStage from wiping same-classroom scenes and block server refresh from replacing local slides with empty snapshots.
 - [x] 2026-05-22 - AGA embed: verify signed redirect on `/classroom/[id]`, resume `resumeSceneIndex`/`resumeSceneId`, sync `status: progress|complete` with `details` to `AGA_BASE_URL` `/api/learn/content`; one ladder mission per full classroom run.
 - [x] 2026-05-21 - AGA embed playback progress: capture `payload`/`sig` from classroom URL, POST `/api/learn/progress` → forward to `AGA_SITE_URL` `/api/learn/content` (Allen Girls Supabase), not AI-School `classroom_progress`.
 - [x] 2026-05-21 - Persist classroom playback progress per authenticated user to AI-School Supabase `classroom_progress` when not launched from AGA; IndexedDB mirror; `/api/classroom/progress` GET/POST.

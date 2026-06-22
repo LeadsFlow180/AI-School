@@ -570,6 +570,9 @@ export default function ClassroomDetailPage() {
 
   const generationStartedRef = useRef(false);
   const loadGenerationRef = useRef(0);
+  const activeClassroomIdRef = useRef<string | null>(null);
+  const searchParamsRef = useRef(searchParams);
+  searchParamsRef.current = searchParams;
 
   const { generateRemaining, retrySingleOutline, stop } = useSceneGenerator({
     onComplete: () => {
@@ -722,7 +725,7 @@ export default function ClassroomDetailPage() {
         parseAgaLaunchPayloadEncoded,
         setAgaLaunchContext,
       } = await import('@/lib/aga/launch-payload');
-      captureAgaLaunchFromUrl(classroomId, searchParams);
+      captureAgaLaunchFromUrl(classroomId, searchParamsRef.current);
       const bundle = getAgaLaunchBundle(classroomId);
       if (bundle) {
           const verifyRes = await fetch('/api/learn/verify-launch', {
@@ -1020,7 +1023,10 @@ export default function ClassroomDetailPage() {
       }
       setLoading(false);
     }
-  }, [classroomId, loadFromStorage, searchParams]);
+  }, [classroomId, loadFromStorage]);
+
+  const loadClassroomRef = useRef(loadClassroom);
+  loadClassroomRef.current = loadClassroom;
 
   useEffect(() => {
     if (!classroomId) {
@@ -1029,36 +1035,51 @@ export default function ClassroomDetailPage() {
       return;
     }
 
-    // Reset loading state on course switch to unmount Stage during transition,
-    // preventing stale data from syncing back to the new course
-    setLoading(true);
-    setError(null);
-    generationStartedRef.current = false;
+    const isNewClassroom = activeClassroomIdRef.current !== classroomId;
+    activeClassroomIdRef.current = classroomId;
 
-    const memoryStageId = useStageStore.getState().stage?.id ?? null;
-    const switchingClassroom = memoryStageId !== classroomId;
-    if (switchingClassroom) {
-      clearStore();
+    // Reason: only show the full-screen loading scene when entering a different classroom.
+    // Re-running this effect for the same id (e.g. Strict Mode remount) must not hide slides
+    // or abort in-flight scene generation after the first slide is ready.
+    if (isNewClassroom) {
+      setLoading(true);
+      setError(null);
+      generationStartedRef.current = false;
 
-      // Clear previous classroom's media tasks to prevent cross-classroom contamination.
-      // Placeholder IDs (gen_img_1, gen_vid_1) are NOT globally unique across stages,
-      // so stale tasks from a previous classroom would shadow the new one's.
-      const mediaStore = useMediaGenerationStore.getState();
-      mediaStore.revokeObjectUrls();
-      useMediaGenerationStore.setState({ tasks: {} });
+      const memoryStageId = useStageStore.getState().stage?.id ?? null;
+      if (memoryStageId !== classroomId) {
+        clearStore();
 
-      // Clear whiteboard history to prevent snapshots from a previous course leaking in.
-      useWhiteboardHistoryStore.getState().clearHistory();
+        const mediaStore = useMediaGenerationStore.getState();
+        mediaStore.revokeObjectUrls();
+        useMediaGenerationStore.setState({ tasks: {} });
+
+        useWhiteboardHistoryStore.getState().clearHistory();
+      }
     }
 
-    loadClassroom();
+    if (!isNewClassroom) {
+      const ready = useStageStore.getState();
+      if (ready.stage?.id === classroomId && ready.scenes.length > 0) {
+        setLoading(false);
+        return;
+      }
+    }
 
-    // Cancel ongoing generation when classroomId changes or component unmounts
+    void loadClassroomRef.current();
+
+    const classroomIdAtMount = classroomId;
     return () => {
       loadGenerationRef.current += 1;
-      stop();
+      // Reason: Strict Mode unmount/remount keeps the same classroom id — defer stop so
+      // the immediate remount cancels it and background scene generation continues.
+      window.setTimeout(() => {
+        if (activeClassroomIdRef.current !== classroomIdAtMount) {
+          stop();
+        }
+      }, 0);
     };
-  }, [classroomId, clearStore, loadClassroom, stop]);
+  }, [classroomId, clearStore, stop]);
 
   // Re-apply classroom tutor after agent-registry localStorage hydration so a fresh browser
   // does not keep default agent name/avatar from the persisted settings store.

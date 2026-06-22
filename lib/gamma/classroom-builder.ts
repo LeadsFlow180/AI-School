@@ -456,6 +456,7 @@ export async function buildClassroomFromGamma(
     updatedAt: now,
     language,
     style: 'professional',
+    agentIds: ['default-1'],
     ...(tutorConfig ? { tutorConfig } : {}),
   };
 

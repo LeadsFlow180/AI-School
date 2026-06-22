@@ -27,6 +27,10 @@ import {
 import { loadPlaybackState } from '@/lib/utils/playback-storage';
 import { ChatArea, type ChatAreaRef } from '@/components/chat/chat-area';
 import { applyStageTutorToParticipants } from '@/lib/classroom/tutor-config';
+import {
+  buildGammaClassroomParticipants,
+  isGammaClassroom,
+} from '@/lib/gamma/classroom-identity';
 import { agentsToParticipants, useAgentRegistry } from '@/lib/orchestration/registry/store';
 import type { AgentConfig } from '@/lib/orchestration/registry/types';
 import { KidsParallaxBackground } from '@/components/stage/kids-parallax-background';
@@ -127,11 +131,12 @@ export function Stage({
   const agentsRecord = useAgentRegistry((s) => s.agents);
 
   // Generate participants from selected agents
-  const participants = useMemo(
-    () =>
-      applyStageTutorToParticipants(agentsToParticipants(selectedAgentIds, t), stage),
-    [selectedAgentIds, t, agentsRecord, stage],
-  );
+  const participants = useMemo(() => {
+    if (isGammaClassroom(stage, scenes)) {
+      return buildGammaClassroomParticipants(stage, t);
+    }
+    return applyStageTutorToParticipants(agentsToParticipants(selectedAgentIds, t), stage);
+  }, [selectedAgentIds, t, agentsRecord, stage, scenes]);
 
   // Resolved AgentConfig array for hooks that need full agent objects
   // Subscribe to the agents record so voiceConfig changes trigger re-resolution
@@ -155,6 +160,9 @@ export function Stage({
 
   // Pick a student agent for discussion trigger (prioritize student > non-teacher > fallback)
   const pickStudentAgent = useCallback((): string => {
+    if (isGammaClassroom(stage, scenes)) {
+      return 'default-1';
+    }
     const registry = useAgentRegistry.getState();
     const agents = selectedAgentIds
       .map((id) => registry.getAgent(id))
@@ -168,7 +176,7 @@ export function Stage({
       return nonTeachers[Math.floor(Math.random() * nonTeachers.length)].id;
     }
     return agents[0]?.id || 'default-1';
-  }, [selectedAgentIds]);
+  }, [selectedAgentIds, stage, scenes]);
 
   const engineRef = useRef<PlaybackEngine | null>(null);
   const audioPlayerRef = useRef(createAudioPlayer());

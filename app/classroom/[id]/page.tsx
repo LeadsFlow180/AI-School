@@ -28,6 +28,10 @@ import {
   mergeStagePreservingTutor,
   tutorConfigCompletenessScore,
 } from '@/lib/classroom/tutor-config';
+import {
+  GAMMA_CLASSROOM_AGENT_IDS,
+  isGammaClassroom,
+} from '@/lib/gamma/classroom-identity';
 
 const log = createLogger('Classroom');
 const MIN_LOADING_SCENE_MS = 900;
@@ -641,6 +645,34 @@ export default function ClassroomDetailPage() {
         throw new Error(`Classroom "${classroomId}" was not found.`);
       }
 
+      const loadedStage = useStageStore.getState().stage;
+      const loadedScenes = useStageStore.getState().scenes || [];
+      const gammaClassroom = isGammaClassroom(loadedStage, loadedScenes);
+
+      // Reason: IndexedDB stage rows omit tutorConfig unless explicitly saved; Gamma classrooms
+      // must block on server tutor snapshot so a fresh browser never shows preset agent names.
+      if (gammaClassroom && tutorConfigCompletenessScore(loadedStage) === 0) {
+        try {
+          const serverRes = await fetch(`/api/classroom?id=${encodeURIComponent(classroomId)}`, {
+            cache: 'no-store',
+          });
+          if (serverRes.ok) {
+            const serverJson = await serverRes.json();
+            if (serverJson.success && serverJson.classroom?.stage) {
+              const serverStage = serverJson.classroom.stage as Stage;
+              if (tutorConfigCompletenessScore(serverStage) > 0) {
+                const mergedStage = mergeStagePreservingTutor(loadedStage, serverStage);
+                useStageStore.getState().setStage(mergedStage);
+                applyTutorConfigFromStage(mergedStage);
+                await useStageStore.getState().saveToStorage();
+              }
+            }
+          }
+        } catch (gammaTutorErr) {
+          log.warn('Failed to hydrate Gamma tutor config from server:', gammaTutorErr);
+        }
+      }
+
       // Allen Girls Adventure embed: verify signed redirect before playback.
       const {
         buildAgaLaunchContext,
@@ -718,7 +750,14 @@ export default function ClassroomDetailPage() {
         await import('@/lib/orchestration/registry/store');
       const generatedAgentIds = await loadGeneratedAgentsForStage(classroomId);
       const { useSettingsStore } = await import('@/lib/store/settings');
-      if (generatedAgentIds.length > 0) {
+      const stageAfterTutorHydrate = useStageStore.getState().stage;
+      const scenesAfterTutorHydrate = useStageStore.getState().scenes || [];
+      const isGamma = isGammaClassroom(stageAfterTutorHydrate, scenesAfterTutorHydrate);
+
+      if (isGamma) {
+        useSettingsStore.getState().setAgentMode('preset');
+        useSettingsStore.getState().setSelectedAgentIds([...GAMMA_CLASSROOM_AGENT_IDS]);
+      } else if (generatedAgentIds.length > 0) {
         // Auto mode — use generated agents from IndexedDB
         useSettingsStore.getState().setAgentMode('auto');
         useSettingsStore.getState().setSelectedAgentIds(generatedAgentIds);
@@ -1057,7 +1096,7 @@ export default function ClassroomDetailPage() {
     }
   }, [classroomId, router, searchParams]);
 
-  const isGammaClassroom = scenes.some(isGammaScene);
+  const hasGammaScenes = scenes.some(isGammaScene);
 
   return (
     <ThemeProvider>
@@ -1087,7 +1126,7 @@ export default function ClassroomDetailPage() {
                 onRetryOutline={retrySingleOutline}
                 onOpenGuidance={tourOpen ? undefined : () => setTourOpen(true)}
                 onOpenCanvasEdit={
-                  isAdminUser && !isGammaClassroom
+                  isAdminUser && !hasGammaScenes
                     ? () => {
                         window.open(
                           `/classroom/${encodeURIComponent(classroomId || '')}/edit`,

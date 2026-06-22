@@ -6,6 +6,7 @@
  */
 
 import { Stage, Scene } from '../types/stage';
+import type { TutorGenerationConfig } from '../types/tutor-voice';
 import { ChatSession } from '../types/chat';
 import { db } from './database';
 import { saveChatSessions, loadChatSessions, deleteChatSessions } from './chat-storage';
@@ -48,6 +49,8 @@ export async function saveStageData(stageId: string, data: StageStoreData): Prom
       style: data.stage.style,
       currentSceneId: data.currentSceneId || undefined,
       agentIds: data.stage.agentIds,
+      tutorConfig: data.stage.tutorConfig,
+      audioHydratedAt: data.stage.audioHydratedAt,
     });
 
     // Delete old scenes first to avoid orphaned data

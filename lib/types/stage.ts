@@ -2,6 +2,7 @@
 import type { Slide } from '@/lib/types/slides';
 import type { Action } from '@/lib/types/action';
 import type { PBLProjectConfig } from '@/lib/pbl/types';
+import type { TutorGenerationConfig } from '@/lib/types/tutor-voice';
 
 export type SceneType = 'slide' | 'quiz' | 'interactive' | 'pbl';
 
@@ -25,6 +26,8 @@ export interface Stage {
   whiteboard?: Whiteboard[];
   // Agent IDs selected when this classroom was created
   agentIds?: string[];
+  /** Tutor identity saved with this classroom (name, avatar, voice). */
+  tutorConfig?: TutorGenerationConfig;
   /** Set when server-side speech clips were hydrated into the stage payload */
   audioHydratedAt?: number;
 }

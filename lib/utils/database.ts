@@ -9,6 +9,7 @@ import type {
   ToolCallRequest,
 } from '@/lib/types/chat';
 import type { SceneOutline } from '@/lib/types/generation';
+import type { TutorGenerationConfig } from '@/lib/types/tutor-voice';
 import type { UIMessage } from 'ai';
 import { createLogger } from '@/lib/logger';
 
@@ -48,6 +49,8 @@ export interface StageRecord {
   style?: string;
   currentSceneId?: string;
   agentIds?: string[]; // Agent IDs selected at creation time
+  tutorConfig?: TutorGenerationConfig;
+  audioHydratedAt?: number;
 }
 
 /**

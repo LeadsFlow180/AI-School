@@ -26,6 +26,7 @@ import {
 } from '@/lib/classroom/classroom-progress';
 import { loadPlaybackState } from '@/lib/utils/playback-storage';
 import { ChatArea, type ChatAreaRef } from '@/components/chat/chat-area';
+import { applyStageTutorToParticipants } from '@/lib/classroom/tutor-config';
 import { agentsToParticipants, useAgentRegistry } from '@/lib/orchestration/registry/store';
 import type { AgentConfig } from '@/lib/orchestration/registry/types';
 import { KidsParallaxBackground } from '@/components/stage/kids-parallax-background';
@@ -127,8 +128,9 @@ export function Stage({
 
   // Generate participants from selected agents
   const participants = useMemo(
-    () => agentsToParticipants(selectedAgentIds, t),
-    [selectedAgentIds, t, agentsRecord],
+    () =>
+      applyStageTutorToParticipants(agentsToParticipants(selectedAgentIds, t), stage),
+    [selectedAgentIds, t, agentsRecord, stage],
   );
 
   // Resolved AgentConfig array for hooks that need full agent objects

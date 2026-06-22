@@ -10,8 +10,7 @@ import type { Action } from '@/lib/types/action';
 import type { Slide } from '@/lib/types/slides';
 import type { TutorGenerationConfig } from '@/lib/types/tutor-voice';
 import { resolveEffectiveTTSRequest } from '@/lib/audio/resolve-effective-tts';
-import { mergeTutorConfig, applyTutorConfigFromStage } from '@/lib/classroom/tutor-config';
-import { useAgentRegistry } from '@/lib/orchestration/registry/store';
+import { applyTutorConfigFromStage } from '@/lib/classroom/tutor-config';
 import { requestTTSWithJobPolling } from '@/lib/audio/tts-job-client';
 import { splitLongSpeechActions } from '@/lib/audio/tts-utils';
 import type { GammaGenerationStepId } from '@/lib/gamma/types';
@@ -445,34 +444,10 @@ export async function buildClassroomFromGamma(
     );
   }
 
-  const settings = useSettingsStore.getState();
-  const teacherAgent =
-    useAgentRegistry
-      .getState()
-      .listAgents()
-      .find((agent) => agent.role === 'teacher') ||
-    useAgentRegistry.getState().getAgent('default-1');
   const now = Date.now();
   const stageId = nanoid(10);
-  const resolvedTutorConfig = tutorConfig
-    ? mergeTutorConfig(tutorConfig, {
-        name: teacherAgent?.name,
-        avatar: teacherAgent?.avatar,
-        voicePreset: teacherAgent?.voiceConfig
-          ? {
-              id: `${teacherAgent.voiceConfig.providerId}::${teacherAgent.voiceConfig.voiceId}`,
-              name: teacherAgent.name || tutorConfig.name || 'AI Tutor',
-              providerId: teacherAgent.voiceConfig.providerId,
-              voiceId: teacherAgent.voiceConfig.voiceId,
-            }
-          : {
-              id: `${settings.ttsProviderId}::${settings.ttsVoice}`,
-              name: tutorConfig.name || teacherAgent?.name || 'AI Tutor',
-              providerId: settings.ttsProviderId,
-              voiceId: settings.ttsVoice,
-            },
-      })
-    : undefined;
+  // Reason: session tutorConfig is authoritative; do not merge local agent-registry state
+  // which can differ across browsers and overwrite the tutor chosen at generation time.
   const stage: Stage & { tutorConfig?: TutorGenerationConfig } = {
     id: stageId,
     name: prompt.trim().slice(0, 120) || 'Gamma Presentation',
@@ -481,7 +456,7 @@ export async function buildClassroomFromGamma(
     updatedAt: now,
     language,
     style: 'professional',
-    ...(resolvedTutorConfig ? { tutorConfig: resolvedTutorConfig } : {}),
+    ...(tutorConfig ? { tutorConfig } : {}),
   };
 
   report('gamma-slides', 'Converting Gamma slides into classroom pages...');
@@ -646,6 +621,7 @@ export async function buildClassroomFromGamma(
     scene.order = index + 1;
   });
 
+  const settings = useSettingsStore.getState();
   if (settings.ttsEnabled) {
     report('gamma-tts', 'Generating tutor voice audio for narration...');
     assertNotAborted(signal);
@@ -714,6 +690,13 @@ export async function buildClassroomFromGamma(
   applyTutorConfigFromStage(stage);
   await stageStore.saveToStorage();
 
+  // Reason: Gamma polling can take several minutes; refresh auth before sync so tutorConfig
+  // reaches Supabase for classrooms opened in other browsers.
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    await supabase.auth.refreshSession().catch(() => undefined);
+  }
+
   try {
     await syncClassroomToSupabase({
       stage,
@@ -722,6 +705,18 @@ export async function buildClassroomFromGamma(
     });
   } catch (syncError) {
     log.warn('[gamma] explicit supabase sync failed', syncError);
+    try {
+      const res = await fetch('/api/classroom', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stage, scenes }),
+      });
+      if (!res.ok) {
+        log.warn('[gamma] /api/classroom fallback failed', await res.text().catch(() => ''));
+      }
+    } catch (fallbackErr) {
+      log.warn('[gamma] /api/classroom fallback threw', fallbackErr);
+    }
   }
 
   return { stageId };

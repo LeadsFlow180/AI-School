@@ -605,6 +605,7 @@ export default function ClassroomDetailPage() {
                 scenes,
                 currentSceneId: scenes[0]?.id ?? null,
               });
+              applyTutorConfigFromStage(stage);
               loadedFromSupabase = true;
               log.info('Loaded classroom from Supabase:', classroomId);
               console.info(`[Classroom] Loaded ${classroomId} from Supabase.`);
@@ -624,6 +625,7 @@ export default function ClassroomDetailPage() {
                   scenes,
                   currentSceneId: scenes[0]?.id ?? null,
                 });
+                applyTutorConfigFromStage(stage);
                 log.info('Loaded from server-side storage:', classroomId);
                 console.info(`[Classroom] Loaded ${classroomId} from /api/classroom fallback.`);
               }
@@ -969,6 +971,30 @@ export default function ClassroomDetailPage() {
       stop();
     };
   }, [classroomId, clearStore, loadClassroom, stop]);
+
+  // Re-apply classroom tutor after agent-registry localStorage hydration so a fresh browser
+  // does not keep default agent name/avatar from the persisted settings store.
+  useEffect(() => {
+    if (loading || error) return;
+
+    const reapplyTutor = () => {
+      applyTutorConfigFromStage(useStageStore.getState().stage);
+    };
+
+    reapplyTutor();
+
+    void import('@/lib/orchestration/registry/store').then(({ useAgentRegistry }) => {
+      const { persist } = useAgentRegistry;
+      if (!persist) return;
+      if (persist.hasHydrated()) {
+        reapplyTutor();
+        return;
+      }
+      persist.onFinishHydration(() => {
+        reapplyTutor();
+      });
+    });
+  }, [classroomId, loading, error]);
 
   // Auto-resume generation for pending outlines
   useEffect(() => {

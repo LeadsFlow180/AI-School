@@ -1,10 +1,42 @@
 import type { Stage } from '@/lib/types/stage';
 import type { TutorGenerationConfig } from '@/lib/types/tutor-voice';
 import type { TTSProviderId } from '@/lib/audio/types';
+import type { Participant } from '@/lib/types/roundtable';
 import { useAgentRegistry } from '@/lib/orchestration/registry/store';
 import { useSettingsStore } from '@/lib/store/settings';
 
 type StageWithTutor = Stage & { tutorConfig?: TutorGenerationConfig };
+
+/** Classroom-scoped tutor name/avatar saved on the stage (source of truth for playback UI). */
+export function resolveStageTutorDisplay(stage: Stage | null): {
+  name?: string;
+  avatar?: string;
+} {
+  const tutor = (stage as StageWithTutor | null)?.tutorConfig;
+  if (!tutor) return {};
+  return {
+    name: tutor.name?.trim() || tutor.voicePreset?.name?.trim(),
+    avatar: tutor.avatar?.trim(),
+  };
+}
+
+/** Prefer stage.tutorConfig for the teacher seat so new browsers/tabs show the saved tutor. */
+export function applyStageTutorToParticipants(
+  participants: Participant[],
+  stage: Stage | null,
+): Participant[] {
+  const { name, avatar } = resolveStageTutorDisplay(stage);
+  if (!name && !avatar) return participants;
+  return participants.map((participant) =>
+    participant.role === 'teacher'
+      ? {
+          ...participant,
+          ...(name ? { name } : {}),
+          ...(avatar ? { avatar } : {}),
+        }
+      : participant,
+  );
+}
 
 /** How complete a saved tutor identity is (name, avatar, voice). */
 export function tutorConfigCompletenessScore(stage: Stage | null): number {
@@ -75,10 +107,10 @@ export function applyTutorConfigFromStage(stage: Stage | null): void {
     selectedIds.find((id) => registry.getAgent(id)?.role === 'teacher') ||
     selectedIds[0] ||
     'default-1';
-  const tutorName = tutorCfg.name?.trim() || tutorCfg.voicePreset?.name?.trim();
+  const { name: tutorName, avatar: tutorAvatar } = resolveStageTutorDisplay(stage);
   const tutorUpdates = {
     ...(tutorName ? { name: tutorName } : {}),
-    ...(tutorCfg.avatar?.trim() ? { avatar: tutorCfg.avatar } : {}),
+    ...(tutorAvatar ? { avatar: tutorAvatar } : {}),
     ...(tutorCfg.voicePreset
       ? {
           voiceConfig: {

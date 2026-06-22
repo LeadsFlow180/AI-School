@@ -2,7 +2,7 @@
 
 ## Active
 
-- [x] 2026-06-22 - Fix Gamma classroom tutor name/avatar in fresh browsers: persist `tutorConfig` in IndexedDB, teacher-only Gamma participants from `stage.tutorConfig`, block on server tutor hydrate, and save `agentIds: ['default-1']` at generation.
+- [x] 2026-06-22 - Fix false "Classroom not found" on first Gamma open: keep in-memory classroom after generation, retry IndexedDB/server load, and ignore stale async load results.
 - [x] 2026-05-22 - AGA embed: verify signed redirect on `/classroom/[id]`, resume `resumeSceneIndex`/`resumeSceneId`, sync `status: progress|complete` with `details` to `AGA_BASE_URL` `/api/learn/content`; one ladder mission per full classroom run.
 - [x] 2026-05-21 - AGA embed playback progress: capture `payload`/`sig` from classroom URL, POST `/api/learn/progress` → forward to `AGA_SITE_URL` `/api/learn/content` (Allen Girls Supabase), not AI-School `classroom_progress`.
 - [x] 2026-05-21 - Persist classroom playback progress per authenticated user to AI-School Supabase `classroom_progress` when not launched from AGA; IndexedDB mirror; `/api/classroom/progress` GET/POST.

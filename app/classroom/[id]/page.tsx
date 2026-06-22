@@ -35,6 +35,95 @@ import {
 
 const log = createLogger('Classroom');
 const MIN_LOADING_SCENE_MS = 900;
+const CLASSROOM_LOAD_ATTEMPTS = 4;
+const CLASSROOM_LOAD_RETRY_MS = 400;
+
+async function fetchClassroomFromRemote(
+  classroomId: string,
+): Promise<{ stage: Stage; scenes: Scene[] } | null> {
+  const supabase = getSupabaseClient();
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('classrooms')
+        .select('stage_data, scenes_data')
+        .eq('id', classroomId)
+        .maybeSingle();
+
+      if (!error && data?.stage_data && Array.isArray(data.scenes_data)) {
+        return {
+          stage: data.stage_data as Stage,
+          scenes: data.scenes_data as Scene[],
+        };
+      }
+    } catch (supabaseErr) {
+      log.warn('Supabase classroom fetch failed:', supabaseErr);
+    }
+  }
+
+  try {
+    const res = await fetch(`/api/classroom?id=${encodeURIComponent(classroomId)}`, {
+      cache: 'no-store',
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.classroom) {
+        return {
+          stage: json.classroom.stage as Stage,
+          scenes: (json.classroom.scenes || []) as Scene[],
+        };
+      }
+    }
+  } catch (fetchErr) {
+    log.warn('Server classroom fetch failed:', fetchErr);
+  }
+
+  return null;
+}
+
+function applyLoadedClassroom(stage: Stage, scenes: Scene[]) {
+  useStageStore.getState().setStage(stage);
+  useStageStore.setState({
+    scenes,
+    currentSceneId: scenes[0]?.id ?? null,
+  });
+  applyTutorConfigFromStage(stage);
+}
+
+/** Resolve classroom from memory, IndexedDB, or server — with brief retries for post-generation races. */
+async function resolveClassroomIntoStore(
+  classroomId: string,
+  loadFromStorage: (id: string) => Promise<void>,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < CLASSROOM_LOAD_ATTEMPTS; attempt++) {
+    const memory = useStageStore.getState();
+    if (memory.stage?.id === classroomId && memory.scenes.length > 0) {
+      return true;
+    }
+
+    await loadFromStorage(classroomId);
+    const afterLocal = useStageStore.getState();
+    if (afterLocal.stage?.id === classroomId && afterLocal.scenes.length > 0) {
+      return true;
+    }
+
+    if (!afterLocal.stage) {
+      const remote = await fetchClassroomFromRemote(classroomId);
+      if (remote) {
+        applyLoadedClassroom(remote.stage, remote.scenes);
+        if (remote.stage.id === classroomId) {
+          return true;
+        }
+      }
+    }
+
+    if (attempt < CLASSROOM_LOAD_ATTEMPTS - 1) {
+      await new Promise((resolve) => setTimeout(resolve, CLASSROOM_LOAD_RETRY_MS));
+    }
+  }
+
+  return useStageStore.getState().stage?.id === classroomId;
+}
 
 function getGammaGenerationIdFromUrl(url?: string): string | null {
   if (!url) return null;
@@ -480,6 +569,7 @@ export default function ClassroomDetailPage() {
   const scenes = useStageStore((s) => s.scenes);
 
   const generationStartedRef = useRef(false);
+  const loadGenerationRef = useRef(0);
 
   const { generateRemaining, retrySingleOutline, stop } = useSceneGenerator({
     onComplete: () => {
@@ -530,12 +620,19 @@ export default function ClassroomDetailPage() {
 
   const loadClassroom = useCallback(async () => {
     const loadingStartedAt = Date.now();
+    const loadGeneration = ++loadGenerationRef.current;
+    const isStale = () => loadGeneration !== loadGenerationRef.current;
+
     try {
       if (!classroomId) {
         throw new Error('Missing classroom id in route');
       }
 
-      await loadFromStorage(classroomId);
+      const resolved = await resolveClassroomIntoStore(classroomId, loadFromStorage);
+      if (isStale()) return;
+      if (!resolved) {
+        throw new Error(`Classroom "${classroomId}" was not found.`);
+      }
 
       const cachedStage = useStageStore.getState().stage || null;
       if (cachedStage) {
@@ -587,63 +684,7 @@ export default function ClassroomDetailPage() {
         })();
       }
 
-      // If IndexedDB had no data, try server-side storage (API-generated classrooms)
-      if (!useStageStore.getState().stage) {
-        log.info('No IndexedDB data, trying Supabase/server fallback for:', classroomId);
-        try {
-          const supabase = getSupabaseClient();
-          let loadedFromSupabase = false;
-
-          if (supabase) {
-            const { data, error } = await supabase
-              .from('classrooms')
-              .select('stage_data, scenes_data')
-              .eq('id', classroomId)
-              .maybeSingle();
-
-            if (!error && data?.stage_data && Array.isArray(data.scenes_data)) {
-              const stage = data.stage_data;
-              const scenes = data.scenes_data;
-              useStageStore.getState().setStage(stage);
-              useStageStore.setState({
-                scenes,
-                currentSceneId: scenes[0]?.id ?? null,
-              });
-              applyTutorConfigFromStage(stage);
-              loadedFromSupabase = true;
-              log.info('Loaded classroom from Supabase:', classroomId);
-              console.info(`[Classroom] Loaded ${classroomId} from Supabase.`);
-            } else if (error) {
-              log.warn('Supabase classroom fetch failed:', error.message);
-            }
-          }
-
-          if (!loadedFromSupabase) {
-            const res = await fetch(`/api/classroom?id=${encodeURIComponent(classroomId)}`);
-            if (res.ok) {
-              const json = await res.json();
-              if (json.success && json.classroom) {
-                const { stage, scenes } = json.classroom;
-                useStageStore.getState().setStage(stage);
-                useStageStore.setState({
-                  scenes,
-                  currentSceneId: scenes[0]?.id ?? null,
-                });
-                applyTutorConfigFromStage(stage);
-                log.info('Loaded from server-side storage:', classroomId);
-                console.info(`[Classroom] Loaded ${classroomId} from /api/classroom fallback.`);
-              }
-            }
-          }
-        } catch (fetchErr) {
-          log.warn('Supabase/server fallback fetch failed:', fetchErr);
-        }
-      }
-
-      const loadedStageId = useStageStore.getState().stage?.id;
-      if (loadedStageId !== classroomId) {
-        throw new Error(`Classroom "${classroomId}" was not found.`);
-      }
+      if (isStale()) return;
 
       const loadedStage = useStageStore.getState().stage;
       const loadedScenes = useStageStore.getState().scenes || [];
@@ -965,9 +1006,11 @@ export default function ClassroomDetailPage() {
         }
       })();
     } catch (error) {
+      if (isStale()) return;
       log.error('Failed to load classroom:', error);
       setError(error instanceof Error ? error.message : 'Failed to load classroom');
     } finally {
+      if (isStale()) return;
       // Keep the cinematic loading scene on screen long enough for
       // characters to finish their entrance before showing the classroom UI.
       const elapsed = Date.now() - loadingStartedAt;
@@ -991,22 +1034,28 @@ export default function ClassroomDetailPage() {
     setLoading(true);
     setError(null);
     generationStartedRef.current = false;
-    clearStore();
 
-    // Clear previous classroom's media tasks to prevent cross-classroom contamination.
-    // Placeholder IDs (gen_img_1, gen_vid_1) are NOT globally unique across stages,
-    // so stale tasks from a previous classroom would shadow the new one's.
-    const mediaStore = useMediaGenerationStore.getState();
-    mediaStore.revokeObjectUrls();
-    useMediaGenerationStore.setState({ tasks: {} });
+    const memoryStageId = useStageStore.getState().stage?.id ?? null;
+    const switchingClassroom = memoryStageId !== classroomId;
+    if (switchingClassroom) {
+      clearStore();
 
-    // Clear whiteboard history to prevent snapshots from a previous course leaking in.
-    useWhiteboardHistoryStore.getState().clearHistory();
+      // Clear previous classroom's media tasks to prevent cross-classroom contamination.
+      // Placeholder IDs (gen_img_1, gen_vid_1) are NOT globally unique across stages,
+      // so stale tasks from a previous classroom would shadow the new one's.
+      const mediaStore = useMediaGenerationStore.getState();
+      mediaStore.revokeObjectUrls();
+      useMediaGenerationStore.setState({ tasks: {} });
+
+      // Clear whiteboard history to prevent snapshots from a previous course leaking in.
+      useWhiteboardHistoryStore.getState().clearHistory();
+    }
 
     loadClassroom();
 
     // Cancel ongoing generation when classroomId changes or component unmounts
     return () => {
+      loadGenerationRef.current += 1;
       stop();
     };
   }, [classroomId, clearStore, loadClassroom, stop]);
